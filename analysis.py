@@ -11,7 +11,7 @@ from scipy.linalg import expm
 from two_qubit_lindbladian import pauli_string_dim, numeric_two_qubit_lindbladian
 from lpdo import purification_sqrt, disentangle_ancilla, truncate_and_validate
 from framability import get_framability, extended_pauli_D
-from optimize_framability import minimize_framability
+from optimize_framability import minimize_framability, DEFAULT_METHOD
 
 
 def decay_rate(L):
@@ -116,7 +116,7 @@ def analyze_steady_state(J, gamma, gamma_p, gamma_step=0.01):
     d_ext = D_ext.shape[1]
     _, min_framability = minimize_framability(
         M, d_ext=d_ext, mode='kronecker', n_restarts=2,
-        method='cobyqa', max_iter=100, maxfev=500,
+        method=DEFAULT_METHOD, max_iter=100, maxfev=500,
         verbose=False,
     )
 

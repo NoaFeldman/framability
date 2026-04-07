@@ -31,6 +31,15 @@ from scipy.optimize._linprog_util import _LPProblem, _clean_inputs
 from two_qubit_lindbladian import pauli_string_dim, qubit_d
 from framability import get_framability, extended_pauli_D
 
+# cobyqa was added in scipy 1.11; fall back to Powell on older installs.
+try:
+    from scipy.optimize import minimize as _minimize_probe
+    _minimize_probe(lambda x: x[0] ** 2, [1.0], method='cobyqa',
+                    options={'maxfev': 1})
+    DEFAULT_METHOD = 'cobyqa'
+except (ValueError, ImportError):
+    DEFAULT_METHOD = 'Powell'
+
 
 # ---------------------------------------------------------------------------
 #  Cached LP components  (keyed by d_ext)
