@@ -115,10 +115,13 @@ def analyze_steady_state(J, gamma, gamma_p, gamma_step=0.01):
     # 7. Minimal framability (optimised over Kronecker frames)
     d_ext = D_ext.shape[1]
     _, min_framability = minimize_framability(
-        M, d_ext=d_ext, mode='kronecker', n_restarts=2,
-        method=DEFAULT_METHOD, max_iter=100, maxfev=500,
+        M, d_ext=d_ext, mode='kronecker', n_restarts=5,
+        method=DEFAULT_METHOD, max_iter=200, maxfev=1000,
         verbose=False,
     )
+    # Safety clamp: the extended-Pauli frame is a valid Kronecker frame,
+    # so the true minimum cannot exceed ext_framability.
+    min_framability = min(min_framability, ext_framability)
 
     # 8. Decay rate
     dec_rate = decay_rate(L)

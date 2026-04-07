@@ -276,6 +276,14 @@ def _run_restarts(objective, n_params, d_ext, n_rows, n_cols,
         opts = {'maxiter': max_iter, 'maxfev': maxfev}
 
     for i, x0 in enumerate(inits):
+        # Always evaluate at the initial point before optimising: this
+        # guarantees the baseline (e.g. ext-Pauli) is never discarded even
+        # if the optimiser diverges to a worse local minimum.
+        f_x0 = objective(x0)
+        if f_x0 < best_val:
+            best_val = f_x0
+            best_D = _params_to_D(x0, n_rows, n_cols, is_kron)
+
         res = minimize(objective, x0, method=method, options=opts)
 
         D_cand = _params_to_D(res.x, n_rows, n_cols, is_kron)
@@ -284,7 +292,7 @@ def _run_restarts(objective, n_params, d_ext, n_rows, n_cols,
         if verbose:
             tag = 'ext-Pauli init' if i == 0 and d_ext == 36 else 'random init'
             print(f'  restart {i + 1}/{len(inits)} ({tag}):  '
-                  f'f = {f_cand:.6f}  (success={res.success})')
+                  f'f_init={f_x0:.6f}  f_opt={f_cand:.6f}  (success={res.success})')
 
         if f_cand < best_val:
             best_val = f_cand
