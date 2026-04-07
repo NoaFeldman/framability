@@ -11,6 +11,7 @@ from scipy.linalg import expm
 from two_qubit_lindbladian import pauli_string_dim, numeric_two_qubit_lindbladian
 from lpdo import purification_sqrt, disentangle_ancilla, truncate_and_validate
 from framability import get_framability, extended_pauli_D
+from optimize_framability import minimize_framability
 
 
 def decay_rate(L):
@@ -39,13 +40,14 @@ def analyze_steady_state(J, gamma, gamma_p, gamma_step=0.01):
     Numerical analysis of the two-qubit Lindbladian steady state.
 
     Returns (rho_ss, entropy, negativity, magic, pauli_framability,
-             ext_framability, dec_rate, chi_lpdo):
+             ext_framability, min_framability, dec_rate, chi_lpdo):
       rho_ss             – 4x4 steady-state density matrix
       entropy            – von Neumann entropy  -sum lambda*ln(lambda)
       negativity         – sum of |negative eigenvalues| of partial transpose
       magic              – weighted-average stabilizer Rényi entropy
       pauli_framability  – max row 1-norm of expm(dt*L) with dt=0.01*gamma_step
       ext_framability    – get_framability with extended Pauli D
+      min_framability    – minimal framability optimised over kronecker frames
       dec_rate           – spectral gap (decay rate) of the Lindbladian
       chi_lpdo           – minimal LPDO bond dimension (fidelity >= 1 - 1e-9)
     """
@@ -97,16 +99,31 @@ def analyze_steady_state(J, gamma, gamma_p, gamma_step=0.01):
     # 5. Pauli framability: max row 1-norm of expm(dt*L)
     dt = 0.01 * gamma_step
     M = expm(dt * L)
-    pauli_framability = np.max(np.sum(np.abs(M), axis=1).real)
+    if np.max(np.abs(M.imag)) > 1e-12:
+        raise ValueError(
+            f'expm(dt*L) has non-negligible imaginary part '
+            f'(max |imag| = {np.max(np.abs(M.imag)):.2e}). '
+            f'The Lindbladian propagator should be real-valued.'
+        )
+    M = M.real
+    pauli_framability = np.max(np.sum(np.abs(M), axis=1))
 
     # 6. Extended Pauli framability
     D_ext = extended_pauli_D()
-    ext_framability = get_framability(D_ext, M.real)
+    ext_framability = get_framability(D_ext, M)
 
-    # 7. Decay rate
+    # 7. Minimal framability (optimised over Kronecker frames)
+    d_ext = D_ext.shape[1]
+    _, min_framability = minimize_framability(
+        M, d_ext=d_ext, mode='kronecker', n_restarts=2,
+        method='cobyqa', max_iter=100, maxfev=500,
+        verbose=False,
+    )
+
+    # 8. Decay rate
     dec_rate = decay_rate(L)
 
-    # 8. Minimal LPDO bond dimension (2-site partition)
+    # 9. Minimal LPDO bond dimension (2-site partition)
     #    d_site = sqrt(dim(rho)) so that rho lives on d_site^2 x d_site^2
     #    For N qubits split into 2 sites: d_site = 2^(N/2)
     d_site = int(round(np.sqrt(rho_ss.shape[0])))
@@ -114,7 +131,7 @@ def analyze_steady_state(J, gamma, gamma_p, gamma_step=0.01):
     A1_lp, A2_lp, chi_dis, _, _ = disentangle_ancilla(X_lp, d_site, maxiter=1000)
     _, _, chi_lpdo, _, _ = truncate_and_validate(rho_ss, A1_lp, A2_lp, d_site)
 
-    return rho_ss, entropy, negativity, magic, pauli_framability, ext_framability, dec_rate, chi_lpdo
+    return rho_ss, entropy, negativity, magic, pauli_framability, ext_framability, min_framability, dec_rate, chi_lpdo
 
 
 def scan_and_plot(J=1.0, gamma_step=0.1, n_pts=20):
@@ -129,6 +146,7 @@ def scan_and_plot(J=1.0, gamma_step=0.1, n_pts=20):
     magic_map = np.zeros((n_pts, n_pts))
     pauli_fra_map = np.zeros((n_pts, n_pts))
     ext_fra_map = np.zeros((n_pts, n_pts))
+    min_fra_map = np.zeros((n_pts, n_pts))
     decay_map = np.zeros((n_pts, n_pts))
     chi_map = np.zeros((n_pts, n_pts))
 
@@ -136,25 +154,27 @@ def scan_and_plot(J=1.0, gamma_step=0.1, n_pts=20):
         if ig % 10 == 0:
             print(f'  row {ig}/{n_pts} (gamma={g:.3f})')
         for igp, gp in enumerate(gamma_ps):
-            _, ent, neg, mag, pfra, efra, dr, chi = analyze_steady_state(J, g, gp, gamma_step)
+            _, ent, neg, mag, pfra, efra, mfra, dr, chi = analyze_steady_state(J, g, gp, gamma_step)
             entropy_map[ig, igp] = ent
             negativity_map[ig, igp] = neg
             magic_map[ig, igp] = mag
             pauli_fra_map[ig, igp] = pfra
             ext_fra_map[ig, igp] = efra
+            min_fra_map[ig, igp] = mfra
             decay_map[ig, igp] = dr
             chi_map[ig, igp] = chi
 
     extent = [gamma_ps[0], gamma_ps[-1], gammas[0], gammas[-1]]
 
-    fig, axes = plt.subplots(2, 4, figsize=(24, 10))
+    fig, axes = plt.subplots(2, 4, figsize=(28, 10))
     axes = axes.ravel()
 
     titles = ['Von Neumann entropy', 'Negativity', 'Magic (avg SRE)',
-              'Pauli framability', 'Extended Pauli framability', 'Decay rate',
+              'Pauli framability', 'Extended Pauli framability',
+              'Min. framability', 'Decay rate',
               r'LPDO bond dim $\chi$']
     data = [entropy_map, negativity_map, magic_map, pauli_fra_map, ext_fra_map,
-            decay_map, chi_map]
+            min_fra_map, decay_map, chi_map]
 
     for ax, d, title in zip(axes, data, titles):
         im = ax.imshow(d, origin='lower', aspect='auto', extent=extent)
@@ -175,7 +195,7 @@ def scan_and_plot(J=1.0, gamma_step=0.1, n_pts=20):
 
 
 if __name__ == '__main__':
-    rho_ss, entropy, negativity, magic, pauli_framability, ext_framability, dec_rate, chi_lpdo = analyze_steady_state(
+    rho_ss, entropy, negativity, magic, pauli_framability, ext_framability, min_framability, dec_rate, chi_lpdo = analyze_steady_state(
         J=1.0, gamma=0.5, gamma_p=0.1, gamma_step=0.01)
     print(f'--- Steady-state analysis (J=1, gamma=0.5, gamma\'=0.1) ---')
     print(f'Von Neumann entropy : {entropy:.6f}')
@@ -183,6 +203,7 @@ if __name__ == '__main__':
     print(f'Magic (avg SRE)     : {magic:.6f}')
     print(f'Pauli framability   : {pauli_framability:.6f}')
     print(f'Ext. framability    : {ext_framability:.6f}')
+    print(f'Min. framability    : {min_framability:.6f}')
     print(f'Decay rate          : {dec_rate:.6f}')
     print(f'LPDO bond dim chi   : {chi_lpdo}')
     print('rho_ss eigenvalues  :', np.sort(np.linalg.eigvalsh(rho_ss))[::-1])
