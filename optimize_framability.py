@@ -158,7 +158,8 @@ def _project_columns(D):
 
 def minimize_framability(gate, d_ext, *, mode='kronecker', n_restarts=5,
                          method='cobyqa', max_iter=200, maxfev=1000,
-                         tol=1e-6, seed=None, verbose=True):
+                         tol=1e-6, seed=None, verbose=True,
+                         extra_init_xs=None, return_x=False):
     """
     Find D of shape (pauli_string_dim, d_ext) with unit-norm columns
     that minimises get_framability(D, gate).
@@ -191,6 +192,15 @@ def minimize_framability(gate, d_ext, *, mode='kronecker', n_restarts=5,
         Random seed for reproducibility.
     verbose : bool
         Print per-restart progress.
+    extra_init_xs : list of ndarray | None
+        Additional flat parameter vectors to use as extra restart seeds,
+        appended after the standard n_restarts.  In 'kronecker' mode each
+        vector must have length n_s * d_single (same as the optimiser's
+        own parameter space, i.e. the raw x returned when return_x=True).
+    return_x : bool
+        If True, return a 3-tuple (D_opt, f_opt, x_opt) where x_opt is
+        the raw flat parameter vector corresponding to D_opt.  Default
+        False returns the usual 2-tuple (D_opt, f_opt).
 
     Returns
     -------
@@ -198,6 +208,9 @@ def minimize_framability(gate, d_ext, *, mode='kronecker', n_restarts=5,
         Optimal frame matrix (unit-norm columns).
     f_opt : float
         Minimal framability value found.
+    x_opt : ndarray  (only when return_x=True)
+        Raw flat parameter vector for D_opt (seed-compatible with
+        extra_init_xs of a subsequent call).
     """
     rng = np.random.default_rng(seed)
     n = pauli_string_dim
@@ -219,11 +232,12 @@ def minimize_framability(gate, d_ext, *, mode='kronecker', n_restarts=5,
             D = np.kron(S, S)
             return _get_framability_fast(D, gate)
 
-        return _run_restarts(
+        result = _run_restarts(
             objective_kron, n_params, d_ext, n_s, d_single,
             gate, rng, n_restarts, method, max_iter, maxfev, tol, verbose,
-            is_kron=True,
+            is_kron=True, extra_init_xs=extra_init_xs,
         )
+        return result if return_x else result[:2]
 
     # --- General mode: optimise D directly (n × d_ext) --------------------
     if mode != 'general':
@@ -235,17 +249,18 @@ def minimize_framability(gate, d_ext, *, mode='kronecker', n_restarts=5,
         D = _project_columns(params.reshape(n, d_ext))
         return _get_framability_fast(D, gate)
 
-    return _run_restarts(
+    result = _run_restarts(
         objective_gen, n_params, d_ext, n, d_ext,
         gate, rng, n_restarts, method, max_iter, maxfev, tol, verbose,
-        is_kron=False,
+        is_kron=False, extra_init_xs=extra_init_xs,
     )
+    return result if return_x else result[:2]
 
 
 def _run_restarts(objective, n_params, d_ext, n_rows, n_cols,
                   gate, rng, n_restarts, method, max_iter, maxfev, tol,
-                  verbose, *, is_kron):
-    """Shared restart loop for both modes."""
+                  verbose, *, is_kron, extra_init_xs=None):
+    """Shared restart loop for both modes.  Returns (D_opt, f_opt, x_opt)."""
 
     # --- differential evolution (no manual restarts) -----------------------
     if method == 'differential_evolution':
@@ -258,13 +273,15 @@ def _run_restarts(objective, n_params, d_ext, n_rows, n_cols,
         f_opt = _get_framability_fast(D_opt, gate)
         if verbose:
             print(f'DE finished:  f = {f_opt:.6f}  (success={res.success})')
-        return D_opt, f_opt
+        return D_opt, f_opt, res.x
 
     # --- local methods with random restarts --------------------------------
     best_val = np.inf
     best_D = None
+    best_x = None
 
-    inits = _build_inits(n_rows, n_cols, d_ext, n_restarts, rng, is_kron)
+    inits = _build_inits(n_rows, n_cols, d_ext, n_restarts, rng, is_kron,
+                         extra_init_xs=extra_init_xs)
 
     if method == 'cobyqa':
         opts = {'maxfev': maxfev}
@@ -283,6 +300,7 @@ def _run_restarts(objective, n_params, d_ext, n_rows, n_cols,
         if f_x0 < best_val:
             best_val = f_x0
             best_D = _params_to_D(x0, n_rows, n_cols, is_kron)
+            best_x = x0.copy()
 
         res = minimize(objective, x0, method=method, options=opts)
 
@@ -290,15 +308,21 @@ def _run_restarts(objective, n_params, d_ext, n_rows, n_cols,
         f_cand = _get_framability_fast(D_cand, gate)
 
         if verbose:
-            tag = 'ext-Pauli init' if i == 0 and d_ext == 36 else 'random init'
+            if i >= n_restarts:
+                tag = 'neighbor seed'
+            elif i == 0 and d_ext == 36:
+                tag = 'ext-Pauli init'
+            else:
+                tag = 'random init'
             print(f'  restart {i + 1}/{len(inits)} ({tag}):  '
                   f'f_init={f_x0:.6f}  f_opt={f_cand:.6f}  (success={res.success})')
 
         if f_cand < best_val:
             best_val = f_cand
             best_D = D_cand.copy()
+            best_x = res.x.copy()
 
-    return best_D, best_val
+    return best_D, best_val, best_x
 
 
 def _params_to_D(params, n_rows, n_cols, is_kron):
@@ -307,8 +331,14 @@ def _params_to_D(params, n_rows, n_cols, is_kron):
     return np.kron(S, S) if is_kron else S
 
 
-def _build_inits(n_rows, n_cols, d_ext, n_restarts, rng, is_kron):
-    """Build a list of initial flat parameter vectors."""
+def _build_inits(n_rows, n_cols, d_ext, n_restarts, rng, is_kron,
+                 extra_init_xs=None):
+    """Build a list of initial flat parameter vectors.
+
+    The first *n_restarts* entries are the standard seeds (extended-Pauli
+    D where compatible, then random).  Any vectors in *extra_init_xs* are
+    appended afterwards so the caller can distinguish them by index.
+    """
     inits = []
 
     # First init: extended-Pauli D (if compatible)
@@ -329,6 +359,12 @@ def _build_inits(n_rows, n_cols, d_ext, n_restarts, rng, is_kron):
     while len(inits) < n_restarts:
         M = rng.standard_normal((n_rows, n_cols))
         inits.append(_project_columns(M).ravel())
+
+    # Extra seeds from caller (e.g. a neighbor point's x_opt) — appended
+    # after the n_restarts standard seeds so they can be tagged in verbose.
+    if extra_init_xs:
+        for x in extra_init_xs:
+            inits.append(np.asarray(x, dtype=float))
 
     return inits
 
