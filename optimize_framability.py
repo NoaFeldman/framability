@@ -308,10 +308,13 @@ def _run_restarts(objective, n_params, d_ext, n_rows, n_cols,
         f_cand = _get_framability_fast(D_cand, gate)
 
         if verbose:
+            n_pauli_inits = 1 if d_ext == 36 else 0
             if i >= n_restarts:
                 tag = 'neighbor seed'
-            elif i == 0 and d_ext == 36:
+            elif d_ext == 36 and i == 0:
                 tag = 'ext-Pauli init'
+            elif i == n_pauli_inits:
+                tag = 'identity init'
             else:
                 tag = 'random init'
             print(f'  restart {i + 1}/{len(inits)} ({tag}):  '
@@ -335,9 +338,16 @@ def _build_inits(n_rows, n_cols, d_ext, n_restarts, rng, is_kron,
                  extra_init_xs=None):
     """Build a list of initial flat parameter vectors.
 
-    The first *n_restarts* entries are the standard seeds (extended-Pauli
-    D where compatible, then random).  Any vectors in *extra_init_xs* are
-    appended afterwards so the caller can distinguish them by index.
+    Fixed seeds (always included, in order):
+      1. Extended-Pauli D   — only when d_ext matches (36).
+      2. Cycling-identity D — always included.  Columns are standard basis
+         vectors cycling through indices 0..n_rows-1, so kron(S_id, S_id)
+         has every column equal to some e_i.  A feasible LP solution for
+         gate row j at cost ||gate[j,:]||_1 always exists, guaranteeing
+         framability <= pauli_framability at this starting point.
+
+    Random seeds fill slots up to *n_restarts* total.  Any vectors in
+    *extra_init_xs* are appended afterwards (e.g. a neighbor's x_opt).
     """
     inits = []
 
@@ -355,6 +365,14 @@ def _build_inits(n_rows, n_cols, d_ext, n_restarts, rng, is_kron,
             inits.append(_project_columns(S_pauli).ravel())
         else:
             inits.append(_project_columns(D_pauli).ravel())
+
+    # Second init: cycling-identity D
+    # D_id[:,j] = e_{j % n_rows}  (unit basis vector, cycling).
+    # After _project_columns every column already has norm 1.
+    D_id = np.zeros((n_rows, n_cols))
+    for j in range(n_cols):
+        D_id[j % n_rows, j] = 1.0
+    inits.append(D_id.ravel())   # already unit-norm columns, no projection needed
 
     while len(inits) < n_restarts:
         M = rng.standard_normal((n_rows, n_cols))
