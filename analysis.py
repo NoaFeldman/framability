@@ -137,6 +137,139 @@ def analyze_steady_state(J, gamma, gamma_p, gamma_step=0.01):
     return rho_ss, entropy, negativity, magic, pauli_framability, ext_framability, min_framability, dec_rate, chi_lpdo
 
 
+# ── helpers for new properties ──────────────────────────────────────────────
+
+def _nqubit_pauli_basis(N):
+    """Build the 4^N  N-qubit Pauli-string matrices (standard order)."""
+    from itertools import product as iproduct
+    from functools import reduce
+    I2 = np.eye(2, dtype=complex)
+    sx = np.array([[0, 1], [1, 0]], dtype=complex)
+    sy = np.array([[0, -1j], [1j, 0]], dtype=complex)
+    sz = np.array([[1, 0], [0, -1]], dtype=complex)
+    return [reduce(np.kron, combo) for combo in iproduct([I2, sx, sy, sz], repeat=N)]
+
+
+def _initial_iz_vector(N):
+    """
+    Normalised Pauli-basis coefficient vector whose non-zero entries
+    correspond to all Pauli strings built from I and Z only.
+
+    The resulting density matrix is |0...0><0...0|.
+    """
+    dim = 4 ** N
+    vec = np.zeros(dim)
+    for bits in range(2 ** N):
+        idx = 0
+        for k in range(N):
+            pauli_idx = 3 if (bits >> (N - 1 - k)) & 1 else 0
+            idx += pauli_idx * (4 ** (N - 1 - k))
+        vec[idx] = 1.0
+    vec /= 2 ** N
+    return vec
+
+
+def compute_steady_state(J, gamma, gamma_p, N=2):
+    """
+    Compute the steady-state density matrix and the Lindbladian.
+
+    Returns
+    -------
+    rho_ss : np.ndarray, shape (2^N, 2^N)
+    L : np.ndarray, shape (4^N, 4^N)
+    """
+    L = numeric_two_qubit_lindbladian(J=J, gamma=gamma, gamma_p=gamma_p)
+    dim = 4 ** N
+    basis = _nqubit_pauli_basis(N)
+    eigenvalues, eigenvectors = np.linalg.eig(L)
+    idx = np.argmin(np.abs(eigenvalues))
+    ss_vec = eigenvectors[:, idx].real
+    ss_vec /= ss_vec[0] * (2 ** N)
+    rho_ss = sum(ss_vec[i] * basis[i] for i in range(dim))
+    return rho_ss, L
+
+
+def compute_magnetization(rho_ss, N=2):
+    """Magnetization: Tr(rho_ss @ Z^{otimes N})."""
+    from functools import reduce
+    sz = np.array([[1, 0], [0, -1]], dtype=complex)
+    Z_N = reduce(np.kron, [sz] * N)
+    return np.trace(rho_ss @ Z_N).real
+
+
+def compute_max_bond_dim(L, rho_ss, gamma_step, N=2, max_steps=200_000):
+    """
+    Maximum LPDO bond dimension during Lindbladian time evolution
+    from the all-|0> state to the steady state.
+
+    Evolution: v(t+dt) = expm(dt*L) @ v(t) in the Pauli-string basis.
+    Stops when Bures fidelity with rho_ss reaches 0.9.
+
+    Uses the direct SVD truncation pipeline (purification -> tensorize ->
+    truncate) without the expensive disentangle step, yielding an upper
+    bound on the minimal chi at each time step.
+
+    Parameters
+    ----------
+    L : np.ndarray
+        Lindbladian superoperator in the Pauli-string basis.
+    rho_ss : np.ndarray
+        Steady-state density matrix.
+    gamma_step : float
+        Grid spacing (dt = 0.01 * gamma_step).
+    N : int
+        Number of qubits (must be even for the LPDO bipartition).
+    max_steps : int
+        Safety limit on the number of time steps.
+
+    Returns
+    -------
+    max_chi : int
+        Maximum LPDO bond dimension observed along the trajectory.
+    """
+    from lpdo import purification_sqrt, tensorize_to_lpdo, truncate_and_validate, _bures_fidelity
+
+    assert N % 2 == 0, "LPDO bipartition requires even N"
+    dim = 4 ** N
+    d_site = int(round(2 ** (N / 2)))
+    dt = 0.01 * gamma_step
+    M = expm(dt * L)
+    if np.max(np.abs(M.imag)) < 1e-12:
+        M = M.real
+
+    basis = _nqubit_pauli_basis(N)
+    basis_arr = np.array(basis)          # (dim, 2^N, 2^N)
+    v = _initial_iz_vector(N)
+    max_chi = 0
+
+    for step in range(max_steps):
+        # Reconstruct density matrix from Pauli coefficients
+        rho = np.einsum('i,ijk->jk', v, basis_arr)
+        rho = (rho + rho.conj().T) / 2  # enforce Hermiticity
+
+        # LPDO bond dimension (direct SVD, no disentangle)
+        try:
+            X_lp = purification_sqrt(rho)
+            A1, A2, chi_init = tensorize_to_lpdo(X_lp, d_site)
+            _, _, chi, _, _ = truncate_and_validate(rho, A1, A2, d_site)
+            max_chi = max(max_chi, chi)
+        except Exception:
+            pass
+
+        # Check convergence
+        fid = _bures_fidelity(rho, rho_ss)
+        if fid >= 0.9:
+            break
+
+        # Evolve
+        v_new = M @ v
+        if np.allclose(v, v_new, atol=1e-15):
+            break
+        v = v_new
+
+    return max_chi
+
+
 def scan_and_plot(J=1.0, gamma_step=0.1, n_pts=20):
     """Scan gamma and gamma' on a grid and plot colormaps of steady-state properties."""
     import matplotlib.pyplot as plt

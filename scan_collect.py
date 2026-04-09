@@ -19,7 +19,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 
 
-METRICS = [
+METRICS_BASE = [
     (0, 'Von Neumann entropy'),
     (1, 'Negativity'),
     (2, 'Magic (avg SRE)'),
@@ -28,6 +28,11 @@ METRICS = [
     (5, 'Min. framability'),
     (6, 'Decay rate'),
     (7, r'LPDO bond dim $\chi$'),
+]
+
+METRICS_EXTRA = [
+    (8, r'Max LPDO bond dim $\chi_{\max}$'),
+    (9, 'Magnetization'),
 ]
 
 
@@ -61,6 +66,21 @@ def main():
         for ig in range(n)
     ])  # shape (n, n, 8)
 
+    # Check for extra-properties files ------------------------------------
+    has_extra = all(
+        os.path.exists(os.path.join(args.out_dir, f'row_extra_{ig:04d}.npy'))
+        for ig in range(n)
+    )
+    if has_extra:
+        extra = np.stack([
+            np.load(os.path.join(args.out_dir, f'row_extra_{ig:04d}.npy'))
+            for ig in range(n)
+        ])  # shape (n, n, 2)
+        data = np.concatenate([data, extra], axis=2)  # shape (n, n, 10)
+        print(f'Merged extra properties (max bond dim, magnetization)')
+
+    metrics = METRICS_BASE + METRICS_EXTRA if has_extra else METRICS_BASE
+
     # Save full array for later inspection
     combined_path = os.path.join(args.out_dir, 'scan_full.npy')
     np.save(combined_path, data)
@@ -72,10 +92,11 @@ def main():
     gamma_ps = [gs * i for i in range(n)]
     extent   = [gamma_ps[0], gamma_ps[-1], gammas[0], gammas[-1]]
 
-    fig, axes = plt.subplots(2, 4, figsize=(28, 10))
+    ncols = 5 if has_extra else 4
+    fig, axes = plt.subplots(2, ncols, figsize=(7 * ncols, 10))
     axes = axes.ravel()
 
-    for ax, (k, title) in zip(axes, METRICS):
+    for ax, (k, title) in zip(axes, metrics):
         im = ax.imshow(data[:, :, k], origin='lower', aspect='auto',
                        extent=extent)
         ax.set_xlabel(r"$\gamma'$")
@@ -83,7 +104,7 @@ def main():
         ax.set_title(title)
         fig.colorbar(im, ax=ax)
 
-    for ax in axes[len(METRICS):]:
+    for ax in axes[len(metrics):]:
         ax.set_visible(False)
 
     fig.suptitle(f'Steady-state properties  (J = {args.J})', fontsize=14)
