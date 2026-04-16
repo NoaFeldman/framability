@@ -10,7 +10,7 @@ from scipy.linalg import expm
 
 from two_qubit_lindbladian import pauli_string_dim, numeric_two_qubit_lindbladian
 from lpdo import purification_sqrt, disentangle_ancilla, truncate_and_validate
-from framability import get_framability, extended_pauli_D
+from framability import heisenberg_framability, extended_pauli_D
 from optimize_framability import minimize_framability, DEFAULT_METHOD
 
 
@@ -46,7 +46,7 @@ def analyze_steady_state(J, gamma, gamma_p, gamma_step=0.01):
       negativity         – sum of |negative eigenvalues| of partial transpose
       magic              – weighted-average stabilizer Rényi entropy
       pauli_framability  – max row 1-norm of expm(dt*L) with dt=0.01*gamma_step
-      ext_framability    – get_framability with extended Pauli D
+      ext_framability    – heisenberg_framability with extended Pauli D
       min_framability    – minimal framability optimised over kronecker frames
       dec_rate           – spectral gap (decay rate) of the Lindbladian
       chi_lpdo           – minimal LPDO bond dimension (fidelity >= 1 - 1e-9)
@@ -110,12 +110,12 @@ def analyze_steady_state(J, gamma, gamma_p, gamma_step=0.01):
 
     # 6. Extended Pauli framability
     D_ext = extended_pauli_D()
-    ext_framability = get_framability(D_ext, M)
+    ext_framability = heisenberg_framability(D_ext, M)
 
     # 7. Minimal framability (optimised over Kronecker frames)
-    d_ext = D_ext.shape[1]
+    d_ext_single = int(round(np.sqrt(D_ext.shape[1])))
     _, min_framability = minimize_framability(
-        M, d_ext=d_ext, mode='kronecker', n_restarts=5,
+        M, d_ext_single=d_ext_single, n_restarts=5,
         method=DEFAULT_METHOD, max_iter=200, maxfev=1000,
         verbose=False,
     )
@@ -190,11 +190,51 @@ def compute_steady_state(J, gamma, gamma_p, N=2):
 
 
 def compute_magnetization(rho_ss, N=2):
-    """Magnetization: Tr(rho_ss @ Z^{otimes N})."""
+    """Magnetization in Z: sum_i Tr(rho_ss @ Z_i) for i=1..N."""
     from functools import reduce
+    I2 = np.eye(2, dtype=complex)
     sz = np.array([[1, 0], [0, -1]], dtype=complex)
-    Z_N = reduce(np.kron, [sz] * N)
-    return np.trace(rho_ss @ Z_N).real
+    mag = 0.0
+    for i in range(N):
+        ops = [sz if k == i else I2 for k in range(N)]
+        Z_i = reduce(np.kron, ops)
+        mag += np.trace(rho_ss @ Z_i).real
+    return mag
+
+
+def compute_magnetization_x(rho_ss, N=2):
+    """Magnetization in X: sum_i Tr(rho_ss @ X_i) for i=1..N."""
+    from functools import reduce
+    I2 = np.eye(2, dtype=complex)
+    sx = np.array([[0, 1], [1, 0]], dtype=complex)
+    mag = 0.0
+    for i in range(N):
+        ops = [sx if k == i else I2 for k in range(N)]
+        X_i = reduce(np.kron, ops)
+        mag += np.trace(rho_ss @ X_i).real
+    return mag
+
+
+def compute_reduced_pauli_framability(rho_ss, L, gamma_step, N=2, tol=1e-10):
+    """Pauli framability restricted to Pauli strings with non-zero steady-state coefficient.
+
+    Removes columns of expm(dt*L) corresponding to Pauli strings whose
+    coefficient in rho_ss is below `tol`, then returns the max row 1-norm
+    of the reduced matrix.
+    """
+    dim = 4 ** N
+    basis = _nqubit_pauli_basis(N)
+    # Pauli coefficients of the steady state: rho = sum_i c_i P_i
+    coeffs = np.array([np.trace(basis[i] @ rho_ss).real for i in range(dim)]) / (2 ** N)
+    keep = np.abs(coeffs) > tol
+
+    dt = 0.01 * gamma_step
+    M = expm(dt * L)
+    if np.max(np.abs(M.imag)) < 1e-12:
+        M = M.real
+
+    M_reduced = M[:, keep]
+    return float(np.max(np.sum(np.abs(M_reduced), axis=1)))
 
 
 def compute_max_bond_dim(L, rho_ss, gamma_step, N=2, max_steps=200_000):
@@ -226,8 +266,11 @@ def compute_max_bond_dim(L, rho_ss, gamma_step, N=2, max_steps=200_000):
     -------
     max_chi : int
         Maximum LPDO bond dimension observed along the trajectory.
+    max_entropy : float
+        Maximum bond entropy (Shannon entropy of squared normalised
+        singular values) observed along the trajectory.
     """
-    from lpdo import purification_sqrt, tensorize_to_lpdo, truncate_and_validate, _bures_fidelity
+    from lpdo import purification_sqrt, tensorize_to_lpdo, truncate_and_validate, _bures_fidelity, _bond_entropy
 
     assert N % 2 == 0, "LPDO bipartition requires even N"
     dim = 4 ** N
@@ -241,6 +284,7 @@ def compute_max_bond_dim(L, rho_ss, gamma_step, N=2, max_steps=200_000):
     basis_arr = np.array(basis)          # (dim, 2^N, 2^N)
     v = _initial_iz_vector(N)
     max_chi = 0
+    max_entropy = 0.0
 
     for step in range(max_steps):
         # Reconstruct density matrix from Pauli coefficients
@@ -251,8 +295,9 @@ def compute_max_bond_dim(L, rho_ss, gamma_step, N=2, max_steps=200_000):
         try:
             X_lp = purification_sqrt(rho)
             A1, A2, chi_init = tensorize_to_lpdo(X_lp, d_site)
-            _, _, chi, _, _ = truncate_and_validate(rho, A1, A2, d_site)
+            _, _, chi, _, info = truncate_and_validate(rho, A1, A2, d_site)
             max_chi = max(max_chi, chi)
+            max_entropy = max(max_entropy, _bond_entropy(info['singular_values']))
         except Exception:
             pass
 
@@ -267,7 +312,186 @@ def compute_max_bond_dim(L, rho_ss, gamma_step, N=2, max_steps=200_000):
             break
         v = v_new
 
-    return max_chi
+    # Include the steady state itself (it is the endpoint of the trajectory)
+    try:
+        X_lp = purification_sqrt(rho_ss)
+        A1, A2, chi_init = tensorize_to_lpdo(X_lp, d_site)
+        _, _, chi, _, info = truncate_and_validate(rho_ss, A1, A2, d_site)
+        max_chi = max(max_chi, chi)
+        max_entropy = max(max_entropy, _bond_entropy(info['singular_values']))
+    except Exception:
+        pass
+
+    return max_chi, max_entropy
+
+
+def compute_ss_bond_entropy(rho_ss, N=2):
+    """Bond entropy of the steady-state LPDO (direct SVD, no disentangling)."""
+    from lpdo import purification_sqrt, tensorize_to_lpdo, truncate_and_validate, _bond_entropy
+    d_site = int(round(2 ** (N / 2)))
+    X_lp = purification_sqrt(rho_ss)
+    A1, A2, _ = tensorize_to_lpdo(X_lp, d_site)
+    _, _, _, _, info = truncate_and_validate(rho_ss, A1, A2, d_site)
+    return _bond_entropy(info['singular_values'])
+
+
+def _generate_stabilizer_states(N=2):
+    """
+    Generate all N-qubit pure stabilizer state density matrices.
+
+    Each stabilizer state is the unique +1 eigenstate of a stabilizer group
+    generated by N independent, mutually commuting Hermitian Pauli operators.
+    For N qubits, the state is  rho = (I + g1 + g2 + g1*g2) / 2^N  (for N=2).
+
+    Currently supports N=1 and N=2.
+
+    Returns
+    -------
+    list of np.ndarray
+        Each element is a (2^N, 2^N) density matrix.
+    """
+    from itertools import product as iproduct
+    from functools import reduce
+
+    I2 = np.eye(2, dtype=complex)
+    sx = np.array([[0, 1], [1, 0]], dtype=complex)
+    sy = np.array([[0, -1j], [1j, 0]], dtype=complex)
+    sz = np.array([[1, 0], [0, -1]], dtype=complex)
+    paulis_1q = [I2, sx, sy, sz]
+
+    if N == 1:
+        return [(I2 + s * P) / 2
+                for P in [sx, sy, sz] for s in [+1, -1]]
+
+    if N != 2:
+        raise NotImplementedError(
+            f"Stabilizer state generation for N={N} not implemented."
+        )
+
+    dim = 2 ** N
+    eye_d = np.eye(dim, dtype=complex)
+
+    # All N-qubit tensor-product Paulis (16 for N=2)
+    paulis_nq = [reduce(np.kron, combo)
+                 for combo in iproduct(paulis_1q, repeat=N)]
+
+    # Signed non-identity Paulis: (+1, idx, matrix) and (-1, idx, matrix)
+    signed = []
+    for k in range(1, len(paulis_nq)):
+        signed.append((+1, k, paulis_nq[k]))
+        signed.append((-1, k, paulis_nq[k]))
+
+    seen = set()
+    states = []
+
+    for a in range(len(signed)):
+        s1, k1, g1 = signed[a]
+        g1s = s1 * g1
+
+        for b in range(a + 1, len(signed)):
+            s2, k2, g2 = signed[b]
+            if k1 == k2:                    # same unsigned Pauli
+                continue
+            g2s = s2 * g2
+
+            # Must commute
+            if not np.allclose(g1s @ g2s, g2s @ g1s):
+                continue
+
+            g3 = g1s @ g2s
+
+            # g3 must be Hermitian (always true for commuting Hermitians,
+            # but check as a safety net)
+            if not np.allclose(g3, g3.conj().T, atol=1e-12):
+                continue
+
+            # Stabilizer state: rho = (I + g1 + g2 + g1*g2) / 2^N
+            rho = (eye_d + g1s + g2s + g3) / dim
+
+            # Must be a valid pure state (rank 1, PSD)
+            eigs = np.linalg.eigvalsh(rho)
+            if np.min(eigs) < -1e-10:
+                continue
+            if not np.isclose(np.trace(rho @ rho).real, 1.0, atol=1e-8):
+                continue
+
+            # Deduplicate via rounded matrix bytes
+            key = (np.round(rho.real, 8).tobytes(),
+                   np.round(rho.imag, 8).tobytes())
+            if key not in seen:
+                seen.add(key)
+                states.append(rho)
+
+    return states
+
+
+# Module-level cache for the stabilizer A matrix
+_CACHED_A_MATRIX = {}
+
+
+def _stabilizer_a_matrix(N=2):
+    """
+    Build the stabilizer A matrix whose columns are Pauli-basis
+    representations of all pure stabilizer states.
+
+    A[i, j] = Tr[P_i  |stab_j><stab_j|]
+
+    Shape: (4^N, n_stabilizer_states)   e.g. (16, 60) for N=2.
+    """
+    if N in _CACHED_A_MATRIX:
+        return _CACHED_A_MATRIX[N]
+
+    basis = _nqubit_pauli_basis(N)
+    states = _generate_stabilizer_states(N)
+    dim = 4 ** N
+
+    A = np.zeros((dim, len(states)))
+    for j, rho in enumerate(states):
+        for i, P in enumerate(basis):
+            A[i, j] = np.trace(P @ rho).real
+
+    _CACHED_A_MATRIX[N] = A
+    return A
+
+
+def compute_rom(rho_ss, N=2):
+    """
+    Robustness of Magic (RoM) for a density matrix.
+
+    Solves  min ||x||_1  subject to  A x = b
+    where A is the stabilizer-state matrix and b_i = Tr[P_i rho_ss].
+
+    Reference
+    ---------
+    Hamaguchi, Hamada & Yoshioka, "Handbook for Quantifying Robustness
+    of Magic", Quantum 8, 1461 (2024).  arXiv:2311.01362
+
+    Parameters
+    ----------
+    rho_ss : np.ndarray, shape (2^N, 2^N)
+    N : int
+
+    Returns
+    -------
+    rom : float
+    """
+    from scipy.optimize import linprog
+
+    basis = _nqubit_pauli_basis(N)
+    b = np.array([np.trace(P @ rho_ss).real for P in basis])
+
+    A = _stabilizer_a_matrix(N)
+    n_stab = A.shape[1]
+
+    # LP reformulation: min 1^T u  s.t. [A, -A] u = b,  u >= 0
+    c = np.ones(2 * n_stab)
+    A_eq = np.hstack([A, -A])
+    res = linprog(c, A_eq=A_eq, b_eq=b, bounds=(0, None), method='highs')
+
+    if not res.success:
+        raise RuntimeError(f"RoM LP failed: {res.message}")
+
+    return res.fun
 
 
 def scan_and_plot(J=1.0, gamma_step=0.1, n_pts=20):

@@ -20,9 +20,9 @@
 set -euo pipefail
 
 # ── defaults ─────────────────────────────────────────────────
-N_PTS=20
+N_PTS=41
 J=1.0
-GAMMA_STEP=0.1
+GAMMA_STEP=0.2
 OUT_DIR=results
 MAX_CONCURRENT=50   # max simultaneously running array tasks
 REL_TOL=0.05        # outlier relative-gap threshold for refine step

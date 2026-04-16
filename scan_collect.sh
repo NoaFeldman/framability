@@ -18,9 +18,9 @@
 #SBATCH --error=logs/collect_%j.err
 
 # ── read scan parameters (with defaults) ─────────────────────
-N_PTS=${N_PTS:-20}
+N_PTS=${N_PTS:-41}
 J=${J:-1.0}
-GAMMA_STEP=${GAMMA_STEP:-0.1}
+GAMMA_STEP=${GAMMA_STEP:-0.2}
 OUT_DIR=${OUT_DIR:-results}
 
 # ── activate Python environment ───────────────────────────────

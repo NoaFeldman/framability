@@ -1,14 +1,16 @@
 #!/bin/bash
 # ============================================================
 #  SLURM job-array script: extra properties (max bond dim,
-#  magnetization).  One task per gamma row.
+#  magnetization).  One task per (gamma, gamma') grid POINT.
+#
+#  task_id = ig * N_PTS + igp   (400 tasks for a 20x20 grid)
 #
 #  Submit via submit_scan_extra.sh (which sets --array upper
 #  bound and exports N_PTS / J / GAMMA_STEP / OUT_DIR / N_QUBITS).
 #
 #  Direct submission example:
 #    export N_PTS=20 J=1.0 GAMMA_STEP=0.1 OUT_DIR=results N_QUBITS=2
-#    sbatch --array=0-19 scan_array_extra.sh
+#    sbatch --array=0-399 scan_array_extra.sh
 # ============================================================
 
 #SBATCH --job-name=fra_extra
@@ -20,9 +22,9 @@
 #SBATCH --error=logs/extra_%A_%a.err
 
 # ── read scan parameters (with defaults) ─────────────────────
-N_PTS=${N_PTS:-20}
+N_PTS=${N_PTS:-41}
 J=${J:-1.0}
-GAMMA_STEP=${GAMMA_STEP:-0.1}
+GAMMA_STEP=${GAMMA_STEP:-0.2}
 OUT_DIR=${OUT_DIR:-results}
 N_QUBITS=${N_QUBITS:-2}
 

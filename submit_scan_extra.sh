@@ -16,9 +16,9 @@
 set -euo pipefail
 
 # ── defaults ─────────────────────────────────────────────────
-N_PTS=20
+N_PTS=41
 J=1.0
-GAMMA_STEP=0.1
+GAMMA_STEP=0.2
 OUT_DIR=results
 MAX_CONCURRENT=50
 N_QUBITS=2
@@ -38,7 +38,7 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-ARRAY_END=$(( N_PTS - 1 ))
+ARRAY_END=$(( N_PTS * N_PTS - 1 ))
 
 echo "========================================================"
 echo "  Extra properties scan (max bond dim + magnetization)"
