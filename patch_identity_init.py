@@ -47,7 +47,7 @@ def main():
     n         = args.n_pts
     gs        = args.gamma_step
     out_dir   = args.out_dir
-    d_ext     = extended_pauli_D().shape[1]   # 36
+    d_ext_single = int(round(np.sqrt(extended_pauli_D().shape[1])))   # 6
 
     # Load combined array
     combined = os.path.join(out_dir, 'scan_full.npy')
@@ -74,7 +74,7 @@ def main():
         # minimize_framability now always seeds with the cycling-identity
         # init (index 1, after ext-Pauli), so no extra_init_xs needed.
         _, f_new = minimize_framability(
-            gate, d_ext=d_ext, mode='kronecker',
+            gate, d_ext_single=d_ext_single,
             n_restarts=args.n_restarts, method=DEFAULT_METHOD,
             maxfev=args.maxfev, verbose=False,
         )

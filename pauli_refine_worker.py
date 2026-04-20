@@ -6,7 +6,7 @@ starting point.
 Background
 ----------
 The Pauli framability of a gate M is the max-row 1-norm of M, equal to
-get_framability(D, M) when D = I_n.  In Kronecker mode (D = kron(S, S)),
+heisenberg_framability(D, M) when D = I_n.  In Kronecker mode (D = kron(S, S)),
 D = I_16 is represented as kron(S_id, S_id) where S_id is the
 "cycling-identity" matrix (shape n_s × d_single, n_s = qubit_d**2 = 4):
 
@@ -16,7 +16,7 @@ kron(S_id, S_id) contains all 16 standard-basis vectors as distinct
 columns (covering I_16) plus (d_ext - 16) duplicate columns; duplicate
 columns do not affect the L1 minimisation, so:
 
-    get_framability(kron(S_id, S_id), M) == pauli_framability(M)
+    heisenberg_framability(kron(S_id, S_id), M) == pauli_framability(M)
 
 Seeding the optimiser at S_id therefore starts at exactly the Pauli
 baseline and gradient descent can only improve from there.
@@ -66,27 +66,20 @@ def _make_gate(J, gamma, gamma_p, gamma_step):
     return expm(dt * L).real
 
 
-def _pauli_init_x(d_ext):
+def _pauli_init_x(d_ext_single):
     """
-    Flat parameter vector for the Pauli / cycling-identity starting point
-    in *kronecker* mode.
+    Flat parameter vector for the cycling-identity starting point.
 
-    Constructs S_id of shape (n_s, d_single), n_s = qubit_d**2,
-    d_single = sqrt(d_ext), with S_id[:, j] = e_{j % n_s}.
-    Returns S_id.ravel()  (length n_s * d_single).
+    Constructs S_id of shape (n_s, d_ext_single), n_s = qubit_d**2,
+    with S_id[:, j] = e_{j % n_s}.  Returns S_id.ravel()
+    (length n_s * d_ext_single).
 
-    kron(S_id, S_id) has all 16 standard-basis vectors as columns, so
-    get_framability(kron(S_id, S_id), gate) == pauli_framability(gate).
+    kron_n(S_id) has all standard-basis vectors as columns, so
+    heisenberg_framability(kron_n(S_id), gate) == pauli_framability(gate).
     """
-    d_single = int(round(d_ext ** 0.5))
-    if d_single * d_single != d_ext:
-        raise ValueError(
-            f'd_ext={d_ext} is not a perfect square; '
-            'cannot use kronecker mode.'
-        )
     n_s = qubit_d ** 2   # 4 for two qubits
-    S_id = np.zeros((n_s, d_single))
-    for j in range(d_single):
+    S_id = np.zeros((n_s, d_ext_single))
+    for j in range(d_ext_single):
         S_id[j % n_s, j] = 1.0
     return S_id.ravel()
 
@@ -132,8 +125,8 @@ def main():
 
     gamma   = args.gamma_step * ig
     D_ext   = extended_pauli_D()
-    d_ext   = D_ext.shape[1]              # 36
-    x_pauli = _pauli_init_x(d_ext)
+    d_ext_single = int(round(np.sqrt(D_ext.shape[1])))   # 6
+    x_pauli = _pauli_init_x(d_ext_single)
 
     print(f'[task {ig}] gamma={gamma:.4f}  scanning {args.n_pts} gamma\' values '
           f'for min_fra > pauli_fra', flush=True)
@@ -159,8 +152,7 @@ def main():
 
         _, new_min_fra = minimize_framability(
             gate,
-            d_ext         = d_ext,
-            mode          = 'kronecker',
+            d_ext_single  = d_ext_single,
             n_restarts    = args.n_restarts,
             method        = DEFAULT_METHOD,
             max_iter      = args.max_iter,

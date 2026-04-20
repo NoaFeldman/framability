@@ -3,6 +3,7 @@ Framability measures: L1-norm minimisation and extended Pauli basis.
 """
 
 import numpy as np
+import scipy.linalg
 from scipy.optimize import linprog
 from scipy.optimize._linprog_highs import _linprog_highs
 from scipy.optimize._linprog_util import _LPProblem, _clean_inputs

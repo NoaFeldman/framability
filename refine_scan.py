@@ -35,7 +35,7 @@ import numpy as np
 from scipy.linalg import expm
 
 from two_qubit_lindbladian import numeric_two_qubit_lindbladian
-from framability import extended_pauli_D, get_framability
+from framability import extended_pauli_D, heisenberg_framability
 from optimize_framability import minimize_framability, DEFAULT_METHOD
 
 # Column indices in row .npy files (must match scan_worker.py)
@@ -109,7 +109,7 @@ def refine(n_pts=20, J=1.0, gamma_step=0.1, out_dir='results',
     """
     Iteratively refine outlier data points using neighbor-seeded optimization.
     """
-    d_ext = extended_pauli_D().shape[1]   # 36
+    d_ext_single = int(round(np.sqrt(extended_pauli_D().shape[1])))  # 6
 
     print(f'Loading data from {out_dir}/ ...')
     data = _load_data(out_dir, n_pts)   # (n_pts, n_pts, 8)
@@ -141,14 +141,14 @@ def refine(n_pts=20, J=1.0, gamma_step=0.1, out_dir='results',
 
             # Step 1: get the neighbor's locally-optimal parameter vector
             _, _, x_nb = minimize_framability(
-                gate_neighbor, d_ext=d_ext, mode='kronecker',
+                gate_neighbor, d_ext_single=d_ext_single,
                 n_restarts=1, method=DEFAULT_METHOD,
                 maxfev=maxfev, verbose=False, return_x=True,
             )
 
             # Step 2: re-optimise the outlier, seeded with the neighbor's x
             _, f_refined, _ = minimize_framability(
-                gate_outlier, d_ext=d_ext, mode='kronecker',
+                gate_outlier, d_ext_single=d_ext_single,
                 n_restarts=n_restarts, method=DEFAULT_METHOD,
                 maxfev=maxfev, verbose=False,
                 extra_init_xs=[x_nb],
