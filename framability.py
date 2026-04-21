@@ -338,14 +338,147 @@ def dyadic_stabilizer_framability(gate, n_qubits=2):
     return np.max(one_norms)
 
 
-def product_state_framability(chi, gate):
+def _all_stabilizer_D(n_qubits=2):
     """
-    Schrödinger framability of `gate` w.r.t. a random product-state frame.
+    (4^n_qubits) x n_stabilizer real matrix whose j-th column is the
+    Pauli-basis representation of the j-th pure n-qubit stabilizer state:
 
-    Generates `chi` random single-qubit pure states by drawing a Haar-random
-    unitary u ~ Haar(2) and setting
+        D[i, j] = Tr(P_i  |stab_j><stab_j|)
 
-        rho_i = u @ |0><0| @ u†
+    where P_i ranges over all 4^n_qubits tensor-product Pauli strings
+    {I, X, Y, Z}^{n}.
+
+    For n_qubits=2 the result has shape (16, 60).
+    Raises NotImplementedError for n_qubits != 2.
+    """
+    if n_qubits != 2:
+        raise NotImplementedError(
+            f'Full stabilizer D matrix for n_qubits={n_qubits} is not '
+            f'implemented. Only n_qubits=2 is supported.'
+        )
+
+    from itertools import product as iproduct
+    from functools import reduce
+
+    I2 = np.eye(2, dtype=complex)
+    sx = np.array([[0,  1 ], [1,  0 ]], dtype=complex)
+    sy = np.array([[0, -1j], [1j,  0]], dtype=complex)
+    sz = np.array([[1,  0 ], [0, -1 ]], dtype=complex)
+    paulis_1q = [I2, sx, sy, sz]
+
+    dim = 2 ** n_qubits        # 4 for n_qubits=2
+    eye_d = np.eye(dim, dtype=complex)
+    pauli_dim = 4 ** n_qubits  # 16 for n_qubits=2
+
+    paulis_nq = [reduce(np.kron, combo)
+                 for combo in iproduct(paulis_1q, repeat=n_qubits)]
+
+    # Signed non-identity n-qubit Paulis
+    signed = []
+    for k in range(1, pauli_dim):
+        signed.append((+1, k, paulis_nq[k]))
+        signed.append((-1, k, paulis_nq[k]))
+
+    seen = set()
+    states = []
+
+    for a in range(len(signed)):
+        s1, k1, g1 = signed[a]
+        g1s = s1 * g1
+
+        for b in range(a + 1, len(signed)):
+            s2, k2, g2 = signed[b]
+            if k1 == k2:                    # same unsigned Pauli
+                continue
+            g2s = s2 * g2
+
+            if not np.allclose(g1s @ g2s, g2s @ g1s):
+                continue
+
+            g3 = g1s @ g2s
+
+            if not np.allclose(g3, g3.conj().T, atol=1e-12):
+                continue
+
+            rho = (eye_d + g1s + g2s + g3) / dim
+
+            eigs = np.linalg.eigvalsh(rho)
+            if np.min(eigs) < -1e-10:
+                continue
+            if not np.isclose(np.trace(rho @ rho).real, 1.0, atol=1e-8):
+                continue
+
+            key = (np.round(rho.real, 8).tobytes(),
+                   np.round(rho.imag, 8).tobytes())
+            if key not in seen:
+                seen.add(key)
+                states.append(rho)
+
+    n_states = len(states)   # 60 for n_qubits=2
+    D = np.zeros((pauli_dim, n_states), dtype=float)
+    for j, rho in enumerate(states):
+        for i, P in enumerate(paulis_nq):
+            D[i, j] = np.trace(P @ rho).real
+
+    return D
+
+
+def projector_stabilizer_framability(gate, n_qubits=2):
+    """
+    Schrödinger framability of `gate` w.r.t. the full n-qubit stabilizer
+    projector frame.
+
+    Frame elements: |psi><psi|, where psi ranges over all n-qubit pure
+    stabilizer states.  For n_qubits=2 there are 60 such states, giving
+    a D matrix of shape (16, 60).  Raises NotImplementedError for
+    n_qubits != 2.
+
+    Parameters
+    ----------
+    gate : np.ndarray, shape (pauli_string_dim, pauli_string_dim)
+        Real Lindbladian propagator in the Pauli-string basis.
+    n_qubits : int
+        Number of qubits (default 2).
+
+    Returns
+    -------
+    float
+        Maximum optimal 1-norm over all 60 frame columns.
+    """
+    D = _all_stabilizer_D(n_qubits)   # (16, 60) for n_qubits=2
+
+    if np.max(np.abs(gate.imag)) > 1e-12:
+        raise ValueError(
+            'The gate has a non-negligible imaginary part. '
+            'The L1-norm minimisation requires the gate to be real.'
+        )
+    gate = np.asarray(gate).real
+
+    d_ext = D.shape[1]
+    B = gate @ D
+
+    c_primal = np.ones(2 * d_ext)
+    A_eq_csc = csc_matrix(np.hstack([D, -D]))
+    bounds   = [(0, None)] * (2 * d_ext)
+
+    lp_template = _LPProblem(
+        c_primal, None, None, A_eq_csc, B[:, 0].copy(), bounds, None
+    )
+    lp_clean = _clean_inputs(lp_template)
+
+    one_norms = np.empty(d_ext, dtype=float)
+    for j in range(d_ext):
+        lp_j = lp_clean._replace(b_eq=B[:, j])
+        res  = _linprog_highs(lp_j, solver=None, presolve=False)
+        one_norms[j] = res['fun'] if res['status'] == 0 else np.inf
+
+    return np.max(one_norms)
+
+
+def make_product_state_D(chi):
+    """
+    Build a two-qubit product-state frame matrix (shape 16 × chi²) from `chi`
+    independent Haar-random single-qubit pure states.
 
     The single-qubit frame matrix D_1 (shape 4 × chi) has columns equal to
     the Pauli-basis representation of each state:
@@ -353,23 +486,16 @@ def product_state_framability(chi, gate):
         D_1[a, i] = Tr(σ_a  rho_i) / 2,   σ_a ∈ {I, X, Y, Z}
 
     consistent with the convention used by _single_qubit_dyadic_D.
-    For the two-qubit system the product-state frame matrix is
-
-        D = kron(D_1, D_1),   shape (16, chi²)
-
-    and the framability is computed via schroedinger_framability(D, gate).
+    The two-qubit frame matrix is D = kron(D_1, D_1), shape (16, chi²).
 
     Parameters
     ----------
     chi : int
         Number of random single-qubit states to draw.
-    gate : np.ndarray, shape (16, 16)
-        Real Lindbladian propagator in the two-qubit Pauli-string basis.
 
     Returns
     -------
-    float
-        Schrödinger framability of `gate` w.r.t. the random product-state frame.
+    D : np.ndarray, shape (16, chi²), dtype float
     """
     paulis = [
         np.eye(2, dtype=complex),
@@ -386,8 +512,35 @@ def product_state_framability(chi, gate):
         for a, sigma in enumerate(paulis):
             D_1[a, i] = (np.trace(sigma @ rho) / 2).real
 
-    D = np.kron(D_1, D_1)
-    return schroedinger_framability(D, gate)
+    return np.kron(D_1, D_1)
+
+
+def product_state_framability(chi, gate, D=None):
+    """
+    Heisenberg framability of `gate` w.r.t. a product-state frame.
+
+    Uses the Heisenberg picture: for each column v of gate.T @ D, find the
+    minimum-1-norm vector u such that D @ u = v.
+
+    Parameters
+    ----------
+    chi : int
+        Number of random single-qubit states (used only when D is None).
+    gate : np.ndarray, shape (16, 16)
+        Real Lindbladian propagator in the two-qubit Pauli-string basis.
+    D : np.ndarray, shape (16, chi²), optional
+        Pre-built frame matrix.  If None, a fresh random D is generated via
+        make_product_state_D(chi).  Pass a fixed D to reuse the same random
+        states across all data points.
+
+    Returns
+    -------
+    float
+        Heisenberg framability of `gate` w.r.t. the product-state frame.
+    """
+    if D is None:
+        D = make_product_state_D(chi)
+    return heisenberg_framability(D, gate)
 
 
 """A Random matrix distributed with Haar measure"""

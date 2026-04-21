@@ -169,6 +169,27 @@ def _initial_iz_vector(N):
     return vec
 
 
+def _initial_yy_state_vector(N):
+    """
+    Normalised Pauli-basis coefficient vector for the state
+    (|+Y><+Y|)^{⊗N} = ((I + Y)/2)^{⊗N}.
+
+    Non-zero entries correspond to all Pauli strings built from I and Y only,
+    each with coefficient 1/2^N.  For N=2 the state is
+    (II + IY + YI + YY) / 4.
+    """
+    dim = 4 ** N
+    vec = np.zeros(dim)
+    for bits in range(2 ** N):
+        idx = 0
+        for k in range(N):
+            pauli_idx = 2 if (bits >> (N - 1 - k)) & 1 else 0  # Y=2, I=0
+            idx += pauli_idx * (4 ** (N - 1 - k))
+        vec[idx] = 1.0
+    vec /= 2 ** N
+    return vec
+
+
 def compute_steady_state(J, gamma, gamma_p, N=2):
     """
     Compute the steady-state density matrix and the Lindbladian.
@@ -282,7 +303,7 @@ def compute_max_bond_dim(L, rho_ss, gamma_step, N=2, max_steps=200_000):
 
     basis = _nqubit_pauli_basis(N)
     basis_arr = np.array(basis)          # (dim, 2^N, 2^N)
-    v = _initial_iz_vector(N)
+    v = _initial_yy_state_vector(N)
     max_chi = 0
     max_entropy = 0.0
 

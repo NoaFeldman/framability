@@ -8,13 +8,6 @@ Problem
     s.t.  D = kron^n_qubits(S)         (Kronecker structure)
           ||S[:, j]||_2 = 1   for every column j  (unit-norm columns)
 
-Why not a linear programme?
----------------------------
-D enters the inner LPs both as the *constraint matrix* and through the
-*right-hand side*  Y = gate^T D.  This makes the overall problem a
-bi-level, non-convex programme that cannot be cast as a single LP or SDP.
-We resort to derivative-free optimisation (Powell / Nelder-Mead /
-differential evolution) with random restarts.
 
 Structure
 ---------

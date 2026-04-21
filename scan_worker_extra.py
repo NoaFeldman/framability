@@ -8,10 +8,13 @@ Each SLURM array task processes ONE (gamma, gamma') grid point:
 Result saved to:
     <out_dir>/point_extra_<ig:04d>_<igp:04d>.npy   shape (4,)
 
-    [0]  ss_bond_entropy  Bond entropy of the steady-state LPDO
-    [1]  mag_x            sum_i Tr(rho_ss @ X_i)
-    [2]  stabilizer_fra   Schrödinger framability w.r.t. the dyadic stabilizer frame
-    [3]  product_fra      Schrödinger framability w.r.t. a random product-state frame
+    [0]  ss_bond_entropy     Bond entropy of the steady-state LPDO
+    [1]  mag_x               sum_i Tr(rho_ss @ X_i)
+    [2]  stab_dyadic_fra     Schrödinger framability w.r.t. the dyadic stabilizer frame
+    [3]  projector_stab_fra  Schrödinger framability w.r.t. the projector stabilizer frame
+    [4]  product_fra_heis    Heisenberg framability w.r.t. a fixed random product-state frame
+    [5]  product_fra_schro   Schrödinger framability w.r.t. the same fixed product-state frame
+    [6]  max_bond_entropy    Maximum LPDO bond entropy during time evolution to steady state
 
 Total tasks to submit: n_pts * n_pts  (e.g. 1681 for a 41x41 grid).
 
@@ -29,10 +32,18 @@ import numpy as np
 from scipy.linalg import expm
 
 from analysis import (compute_steady_state, compute_magnetization_x,
-                      compute_ss_bond_entropy)
-from framability import dyadic_stabilizer_framability, product_state_framability
+                      compute_ss_bond_entropy, compute_max_bond_dim)
+from framability import (dyadic_stabilizer_framability,
+                         projector_stabilizer_framability,
+                         make_product_state_D,
+                         heisenberg_framability,
+                         schroedinger_framability)
 
-PRODUCT_CHI = 6   # number of random single-qubit states for product-state frame
+PRODUCT_CHI = 30   # number of random single-qubit states for product-state frame
+# Build the product-state frame matrix once so all grid points share the same
+# random states (fixed frame across the entire scan).
+np.random.seed(42)
+PRODUCT_D = make_product_state_D(PRODUCT_CHI)
 
 
 def main():
@@ -82,13 +93,20 @@ def main():
     dt   = 0.01 * args.gamma_step
     gate = expm(dt * L).real
 
-    stab_fra    = dyadic_stabilizer_framability(gate, n_qubits=N_qubits)
-    product_fra = product_state_framability(PRODUCT_CHI, gate)
+    stab_dyadic_fra   = dyadic_stabilizer_framability(gate, n_qubits=N_qubits)
+    projector_fra     = projector_stabilizer_framability(gate, n_qubits=N_qubits)
+    product_fra_heis  = heisenberg_framability(PRODUCT_D, gate)
+    product_fra_schro = schroedinger_framability(PRODUCT_D, gate)
+    _, max_bond_entropy = compute_max_bond_dim(L, rho_ss, args.gamma_step, N=N_qubits)
 
     out_path = os.path.join(args.out_dir, f'point_extra_{ig:04d}_{igp:04d}.npy')
-    np.save(out_path, np.array([ss_ent, mag_x, stab_fra, product_fra]))
+    np.save(out_path, np.array([ss_ent, mag_x, stab_dyadic_fra, projector_fra,
+                                product_fra_heis, product_fra_schro, max_bond_entropy]))
     print(f'[task {tid}] ss_ent={ss_ent:.6f}  mag_x={mag_x:.6f}  '
-          f'stab_fra={stab_fra:.6f}  product_fra={product_fra:.6f}  -> {out_path}',
+          f'stab_dyadic={stab_dyadic_fra:.6f}  projector={projector_fra:.6f}  '
+          f'product_heis={product_fra_heis:.6f}  product_schro={product_fra_schro:.6f}  '
+          f'max_bond_ent={max_bond_entropy:.6f}'
+          f'  -> {out_path}',
           flush=True)
 
 
