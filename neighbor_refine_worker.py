@@ -109,7 +109,7 @@ def main():
           f'best_nb=({best_ni},{best_nj}) {best_nb_val:.6f}  → refining ...',
           flush=True)
 
-    d_ext = extended_pauli_D().shape[1]  # 36
+    d_ext_single = int(round(np.sqrt(extended_pauli_D().shape[1])))  # 6
     gamma_step = args.gamma_step
 
     # Step 1: get the neighbor's locally-optimal parameter vector
@@ -117,7 +117,7 @@ def main():
     gamma_p_nb = gamma_step * best_nj
     gate_nb = _make_gate(args.J, gamma_nb, gamma_p_nb, gamma_step)
     _, _, x_nb = minimize_framability(
-        gate_nb, d_ext=d_ext, mode='kronecker',
+        gate_nb, d_ext_single=d_ext_single,
         n_restarts=1, method=DEFAULT_METHOD,
         maxfev=args.maxfev, verbose=False, return_x=True,
     )
@@ -127,7 +127,7 @@ def main():
     gamma_p = gamma_step * igp
     gate_self = _make_gate(args.J, gamma, gamma_p, gamma_step)
     _, f_refined, _ = minimize_framability(
-        gate_self, d_ext=d_ext, mode='kronecker',
+        gate_self, d_ext_single=d_ext_single,
         n_restarts=args.n_restarts, method=DEFAULT_METHOD,
         maxfev=args.maxfev, verbose=False,
         extra_init_xs=[x_nb], return_x=True,
