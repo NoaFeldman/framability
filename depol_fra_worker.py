@@ -9,10 +9,10 @@ Gates:
 
 task_id = gate_idx * N_P + p_idx   (total = 3 × 5 = 15 tasks)
 
-Depolarising convention (one qubit):
-    Λ_p(ρ) = (1-p) ρ + p Tr(ρ)/2 · I
-  → traceless Paulis are suppressed by (1-p), identity unchanged.
-  For two qubits the channel is Λ_p ⊗ Λ_p applied after the gate.
+Depolarising convention (one qubit, matching paper Eq. 38):
+    N_p(ρ) = (1-3p) ρ + p (X ρ X + Y ρ Y + Z ρ Z)
+  → traceless Paulis are suppressed by (1-4p), identity unchanged.
+  For two qubits the channel is N_p ⊗ N_p applied after the gate.
 
 Output
 ------
@@ -97,22 +97,22 @@ def _superop_2q(U):
 
 
 def _depol_1q(p):
-    """4×4 superoperator for single-qubit depolarising channel Λ_p.
+    """4×4 superoperator for single-qubit depolarising channel N_p (paper Eq. 38).
 
-    Λ_p(ρ) = (1-p)ρ + p Tr(ρ)/2 · I
-    In the Pauli basis: identity component preserved, traceless Paulis ×(1-p).
+    N_p(ρ) = (1-3p)ρ + p(XρX + YρY + ZρZ)
+    In the Pauli basis: identity component preserved, traceless Paulis ×(1-4p).
     """
-    return np.diag([1.0, 1.0 - p, 1.0 - p, 1.0 - p])
+    return np.diag([1.0, 1.0 - 4*p, 1.0 - 4*p, 1.0 - 4*p])
 
 
 def _depol_2q(p):
-    """16×16 superoperator for Λ_p ⊗ Λ_p on two qubits.
+    """16×16 superoperator for N_p ⊗ N_p on two qubits (paper Eq. 38).
 
-    Basis element (σ_a ⊗ σ_b) at index 4a+b is suppressed by (1-p)^k where
+    Basis element (σ_a ⊗ σ_b) at index 4a+b is suppressed by (1-4p)^k where
     k = #{a≠0} + #{b≠0} is the number of non-trivial single-qubit factors.
     """
     diag = np.array(
-        [(1.0 - p) ** ((a != 0) + (b != 0))
+        [(1.0 - 4*p) ** ((a != 0) + (b != 0))
          for a in range(4) for b in range(4)],
         dtype=float,
     )

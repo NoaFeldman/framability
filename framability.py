@@ -517,10 +517,11 @@ def make_product_state_D(chi):
 
 def product_state_framability(chi, gate, D=None):
     """
-    Heisenberg framability of `gate` w.r.t. a product-state frame.
+    Schrödinger framability of `gate` w.r.t. a product-state frame.
 
-    Uses the Heisenberg picture: for each column v of gate.T @ D, find the
-    minimum-1-norm vector u such that D @ u = v.
+    For each frame column d_j, solves min ||v||_1 s.t. D v = gate @ d_j
+    and returns the maximum over all columns (matching paper Section IV.2,
+    Eq. 45-46).
 
     Parameters
     ----------
@@ -536,11 +537,11 @@ def product_state_framability(chi, gate, D=None):
     Returns
     -------
     float
-        Heisenberg framability of `gate` w.r.t. the product-state frame.
+        Schrödinger framability of `gate` w.r.t. the product-state frame.
     """
     if D is None:
         D = make_product_state_D(chi)
-    return heisenberg_framability(D, gate)
+    return schroedinger_framability(D, gate)
 
 
 """A Random matrix distributed with Haar measure"""

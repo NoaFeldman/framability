@@ -7,13 +7,15 @@
 #  2. Submits a collect/plot job that runs after all tasks finish.
 #
 #  Usage:
-#    bash submit_depol_fra.sh [--out_dir DIR] [--max_concurrent C]
-#                             [--after_job JOB_ID]
+#    bash submit_depol_fra.sh
+#    bash submit_depol_fra.sh --out_dir results_depol
+#    bash submit_depol_fra.sh --out_dir results_depol --max_concurrent 10
+#    bash submit_depol_fra.sh --out_dir results_depol --after_job 123456
 #
-#  Options:
+#  Options (all optional):
 #    --out_dir        Output directory        (default: results_depol)
 #    --max_concurrent Max simultaneous tasks  (default: 15)
-#    --after_job      Start after this job ID (optional)
+#    --after_job      Start after this SLURM job ID completes
 # ============================================================
 
 set -euo pipefail
