@@ -37,8 +37,8 @@ from framability import extended_pauli_D
 from optimize_framability import minimize_framability, DEFAULT_METHOD
 
 # Column indices in scan_full.npy (must match scan_worker.py / scan_collect.py)
-COL_EXT_FRA = 4
-COL_MIN_FRA = 5
+# Row files have 5 columns: 0=entropy, 1=negativity, 2=pauli_fra, 3=min_fra, 4=dec_rate
+COL_MIN_FRA = 3
 
 NEIGHBORS = [(-1, 0), (1, 0), (0, -1), (0, 1)]
 
@@ -83,7 +83,6 @@ def main():
         sys.exit(1)
     data = np.load(scan_path)
     min_fra = data[:, :, COL_MIN_FRA]
-    ext_fra = data[:, :, COL_EXT_FRA]
 
     my_val = min_fra[ig, igp]
 
@@ -132,9 +131,6 @@ def main():
         maxfev=args.maxfev, verbose=False,
         extra_init_xs=[x_nb], return_x=True,
     )
-
-    # Safety clamp: cannot exceed extended-Pauli framability
-    f_refined = min(f_refined, ext_fra[ig, igp])
 
     if f_refined < my_val - 1e-9:
         np.save(out_path, f_refined)

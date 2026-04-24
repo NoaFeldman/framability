@@ -19,7 +19,8 @@ import subprocess
 
 import numpy as np
 
-COL_MIN_FRA = 5
+# Row files have 5 columns: 0=entropy, 1=negativity, 2=pauli_fra, 3=min_fra, 4=dec_rate
+COL_MIN_FRA = 3
 
 
 def main():
