@@ -45,6 +45,7 @@ import matplotlib.pyplot as plt
 #   13  product_fra_schro_chi10 (results/product_fra_schro_chi010.npy)
 #   14  product_fra_schro_chi20 (results/product_fra_schro_chi020.npy)
 #   15  product_fra_schro_chi40 (results/product_fra_schro_chi040.npy)
+#   16  product_fra_schro_chi30 (results/product_fra_schro_chi030.npy)
 TOP_ROW = [
     (0, 'Von Neumann entropy'),
     (1, 'Negativity'),
@@ -55,7 +56,7 @@ TOP_ROW = [
     (12, 'Operator bond entropy'),
 ]
 # Column indices that share a common colour scale
-SHARED_CLIM_GROUPS = [(5, 11), (10, 13, 14, 15)]  # bond entropies | chi groups
+SHARED_CLIM_GROUPS = [(5, 11), (13, 14, 15, 16)]  # bond entropies | chi groups
 BOTTOM_ROW = [
     (2, 'Pauli framability'),
     (3, 'Optimised framability'),
@@ -63,7 +64,7 @@ BOTTOM_ROW = [
     (8, 'Projector stabilizer framability'),
     (13, r'Product-state fra. Schrödinger $\chi=10$'),
     (14, r'Product-state fra. Schrödinger $\chi=20$'),
-    (10, r'Product-state fra. Schrödinger $\chi=30$'),
+    (16, r'Product-state fra. Schrödinger $\chi=30$'),
     (15, r'Product-state fra. Schrödinger $\chi=40$'),
 ]
 
@@ -129,6 +130,7 @@ def main():
         ('product_fra_schro_chi10', 'product_fra_schro_chi010.npy'),
         ('product_fra_schro_chi20', 'product_fra_schro_chi020.npy'),
         ('product_fra_schro_chi40', 'product_fra_schro_chi040.npy'),
+        ('product_fra_schro_chi30', 'product_fra_schro_chi030.npy'),
     ]
     for key, fname in _ext_files:
         fpath = os.path.join(args.out_dir, fname)
