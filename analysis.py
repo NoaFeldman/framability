@@ -258,13 +258,14 @@ def compute_reduced_pauli_framability(rho_ss, L, gamma_step, N=2, tol=1e-10):
     return float(np.max(np.sum(np.abs(M_reduced), axis=1)))
 
 
-def compute_max_bond_dim(L, rho_ss, gamma_step, N=2, max_steps=200_000):
+def compute_max_bond_dim(L, rho_ss, gamma_step, N=2, max_steps=200_000,
+                         fidelity_threshold=0.9):
     """
     Maximum LPDO bond dimension during Lindbladian time evolution
     from the all-|0> state to the steady state.
 
     Evolution: v(t+dt) = expm(dt*L) @ v(t) in the Pauli-string basis.
-    Stops when Bures fidelity with rho_ss reaches 0.9.
+    Stops when Bures fidelity with rho_ss reaches `fidelity_threshold`.
 
     Uses the direct SVD truncation pipeline (purification -> tensorize ->
     truncate) without the expensive disentangle step, yielding an upper
@@ -282,6 +283,8 @@ def compute_max_bond_dim(L, rho_ss, gamma_step, N=2, max_steps=200_000):
         Number of qubits (must be even for the LPDO bipartition).
     max_steps : int
         Safety limit on the number of time steps.
+    fidelity_threshold : float
+        Stop evolving once Bures fidelity with rho_ss >= this value (default 0.9).
 
     Returns
     -------
@@ -324,7 +327,7 @@ def compute_max_bond_dim(L, rho_ss, gamma_step, N=2, max_steps=200_000):
 
         # Check convergence
         fid = _bures_fidelity(rho, rho_ss)
-        if fid >= 0.9:
+        if fid >= fidelity_threshold:
             break
 
         # Evolve

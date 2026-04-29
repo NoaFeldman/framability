@@ -54,8 +54,12 @@ def main():
         description='Neighbor-seeded refinement of a single grid point.'
     )
     p.add_argument('--task_id',    type=int,   required=True,
-                   help='Flat index ig*n_pts+igp; maps to SLURM_ARRAY_TASK_ID.')
+                   help='Flat index ig*n_igp+igp (or ig*n_pts+igp when --n_igp is
+                        omitted); maps to SLURM_ARRAY_TASK_ID.')
     p.add_argument('--n_pts',      type=int,   default=20)
+    p.add_argument('--n_igp',      type=int,   default=0,
+                   help='Number of gamma\' columns per row in the task-id mapping.
+                        0 (default) means use --n_pts (full grid).')
     p.add_argument('--J',          type=float, default=1.0)
     p.add_argument('--gamma_step', type=float, default=0.1)
     p.add_argument('--out_dir',    type=str,   default='results')
@@ -65,11 +69,13 @@ def main():
                    help='Max function evaluations per restart.')
     args = p.parse_args()
 
-    n = args.n_pts
-    ig  = args.task_id // n
-    igp = args.task_id %  n
+    n     = args.n_pts
+    n_igp = args.n_igp if args.n_igp > 0 else n
+    ig  = args.task_id // n_igp
+    igp = args.task_id %  n_igp
     if ig < 0 or ig >= n or igp < 0 or igp >= n:
-        print(f'ERROR: task_id {args.task_id} out of range for {n}x{n} grid',
+        print(f'ERROR: task_id {args.task_id} out of range for {n}x{n} grid '
+              f'(n_igp={n_igp})',
               file=sys.stderr)
         sys.exit(1)
 
