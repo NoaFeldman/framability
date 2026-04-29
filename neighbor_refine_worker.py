@@ -54,12 +54,12 @@ def main():
         description='Neighbor-seeded refinement of a single grid point.'
     )
     p.add_argument('--task_id',    type=int,   required=True,
-                   help='Flat index ig*n_igp+igp (or ig*n_pts+igp when --n_igp is
-                        omitted); maps to SLURM_ARRAY_TASK_ID.')
+                   help='Flat index ig*n_igp+igp (or ig*n_pts+igp when --n_igp is '
+                        'omitted); maps to SLURM_ARRAY_TASK_ID.')
     p.add_argument('--n_pts',      type=int,   default=20)
     p.add_argument('--n_igp',      type=int,   default=0,
-                   help='Number of gamma\' columns per row in the task-id mapping.
-                        0 (default) means use --n_pts (full grid).')
+                   help='Number of gamma\' columns per row in the task-id mapping. '
+                        '0 (default) means use --n_pts (full grid).')
     p.add_argument('--J',          type=float, default=1.0)
     p.add_argument('--gamma_step', type=float, default=0.1)
     p.add_argument('--out_dir',    type=str,   default='results')
