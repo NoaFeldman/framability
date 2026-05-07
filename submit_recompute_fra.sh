@@ -67,7 +67,8 @@ COLLECT_JOB_ID=$(
            --ntasks=1 --cpus-per-task=1 --mem=8G --time=00:30:00 \
            --output="logs/recompute_fra_collect_%j.out" \
            --error="logs/recompute_fra_collect_%j.err" \
-           --wrap="source \"\${SLURM_SUBMIT_DIR}/.venv/bin/activate\" && \
+           --wrap="cd \"\${SLURM_SUBMIT_DIR}\" && \
+                   source .venv/bin/activate && \
                    python recompute_fra_collect.py \
                        --out_dir \"${OUT_DIR}\" \
                        --n_pts ${N_PTS} \

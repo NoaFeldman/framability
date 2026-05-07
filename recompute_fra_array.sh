@@ -24,10 +24,13 @@ OUT_DIR=${OUT_DIR:-results_opt}
 N_RESTARTS=${N_RESTARTS:-5}
 MAXFEV=${MAXFEV:-1000}
 
-source "${SLURM_SUBMIT_DIR}/.venv/bin/activate"
+# Always run from the submission directory so relative paths work.
+cd "${SLURM_SUBMIT_DIR}"
+
+source ".venv/bin/activate"
 export MPLCONFIGDIR="/tmp/matplotlib-${SLURM_JOB_ID}"
 
-echo "Task ${SLURM_ARRAY_TASK_ID}: starting (N_PTS=${N_PTS}, J=${J}, step=${GAMMA_STEP})"
+echo "Task ${SLURM_ARRAY_TASK_ID}: cwd=$(pwd)  OUT_DIR=${OUT_DIR}  N_PTS=${N_PTS}  J=${J}  step=${GAMMA_STEP}"
 
 python recompute_fra_worker.py \
     --task_id    "$SLURM_ARRAY_TASK_ID" \
@@ -37,3 +40,5 @@ python recompute_fra_worker.py \
     --out_dir    "$OUT_DIR" \
     --n_restarts "$N_RESTARTS" \
     --maxfev     "$MAXFEV"
+
+echo "Task ${SLURM_ARRAY_TASK_ID}: done  exit=$?"

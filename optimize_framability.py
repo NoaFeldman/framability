@@ -149,6 +149,19 @@ def _project_columns(D):
     return D / np.maximum(norms, 1e-12)
 
 
+def _project_columns_bloch(M):
+    """Normalise columns of M (shape 4×k) with |c_I| + ||(c_X,c_Y,c_Z)||_2 = 1."""
+    c_I   = np.abs(M[0:1, :])                                  # (1, k)
+    bloch = np.linalg.norm(M[1:4, :], axis=0, keepdims=True)  # (1, k)
+    total = c_I + bloch
+    return M / np.maximum(total, 1e-12)
+
+
+# First two columns of S are always fixed: identity (1,0,0,0)^T and Z (0,0,0,1)^T.
+_FIXED_COLS = np.array([[1, 0], [0, 0], [0, 0], [0, 1]], dtype=float)  # (4, 2)
+N_FIXED_COLS = _FIXED_COLS.shape[1]  # 2
+
+
 def _kron_power(S, n):
     """Compute kron(S, kron(S, ...)) with n copies of S."""
     result = S
@@ -226,11 +239,10 @@ def minimize_framability(gate, d_ext_single, *, n_restarts=5,
     n_s = qubit_d ** 2                                        # rows of S (4 per qubit)
     n_qubits = int(round(np.log(pauli_string_dim) / np.log(n_s)))  # inferred qubit count
     d_ext = d_ext_single ** n_qubits                          # total columns of D
-    n_params = n_s * d_ext_single
+    n_params = n_s * (d_ext_single - N_FIXED_COLS)            # only free columns
 
     def objective(params):
-        S = _project_columns(params.reshape(n_s, d_ext_single))
-        D = _kron_power(S, n_qubits)
+        D = _params_to_D(params, n_s, d_ext_single, n_qubits)
         return _get_framability_fast(D, gate)
 
     result = _run_restarts(
@@ -313,8 +325,15 @@ def _run_restarts(objective, n_params, d_ext, n_s, d_ext_single, n_qubits,
 
 
 def _params_to_D(params, n_s, d_ext_single, n_qubits):
-    """Decode flat parameter vector into D = kron^n_qubits(S)."""
-    S = _project_columns(params.reshape(n_s, d_ext_single))
+    """Decode flat parameter vector into D = kron^n_qubits(S).
+
+    params covers only the (d_ext_single - N_FIXED_COLS) free columns of S.
+    The first N_FIXED_COLS columns are fixed to _FIXED_COLS (identity and Z).
+    Free columns are normalised with the Bloch norm |c_I| + ||(c_X,c_Y,c_Z)||_2 = 1.
+    """
+    n_free = d_ext_single - N_FIXED_COLS
+    free = _project_columns_bloch(params.reshape(n_s, n_free))
+    S = np.hstack([_FIXED_COLS, free])
     return _kron_power(S, n_qubits)
 
 
@@ -332,8 +351,9 @@ def _build_inits(n_s, d_ext_single, d_ext, n_restarts, rng,
     *extra_init_xs* are appended afterwards (e.g. a neighbor's x_opt).
     """
     inits = []
+    n_free = d_ext_single - N_FIXED_COLS
 
-    # First init: extended-Pauli S (when d_ext == 36, two-qubit case)
+    # First init: free columns of extended-Pauli S (when d_ext == 36)
     if d_ext == 36:
         a = 1
         S_pauli = np.array(
@@ -341,18 +361,19 @@ def _build_inits(n_s, d_ext_single, d_ext, n_restarts, rng,
              [0, 1, 0, 0, a/np.sqrt(2),  a/np.sqrt(2)],
              [0, 0, 1, 0, 0,             0],
              [0, 0, 0, 1, a/np.sqrt(2), -a/np.sqrt(2)]])
-        inits.append(_project_columns(S_pauli).ravel())
+        free_pauli = _project_columns_bloch(S_pauli[:, N_FIXED_COLS:])
+        inits.append(free_pauli.ravel())
 
-    # Second init: cycling-identity S
-    # S_id[:,j] = e_{j % n_s}  (unit basis vector, cycling).
-    S_id = np.zeros((n_s, d_ext_single))
-    for j in range(d_ext_single):
-        S_id[j % n_s, j] = 1.0
-    inits.append(S_id.ravel())   # already unit-norm columns
+    # Second init: cycling-identity for the free columns.
+    # Free col j gets e_{(j + N_FIXED_COLS) % n_s} (cycling past fixed indices).
+    S_id_free = np.zeros((n_s, n_free))
+    for j in range(n_free):
+        S_id_free[(j + N_FIXED_COLS) % n_s, j] = 1.0
+    inits.append(_project_columns_bloch(S_id_free).ravel())
 
     while len(inits) < n_restarts:
-        M = rng.standard_normal((n_s, d_ext_single))
-        inits.append(_project_columns(M).ravel())
+        M = rng.standard_normal((n_s, n_free))
+        inits.append(_project_columns_bloch(M).ravel())
 
     # Extra seeds from caller (e.g. a neighbor point's x_opt) — appended
     # after the n_restarts standard seeds so they can be tagged in verbose.
