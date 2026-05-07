@@ -1,18 +1,16 @@
 """
-Collect per-point outputs from recompute_fra_worker and build a
-results_opt/scan_opt.npy array with the same (41, 41, 3) layout:
-    col 0: min_fra     optimised framability (new frame structure)
-    col 1: pauli_fra   max row-L1-norm of gate
-    col 2: min_both    min(min_fra, pauli_fra)
+Collect results after opt_refine_worker jobs and regenerate the figure.
 
-Also regenerates results_opt/two_qubit_scan_opt_bond_vs_fra.png
-using the existing bond-entropy data from results/scan_full.npy.
+Reads the updated opt_fra_<ig>_<igp>.npy files from out_dir, assembles
+scan_opt.npy (41×41×3), and saves two_qubit_scan_opt_bond_vs_fra.png.
+
+Also reports how many opt_S files are present vs expected.
 
 Usage
 -----
-    python recompute_fra_collect.py [--out_dir results_opt]
-                                    [--src_dir results]
-                                    [--n_pts 41] [--gamma_step 0.2]
+    python opt_refine_collect.py [--out_dir results_opt]
+                                 [--src_dir results]
+                                 [--n_pts 41] [--gamma_step 0.2]
 """
 
 import argparse
@@ -35,44 +33,54 @@ def main():
     n_tasks = n * n
 
     # ── load per-point files ──────────────────────────────────────────────
-    missing = []
+    missing_fra = []
+    missing_S   = []
     min_fra   = np.full((n, n), np.nan)
     pauli_fra = np.full((n, n), np.nan)
 
     for task_id in range(n_tasks):
         ig  = task_id // n
         igp = task_id %  n
-        fp = os.path.join(args.out_dir, f'opt_fra_{ig:04d}_{igp:04d}.npy')
-        if not os.path.exists(fp):
-            missing.append((ig, igp))
+        fra_fp = os.path.join(args.out_dir, f'opt_fra_{ig:04d}_{igp:04d}.npy')
+        S_fp   = os.path.join(args.out_dir, f'opt_S_{ig:04d}_{igp:04d}.npy')
+
+        if not os.path.exists(fra_fp):
+            missing_fra.append((ig, igp))
         else:
-            arr = np.load(fp)
+            arr = np.load(fra_fp)
             min_fra[ig, igp]   = arr[0]
             pauli_fra[ig, igp] = arr[1]
 
-    if missing:
-        print(f'WARNING: {len(missing)} point files missing:', file=sys.stderr)
-        for ig, igp in missing[:10]:
+        if not os.path.exists(S_fp):
+            missing_S.append((ig, igp))
+
+    if missing_fra:
+        print(f'WARNING: {len(missing_fra)} opt_fra files missing', file=sys.stderr)
+        for ig, igp in missing_fra[:10]:
             print(f'  opt_fra_{ig:04d}_{igp:04d}.npy', file=sys.stderr)
-        if len(missing) > 10:
-            print(f'  ... and {len(missing)-10} more', file=sys.stderr)
+        if len(missing_fra) > 10:
+            print(f'  ... and {len(missing_fra) - 10} more', file=sys.stderr)
 
-    min_both = np.minimum(min_fra, pauli_fra)
+    n_S_present = n_tasks - len(missing_S)
+    print(f'opt_S files: {n_S_present}/{n_tasks} present '
+          f'({len(missing_S)} missing)')
 
-    scan_opt = np.stack([min_fra, pauli_fra, min_both], axis=-1)  # (n, n, 3)
-    out_npy = os.path.join(args.out_dir, 'scan_opt.npy')
+    min_both  = np.minimum(min_fra, pauli_fra)
+    scan_opt  = np.stack([min_fra, pauli_fra, min_both], axis=-1)
+    out_npy   = os.path.join(args.out_dir, 'scan_opt.npy')
     np.save(out_npy, scan_opt)
     print(f'Saved {out_npy}  shape={scan_opt.shape}')
 
-    # ── load bond-entropy from original scan_full ──────────────────────────
+    # ── load bond-entropy ─────────────────────────────────────────────────
     scan_full_path = os.path.join(args.src_dir, 'scan_full.npy')
     if not os.path.exists(scan_full_path):
-        print(f'WARNING: {scan_full_path} not found; skipping figure.', file=sys.stderr)
+        print(f'WARNING: {scan_full_path} not found; skipping figure.',
+              file=sys.stderr)
         return
 
-    scan_full = np.load(scan_full_path)
-    ngp = min(n, scan_full.shape[1])
-    bond_entropy = scan_full[:n, :ngp, 11]  # col 11 = max_bond_entropy
+    scan_full    = np.load(scan_full_path)
+    ngp          = min(n, scan_full.shape[1])
+    bond_entropy = scan_full[:n, :ngp, 11]   # col 11 = max_bond_entropy
 
     # ── side-by-side heatmaps ─────────────────────────────────────────────
     gamma_step = args.gamma_step
@@ -104,7 +112,7 @@ def main():
         except Exception:
             pass
 
-    # Right: optimised framability (min of optimised and Pauli)
+    # Right: optimised framability
     ax = axes[1]
     im1 = ax.imshow(fra, origin='lower', extent=extent, aspect='auto', cmap='viridis')
     ax.set_title('Optimised framability\n(min of optimised and Pauli)')
@@ -116,7 +124,7 @@ def main():
                    extent=extent, origin='lower')
 
     fig.suptitle(f'Max LPDO bond entropy vs optimised framability  '
-                 f'(step={gamma_step}, updated frame structure)')
+                 f'(step={gamma_step}, neighbor-refined)')
     fig.tight_layout()
 
     out_png = os.path.join(args.out_dir, 'two_qubit_scan_opt_bond_vs_fra.png')
