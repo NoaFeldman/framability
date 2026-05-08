@@ -19,6 +19,8 @@ set -euo pipefail
 
 # ── defaults ─────────────────────────────────────────────────
 N_PTS=41
+N_PTS_G=""
+N_PTS_GP=""
 J=1.0
 GAMMA_STEP=0.2
 OUT_DIR=results_six
@@ -30,6 +32,8 @@ FIDELITY_THRESHOLD=0.9
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --n_pts)              N_PTS="$2";              shift 2 ;;
+        --n_pts_g)            N_PTS_G="$2";            shift 2 ;;
+        --n_pts_gp)           N_PTS_GP="$2";           shift 2 ;;
         --J)                  J="$2";                  shift 2 ;;
         --gamma_step)         GAMMA_STEP="$2";         shift 2 ;;
         --out_dir)            OUT_DIR="$2";            shift 2 ;;
@@ -40,11 +44,17 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-ARRAY_END=$(( N_PTS * N_PTS - 1 ))
+# default to a square grid if asymmetric sizes were not given
+N_PTS_G=${N_PTS_G:-$N_PTS}
+N_PTS_GP=${N_PTS_GP:-$N_PTS}
+
+ARRAY_END=$(( N_PTS_G * N_PTS_GP - 1 ))
 
 echo "========================================================"
 echo "  6-qubit (2x3) Lindbladian scan"
-echo "  N_PTS              = ${N_PTS}  (grid ${N_PTS}x${N_PTS} = $((N_PTS*N_PTS)) points)"
+echo "  N_PTS_G            = ${N_PTS_G}  (gamma  axis)"
+echo "  N_PTS_GP           = ${N_PTS_GP}  (gamma' axis)"
+echo "  total points       = $((N_PTS_G * N_PTS_GP))"
 echo "  J                  = ${J}"
 echo "  GAMMA_STEP         = ${GAMMA_STEP}"
 echo "  OUT_DIR            = ${OUT_DIR}"
