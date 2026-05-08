@@ -22,8 +22,10 @@
 set -euo pipefail
 
 # ── read scan parameters (with defaults) ─────────────────────
-N_PTS=${N_PTS:-41}N_PTS_G=${N_PTS_G:-$N_PTS}
-N_PTS_GP=${N_PTS_GP:-$N_PTS}J=${J:-1.0}
+N_PTS=${N_PTS:-41}
+N_PTS_G=${N_PTS_G:-$N_PTS}
+N_PTS_GP=${N_PTS_GP:-$N_PTS}
+J=${J:-1.0}
 GAMMA_STEP=${GAMMA_STEP:-0.2}
 OUT_DIR=${OUT_DIR:-results_six}
 MAX_STEPS=${MAX_STEPS:-100000}
