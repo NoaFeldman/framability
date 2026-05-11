@@ -15,7 +15,10 @@ from pathlib import Path
 import numpy as np
 import matplotlib.pyplot as plt
 
-from _sweep_depol_gates_worker import GATES, P_VALUES, N_FRAMES, N_P
+from _sweep_depol_gates_worker import (
+    GATES, P_VALUES, N_FRAMES, N_P,
+    build_channel, ext_pauli_framability,
+)
 
 FRAME_LABELS = [
     'Pauli frame',
@@ -25,6 +28,11 @@ FRAME_LABELS = [
     'Optimized (d_ext_single=8)',
 ]
 FRAME_COLORS = ['tab:blue', 'tab:orange', 'tab:green', 'tab:red', 'tab:purple']
+# Distinct linestyles so curves that overlap (typically the Pauli frame is
+# hidden underneath identical/coincident curves) remain visually separable.
+FRAME_STYLES = ['-', '--', '-.', ':', (0, (3, 1, 1, 1))]
+FRAME_MARKERS = ['o', 's', '^', 'D', 'v']
+FRAME_LW      = [2.6, 1.6, 1.6, 1.6, 1.6]
 
 
 def main() -> None:
@@ -60,6 +68,28 @@ def main() -> None:
         for m in missing[:5]:
             print('   ', m)
 
+    # ------------------------------------------------------------------
+    # Recompute the Extended-Pauli column with the current worker's
+    # extended_pauli_D_xy frame (extension in the X-Y plane), in case the
+    # per-task files were written with the older X-Z extension.  The
+    # other quantities (Pauli, Optimized, OTOC, stab, obe) are reused.
+    # ------------------------------------------------------------------
+    for ig, gate in enumerate(GATES):
+        for pi, p in enumerate(P_VALUES):
+            channel = build_channel(gate, float(p))
+            fra[ig, pi, 1] = ext_pauli_framability(channel)
+
+    # ------------------------------------------------------------------
+    # Enforce monotonicity over d_ext_single: theoretically
+    #   Opt(d_ext_single=k) >= Opt(d_ext_single=k')  for k <= k',
+    # because any frame at d=k embeds into d=k' by padding with zero
+    # columns (a valid frame).  The local optimiser (COBYQA/Powell with
+    # 5 restarts) can fail to find that embedding, so we replace each
+    # Opt(d=k') by min(Opt(d=k'') for k'' <= k') across k''=4,6,8.
+    # The Pauli and Extended-Pauli columns are left untouched.
+    # ------------------------------------------------------------------
+    fra[:, :, 2:] = np.minimum.accumulate(fra[:, :, 2:], axis=2)
+
     p_values = np.array(P_VALUES)
     npz_path = out_dir / 'depol_sweep.npz'
     np.savez(npz_path,
@@ -76,7 +106,11 @@ def main() -> None:
     for ig, gate in enumerate(GATES):
         ax = axes[ig, 0]
         for jf, lbl in enumerate(FRAME_LABELS):
-            ax.plot(p_values, fra[ig, :, jf], 'o-',
+            ax.plot(p_values, fra[ig, :, jf],
+                    linestyle=FRAME_STYLES[jf],
+                    marker=FRAME_MARKERS[jf],
+                    linewidth=FRAME_LW[jf],
+                    markersize=6,
                     color=FRAME_COLORS[jf], label=lbl)
         ax.axhline(1.0, color='black', linestyle=':', linewidth=0.8)
         ax.set_ylabel('Framability')

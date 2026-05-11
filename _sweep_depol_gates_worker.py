@@ -34,6 +34,21 @@ from framability import extended_pauli_D, heisenberg_framability
 from optimize_framability import minimize_framability, DEFAULT_METHOD
 
 
+# ---------------------------------------------------------------------------
+# Local extended-Pauli frame extended in the X-Y plane (instead of the X-Z
+# plane used by framability.extended_pauli_D).  Needed so the T-gate
+# framability hits 1 once depolarisation shrinks the T-rotated XY direction
+# inside the convex hull spanned by the extra columns.  Equivalent for H/CNOT.
+# ---------------------------------------------------------------------------
+def extended_pauli_D_xy(a: float = 1.0) -> np.ndarray:
+    """16x36 extended Pauli isometry with extra columns in the X-Y plane."""
+    single_qubit = np.array([[1, 0, 0, 0, 0,             0],
+                             [0, 1, 0, 0, a/np.sqrt(2),  a/np.sqrt(2)],
+                             [0, 0, 1, 0, a/np.sqrt(2), -a/np.sqrt(2)],
+                             [0, 0, 0, 1, 0,             0]])
+    return np.kron(single_qubit, single_qubit)
+
+
 # ── parameter grid ───────────────────────────────────────────────────────────
 GATES = ['CNOT', 'H', 'T']
 P_VALUES = [0.01 * i for i in range(8)]
@@ -93,7 +108,7 @@ def pauli_framability(channel):
 
 
 def ext_pauli_framability(channel):
-    return float(heisenberg_framability(extended_pauli_D(), channel))
+    return float(heisenberg_framability(extended_pauli_D_xy(), channel))
 
 
 def optimized_framability(channel, d_ext_single, n_restarts):
