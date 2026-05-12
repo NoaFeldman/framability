@@ -13,11 +13,15 @@ from two_qubit_lindbladian import pauli_string_dim
 
 
 def extended_pauli_D(a=1):
-    """Extended Pauli basis isometry (16 x 36) via Kronecker of single-qubit blocks."""
-    single_qubit = np.array([[1, 0, 0, 0, 0,            0],
-                             [0, 1, 0, 0, a/np.sqrt(2), a/np.sqrt(2)],
-                             [0, 0, 1, 0, 0,            0],
-                             [0, 0, 0, 1, a/np.sqrt(2), -a/np.sqrt(2)]])
+    """Extended Pauli basis isometry (16 x 36) via Kronecker of single-qubit blocks.
+
+    Single-qubit block (4 x 6) has columns I, X, Y, Z plus two extra
+    columns in the X-Y plane: (X+Y)/sqrt(2) and (X-Y)/sqrt(2).
+    """
+    single_qubit = np.array([[1, 0,            0,             0, 0, 0],
+                             [0, 1,            0,             0, a/np.sqrt(2),  a/np.sqrt(2)],
+                             [0, 0,            1,             0, a/np.sqrt(2), -a/np.sqrt(2)],
+                             [0, 0,            0,             1, 0, 0]])
     return np.kron(single_qubit, single_qubit)
 
 

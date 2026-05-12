@@ -10,10 +10,10 @@
 #  2. Submits a collect/plot job that runs after all tasks finish.
 #
 #  Usage:
-#    bash _submit_sweep_depol_gates.sh
-#    bash _submit_sweep_depol_gates.sh --out_dir results_depol_sweep
-#    bash _submit_sweep_depol_gates.sh --out_dir results_depol_sweep --max_concurrent 12
-#    bash _submit_sweep_depol_gates.sh --out_dir results_depol_sweep --n_restarts 5 --after_job 123456
+#    bash submit_sweep_depol_gates.sh
+#    bash submit_sweep_depol_gates.sh --out_dir results_depol_sweep
+#    bash submit_sweep_depol_gates.sh --out_dir results_depol_sweep --max_concurrent 12
+#    bash submit_sweep_depol_gates.sh --out_dir results_depol_sweep --n_restarts 5 --after_job 123456
 #
 #  Options (all optional):
 #    --out_dir        Output directory        (default: results_depol_sweep)
@@ -69,7 +69,7 @@ ARRAY_JID=$(sbatch \
     --export=OUT_DIR="${OUT_DIR}",N_RESTARTS="${N_RESTARTS}" \
     ${ARRAY_DEP} \
     --parsable \
-    _sweep_depol_gates_array.sh)
+    sweep_depol_gates_array.sh)
 echo "Array job submitted: ${ARRAY_JID}"
 
 # ── submit collect/plot job ───────────────────────────────────
@@ -82,7 +82,7 @@ COLLECT_JID=$(sbatch \
     --parsable \
     --wrap="source ${PWD}/.venv/bin/activate && \
             export MPLCONFIGDIR=/tmp/matplotlib-\${SLURM_JOB_ID} && \
-            python _sweep_depol_gates_collect.py --in_dir ${OUT_DIR} --out_dir ${OUT_DIR}")
+            python sweep_depol_gates_collect.py --in_dir ${OUT_DIR} --out_dir ${OUT_DIR}")
 echo "Collect job submitted: ${COLLECT_JID}"
 
 echo ""

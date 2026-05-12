@@ -28,7 +28,7 @@ source "${SLURM_SUBMIT_DIR}/.venv/bin/activate"
 export MPLCONFIGDIR="/tmp/matplotlib-${SLURM_JOB_ID}"
 
 echo "Task ${SLURM_ARRAY_TASK_ID}: starting  (OUT_DIR=${OUT_DIR})"
-python _sweep_depol_gates_worker.py \
+python sweep_depol_gates_worker.py \
     --task_id    "$SLURM_ARRAY_TASK_ID" \
     --out_dir    "$OUT_DIR" \
     --n_restarts "$N_RESTARTS"

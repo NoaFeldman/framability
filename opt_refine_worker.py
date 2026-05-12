@@ -34,6 +34,18 @@ from optimize_framability import (
     minimize_framability, DEFAULT_METHOD,
     _params_to_D, _FIXED_COLS, N_FIXED_COLS,
     _project_columns_bloch,
+    _get_framability_fast,
+)
+
+
+# Single-qubit ext-Pauli S (4 x 6); kron(S_PAULI, S_PAULI) == extended_pauli_D().
+_A = 1
+S_PAULI = np.array(
+    [[1, 0, 0, 0, 0,            0           ],
+     [0, 1, 0, 0, _A/np.sqrt(2), _A/np.sqrt(2)],
+     [0, 0, 1, 0, 0,            0           ],
+     [0, 0, 0, 1, _A/np.sqrt(2),-_A/np.sqrt(2)]],
+    dtype=float,
 )
 
 NEIGHBORS = [(-1, 0), (1, 0), (0, -1), (0, 1)]
@@ -140,12 +152,20 @@ def main():
         return_x=True,
     )
 
-    # sanity floor: ext-Pauli D
-    ext_fra = heisenberg_framability(D_ext, gate)
-    min_fra = float(min(min_fra, ext_fra))
+    # sanity floor: ext-Pauli D (use the same robust split-LP solver the
+    # optimiser uses internally; heisenberg_framability's |u|<=t inequality
+    # formulation can return inf at boundary points where fra == 1).
+    ext_fra = float(_get_framability_fast(D_ext, gate))
 
     # extract 1-qubit S from best x_opt
     S_opt = _S_from_x(x_opt, n_s, d_ext_single)  # shape (4, 6)
+
+    # If ext-Pauli beats the optimiser, the saved S must also be ext-Pauli
+    # so that (saved_min_fra, saved_S) stays self-consistent.
+    if ext_fra < min_fra:
+        min_fra = ext_fra
+        S_opt   = S_PAULI.copy()
+    min_fra = float(min_fra)
 
     # ── save (always write S; only improve fra) ───────────────────────────
     fra_path = os.path.join(args.out_dir, f'opt_fra_{ig:04d}_{igp:04d}.npy')
