@@ -57,8 +57,13 @@ def main() -> None:
     # Monotonicity over d_ext_single: a smaller frame embeds into a larger
     # one (pad with zero columns), so the minimax worst-case should be
     # non-increasing in d_ext_single.  Enforce after-the-fact to clean up
-    # local-optimiser noise.
-    worst_mono = np.minimum.accumulate(worst, axis=0)
+    # local-optimiser noise, ignoring NaN entries.
+    worst_mono = worst.copy()
+    running = np.full(N_P, np.inf)
+    for di in range(N_D):
+        mask = ~np.isnan(worst_mono[di])
+        running[mask] = np.minimum(running[mask], worst_mono[di, mask])
+        worst_mono[di, mask] = running[mask]
 
     p_values = np.array(P_VALUES)
     npz_path = out_dir / 'minimax_frame.npz'

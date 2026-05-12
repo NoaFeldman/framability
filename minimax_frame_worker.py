@@ -76,6 +76,34 @@ def _build_S(params: np.ndarray, d_ext_single: int) -> np.ndarray:
     return np.hstack([_FIXED_COLS, free])
 
 
+def _ext_pauli_xy_init(d_ext_single: int, a: float = 0.84) -> np.ndarray:
+    """Flat param vector whose decoded S matches the generalised X-Y
+    extended-Pauli frame with scale ``a`` (default a = 0.84).
+
+    Single-qubit free columns are [X, Y, a*(X+Y)/sqrt(2), a*(X-Y)/sqrt(2)]:
+
+        free = [[0,   0,    0,        0       ],
+                [1,   0,   a/√2,    a/√2     ],
+                [0,   1,   a/√2,   -a/√2     ],
+                [0,   0,    0,        0       ]]
+
+    For d_ext_single = 6 these are exactly the 4 free columns of the
+    a-scaled extended-Pauli D.  For smaller d (4) the first (d-2) columns
+    are used; for larger d (8) extra columns are zero-padded.
+    """
+    n_free = d_ext_single - N_FIXED_COLS
+    base = np.array([
+        [0.0,  0.0,  0.0,         0.0        ],
+        [1.0,  0.0,  a/np.sqrt(2), a/np.sqrt(2)],
+        [0.0,  1.0,  a/np.sqrt(2),-a/np.sqrt(2)],
+        [0.0,  0.0,  0.0,         0.0        ],
+    ])
+    free = np.zeros((N_S_ROWS, n_free))
+    k = min(n_free, base.shape[1])
+    free[:, :k] = base[:, :k]
+    return free.ravel()
+
+
 def make_objective(channels: list[np.ndarray], d_ext_single: int):
     """Return f(params) = max_g framability(D, channel_g)."""
     def obj(params: np.ndarray) -> float:
@@ -145,6 +173,11 @@ def main() -> None:
     rng = np.random.default_rng(args.seed + 1000 * args.task_id)
 
     inits = _build_inits(N_S_ROWS, d_ext_single, d_ext, args.n_restarts, rng)
+    # Prepend the X-Y extended-Pauli starting point.  For p above ~0.04
+    # this point alone achieves worst-case framability = 1 across
+    # {H, T, CNOT}, so without it the optimiser frequently misses the
+    # global optimum at higher p.
+    inits = [_ext_pauli_xy_init(d_ext_single)] + inits
 
     if args.method == 'SLSQP':
         opts = {'maxiter': args.max_iter, 'ftol': 1e-8}
