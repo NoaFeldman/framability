@@ -9,12 +9,10 @@ For one task (a (gamma, gamma_p) grid point and a d_ext_single value):
      The first two columns of S are fixed to I and Z (matching
      optimize_framability._FIXED_COLS); free columns are normalised under
      the *equality* constraint |c_I| + ||c_XYZ||_2 == 1.
-  3. Walk from x_opt in `valley_param_size` (default 10) distinct
-     directions in parameter space, finding the largest step alpha along
-     each direction such that the framability stays within
-     [f_opt, f_opt + plateau_tol].  Directions are Gram-Schmidt
-     orthogonalised against the *step vectors* of previously discovered
-     edge points to spread them out.
+  3. Walk from x_opt along each free-parameter axis e_i, with a randomly
+     chosen sign, finding the largest step alpha along that axis such that
+     the framability stays within [f_opt, f_opt + plateau_tol].  This
+     produces one edge point per free parameter (n_params walks).
 
 Single-gate framability does not need an inequality on the column norms:
 columns can always be rescaled to unit Bloch norm without changing the
@@ -203,7 +201,10 @@ def main() -> None:
     parser.add_argument('--maxfev',       type=int, default=2000)
     parser.add_argument('--method',       type=str, default=DEFAULT_METHOD)
     parser.add_argument('--seed',         type=int, default=0)
-    parser.add_argument('--valley_param_size', type=int, default=10)
+    parser.add_argument('--valley_param_size', type=int, default=0,
+                        help='Number of axis walks to perform.  '
+                             '0 (default) means use n_params (one walk '
+                             'per free parameter).')
     parser.add_argument('--plateau_tol',  type=float, default=1e-4,
                         help='Edge tolerance: f(x_edge) <= f_opt + plateau_tol.')
     parser.add_argument('--init_step',    type=float, default=0.1,
@@ -255,37 +256,41 @@ def main() -> None:
     t_min = time.perf_counter() - t0
     print(f'[stage 1] f_opt={f_opt:.6f}  ({t_min:.1f}s)', flush=True)
 
-    # --- stage 2: walk to the edge in diverse directions --------------------
+    # --- stage 2: walk along each parameter axis ----------------------------
+    # One edge per free parameter (n_params edges).  For each parameter
+    # i we use the unit basis vector e_i as direction, with a randomly
+    # chosen sign, and walk to the edge of the plateau.
     rng = np.random.default_rng(args.seed + 12345 + 1000 *
                                 (args.task_id if args.task_id is not None else 0))
     n_params = x_opt.size
-    K = args.valley_param_size
     d_ext = args.d_ext_single ** N_QUBITS
 
-    edge_xs    = np.zeros((K, n_params), dtype=float)
-    edge_alphas = np.zeros(K, dtype=float)
-    edge_fs    = np.zeros(K, dtype=float)
-    edge_Ds    = np.zeros((K, pauli_string_dim, d_ext), dtype=float)
-    edge_step_norms = np.zeros(K, dtype=float)
+    requested_K = args.valley_param_size
+    K = n_params if requested_K is None or requested_K <= 0 else min(requested_K, n_params)
+    if requested_K is not None and requested_K > 0 and requested_K != n_params:
+        print(f'[stage 2] valley_param_size={requested_K} differs from '
+              f'n_params={n_params}; using K={K} axes.', flush=True)
 
-    step_basis: list[np.ndarray] = []  # orthonormalised previous steps
+    # Random permutation of parameter indices so different tasks explore
+    # the axes in different orders; and a random sign per axis.
+    axis_order = rng.permutation(n_params)[:K]
+    signs = rng.choice([-1.0, 1.0], size=K)
+
+    edge_xs         = np.zeros((K, n_params), dtype=float)
+    edge_alphas     = np.zeros(K, dtype=float)
+    edge_fs         = np.zeros(K, dtype=float)
+    edge_Ds         = np.zeros((K, pauli_string_dim, d_ext), dtype=float)
+    edge_step_norms = np.zeros(K, dtype=float)
+    edge_axis_index = np.zeros(K, dtype=int)
+    edge_axis_sign  = np.zeros(K, dtype=float)
     rejected_for_zero_step = 0
 
     t1 = time.perf_counter()
     for k in range(K):
-        # Sample direction orthogonal to all previous *step vectors*.
-        direction = None
-        for _ in range(40):
-            v = rng.standard_normal(n_params)
-            for u in step_basis:
-                v = v - np.dot(v, u) * u
-            nv = np.linalg.norm(v)
-            if nv > 1e-8:
-                direction = v / nv
-                break
-        if direction is None:
-            v = rng.standard_normal(n_params)
-            direction = v / np.linalg.norm(v)
+        idx = int(axis_order[k])
+        sign = float(signs[k])
+        direction = np.zeros(n_params)
+        direction[idx] = sign
 
         x_edge, alpha = _walk_to_edge(
             x_opt, direction, args.d_ext_single, gate, f_opt,
@@ -301,20 +306,15 @@ def main() -> None:
         edge_fs[k]         = f_edge
         edge_Ds[k]         = D_edge
         edge_step_norms[k] = nstep
+        edge_axis_index[k] = idx
+        edge_axis_sign[k]  = sign
 
-        if nstep > 1e-10:
-            # Re-orthogonalise (steps may differ from direction by tiny amounts).
-            u = step / nstep
-            for w in step_basis:
-                u = u - np.dot(u, w) * w
-            un = np.linalg.norm(u)
-            if un > 1e-10:
-                step_basis.append(u / un)
-        else:
+        if nstep <= 1e-10:
             rejected_for_zero_step += 1
 
-        print(f'  edge {k + 1}/{K}:  alpha={alpha:.4f}  '
-              f'f_edge={f_edge:.6f}  step_norm={nstep:.4f}', flush=True)
+        print(f'  edge {k + 1}/{K}:  axis={idx:3d}  sign={sign:+.0f}  '
+              f'alpha={alpha:.4f}  f_edge={f_edge:.6f}  '
+              f'step_norm={nstep:.4f}', flush=True)
 
     t_walk = time.perf_counter() - t1
 
@@ -329,6 +329,8 @@ def main() -> None:
         edge_xs=edge_xs, edge_Ds=edge_Ds,
         edge_fs=edge_fs, edge_alphas=edge_alphas,
         edge_step_norms=edge_step_norms,
+        edge_axis_index=edge_axis_index,
+        edge_axis_sign=edge_axis_sign,
         rejected_for_zero_step=np.array(rejected_for_zero_step),
     )
     print(f'[saved] {out_path}  stage1={t_min:.1f}s  stage2={t_walk:.1f}s', flush=True)
