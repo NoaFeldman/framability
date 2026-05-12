@@ -45,6 +45,7 @@ from optimize_framability import (
     _get_framability_fast,
     _kron_power,
     _params_to_D,
+    _project_columns_bloch,
 )
 from sweep_depol_gates_worker import GATES, build_channel
 
@@ -64,12 +65,39 @@ def per_gate_framabilities(D: np.ndarray, channels: list[np.ndarray]) -> np.ndar
     return np.array([_get_framability_fast(D, ch) for ch in channels])
 
 
+def _build_S(params: np.ndarray, d_ext_single: int) -> np.ndarray:
+    """Decode params into the single-qubit factor S = [_FIXED_COLS | free].
+
+    Free columns are projected onto |c_I| + ||c_XYZ||_2 <= 1.  Matches the
+    parameterisation used inside optimize_framability._params_to_D.
+    """
+    n_free = d_ext_single - N_FIXED_COLS
+    free = _project_columns_bloch(params.reshape(N_S_ROWS, n_free))
+    return np.hstack([_FIXED_COLS, free])
+
+
 def make_objective(channels: list[np.ndarray], d_ext_single: int):
-    """Return a callable f(params) = max_g framability(D, channel_g)."""
+    """Return f(params) = max_g framability(D, channel_g)."""
     def obj(params: np.ndarray) -> float:
-        D = _params_to_D(params, N_S_ROWS, d_ext_single, N_QUBITS)
+        S = _build_S(params, d_ext_single)
+        D = _kron_power(S, N_QUBITS)
         return float(np.max(per_gate_framabilities(D, channels)))
     return obj
+
+
+def make_diag_constraint(d_ext_single: int):
+    """Return a function whose output (4,) must be >=0:
+        (S S^T)_{ii} - 1 >= 0 for i = 0..3.
+
+    Equivalent to diag(D D^T) >= 1 elementwise when D = kron(S, S).
+    Rows 0 and 3 of S are pinned by _FIXED_COLS so those entries are
+    >= 1 automatically; the binding constraints are on rows 1 (X) and
+    2 (Y).
+    """
+    def g(params: np.ndarray) -> np.ndarray:
+        S = _build_S(params, d_ext_single)
+        return np.einsum('ij,ij->i', S, S) - 1.0
+    return g
 
 
 # ── main ─────────────────────────────────────────────────────────────────────
@@ -82,7 +110,9 @@ def main() -> None:
     parser.add_argument('--maxfev', type=int, default=2000)
     parser.add_argument('--max_iter', type=int, default=500)
     parser.add_argument('--seed', type=int, default=0)
-    parser.add_argument('--method', type=str, default=DEFAULT_METHOD)
+    parser.add_argument('--method', type=str, default='SLSQP',
+                        help='Optimizer. SLSQP/trust-constr/COBYLA support '
+                             'the diag(SS^T)>=1 inequality constraint.')
     args = parser.parse_args()
 
     if args.task_id < 0 or args.task_id >= N_D * N_P:
@@ -106,6 +136,8 @@ def main() -> None:
 
     channels = [build_channel(g, float(p)) for g in GATES]
     objective = make_objective(channels, d_ext_single)
+    diag_g = make_diag_constraint(d_ext_single)
+    constraints = ({'type': 'ineq', 'fun': diag_g},)
 
     n_free = d_ext_single - N_FIXED_COLS
     n_params = N_S_ROWS * n_free
@@ -114,7 +146,13 @@ def main() -> None:
 
     inits = _build_inits(N_S_ROWS, d_ext_single, d_ext, args.n_restarts, rng)
 
-    if args.method == 'cobyqa':
+    if args.method == 'SLSQP':
+        opts = {'maxiter': args.max_iter, 'ftol': 1e-8}
+    elif args.method == 'trust-constr':
+        opts = {'maxiter': args.max_iter, 'xtol': 1e-8, 'gtol': 1e-8}
+    elif args.method == 'COBYLA':
+        opts = {'maxiter': args.max_iter, 'rhobeg': 0.1, 'catol': 1e-8}
+    elif args.method == 'cobyqa':
         opts = {'maxfev': args.maxfev}
     elif args.method == 'Powell':
         opts = {'maxiter': args.max_iter, 'maxfev': args.maxfev,
@@ -122,45 +160,53 @@ def main() -> None:
     else:
         opts = {'maxiter': args.max_iter, 'maxfev': args.maxfev}
 
+    use_constraints = args.method in ('SLSQP', 'trust-constr', 'COBYLA')
+
     best_val = np.inf
     best_x = None
     t0 = time.perf_counter()
     for i, x0 in enumerate(inits):
         f_x0 = objective(x0)
-        if f_x0 < best_val:
+        feas_x0 = bool(np.all(diag_g(x0) >= -1e-8))
+        if feas_x0 and f_x0 < best_val:
             best_val = f_x0
             best_x = x0.copy()
-        res = minimize(objective, x0, method=args.method, options=opts)
+        if use_constraints:
+            res = minimize(objective, x0, method=args.method,
+                           constraints=constraints, options=opts)
+        else:
+            res = minimize(objective, x0, method=args.method, options=opts)
         f_cand = objective(res.x)
-        if f_cand < best_val:
+        feas_cand = bool(np.all(diag_g(res.x) >= -1e-8))
+        if feas_cand and f_cand < best_val:
             best_val = f_cand
             best_x = res.x.copy()
         print(f'  restart {i + 1}/{len(inits)}:  '
-              f'f_init={f_x0:.6f}  f_opt={f_cand:.6f}  '
+              f'f_init={f_x0:.6f}(feas={feas_x0})  '
+              f'f_opt={f_cand:.6f}(feas={feas_cand})  '
               f'best={best_val:.6f}', flush=True)
 
     elapsed = time.perf_counter() - t0
 
-    D_opt = _params_to_D(best_x, N_S_ROWS, d_ext_single, N_QUBITS)
-    free = D_opt  # not needed; recompute S for inspection
-    # Recover S = first single-qubit factor; D = kron(S, S) by construction
-    n_free = d_ext_single - N_FIXED_COLS
-    free_cols = best_x.reshape(N_S_ROWS, n_free)
-    # Apply same projection used inside _params_to_D
-    from optimize_framability import _project_columns_bloch
-    S_opt = np.hstack([_FIXED_COLS, _project_columns_bloch(free_cols)])
+    S_opt = _build_S(best_x, d_ext_single)
+    D_opt = _kron_power(S_opt, N_QUBITS)
 
     per_gate = per_gate_framabilities(D_opt, channels)
     worst = float(np.max(per_gate))
+    diag_SST = np.einsum('ij,ij->i', S_opt, S_opt)
+    constraint_ok = bool(np.all(diag_SST >= 1.0 - 1e-8))
 
     np.savez(out_path,
              framability=per_gate, worst=worst,
              D=D_opt, S=S_opt, x=best_x,
+             diag_SST=diag_SST,
+             constraint_ok=np.array(constraint_ok),
              d_ext_single=np.array(d_ext_single),
              p=np.array(p),
              gates=np.array(GATES))
     print(f'[task {args.task_id}] saved {out_path}  '
           f'worst={worst:.6f}  per_gate={per_gate}  '
+          f'diag(S S^T)={diag_SST}  constraint_ok={constraint_ok}  '
           f'elapsed={elapsed:.1f}s', flush=True)
 
 

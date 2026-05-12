@@ -150,11 +150,18 @@ def _project_columns(D):
 
 
 def _project_columns_bloch(M):
-    """Normalise columns of M (shape 4×k) with |c_I| + ||(c_X,c_Y,c_Z)||_2 = 1."""
+    """Project columns of M (shape 4xk) onto |c_I| + ||(c_X,c_Y,c_Z)||_2 <= 1.
+
+    Columns already satisfying the constraint are left untouched; columns
+    that exceed it are rescaled so that the sum equals exactly 1.  This
+    treats the column constraint as an inequality (the natural feasible
+    set for a single-qubit Pauli-expansion column representing a sub-
+    normalised state) instead of forcing equality.
+    """
     c_I   = np.abs(M[0:1, :])                                  # (1, k)
     bloch = np.linalg.norm(M[1:4, :], axis=0, keepdims=True)  # (1, k)
     total = c_I + bloch
-    return M / np.maximum(total, 1e-12)
+    return M / np.maximum(total, 1.0)
 
 
 # First two columns of S are always fixed: identity (1,0,0,0)^T and Z (0,0,0,1)^T.
