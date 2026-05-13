@@ -210,6 +210,19 @@ def main() -> None:
     parser.add_argument('--init_step',    type=float, default=0.1,
                         help='Initial alpha for exponential edge search.')
     parser.add_argument('--out_dir',      type=str, default='results_valley')
+    parser.add_argument('--long_time',    action='store_true',
+                        help='Override --dt with dt = long_time_factor / '
+                             'max(|gamma|, |gamma_p|).  Useful to probe the '
+                             'late-time / steady-state regime of the '
+                             'Lindbladian.')
+    parser.add_argument('--long_time_factor', type=float, default=100.0,
+                        help='Total evolution time (in units of 1/rate) used '
+                             'when --long_time is set.  dt = factor / rate.')
+    parser.add_argument('--tag_suffix',   type=str, default='',
+                        help='Optional suffix appended to the output filename '
+                             "(e.g. 'long' -> valley_task00_d6_long.npz).  "
+                             "Automatically set to 'long' if --long_time is "
+                             'given and no explicit suffix is provided.')
     parser.add_argument('--verbose',      action='store_true')
     args = parser.parse_args()
 
@@ -230,19 +243,36 @@ def main() -> None:
         gamma_p = args.gamma_p
         tag = f'g{gamma:.3f}_gp{gamma_p:.3f}'
 
+    # --- optional long-time override of dt ----------------------------------
+    dt = args.dt
+    if args.long_time:
+        rate = max(abs(gamma), abs(gamma_p))
+        if rate <= 0.0:
+            print('ERROR: --long_time requires a non-zero rate '
+                  '(max(|gamma|, |gamma_p|) > 0).', file=sys.stderr)
+            sys.exit(1)
+        dt = args.long_time_factor / rate
+        print(f'[long_time] rate=max(|gamma|,|gamma_p|)={rate}  '
+              f'factor={args.long_time_factor}  -> dt={dt}', flush=True)
+
+    suffix = args.tag_suffix
+    if not suffix and args.long_time:
+        suffix = 'long'
+    suffix_part = f'_{suffix}' if suffix else ''
+
     os.makedirs(args.out_dir, exist_ok=True)
     out_path = os.path.join(
         args.out_dir,
-        f'valley_{tag}_d{args.d_ext_single}.npz')
+        f'valley_{tag}_d{args.d_ext_single}{suffix_part}.npz')
     if os.path.exists(out_path):
         print(f'Skip: {out_path} already exists', flush=True)
         return
 
     # --- build the 2q gate ---------------------------------------------------
     L = numeric_two_qubit_lindbladian(args.J, gamma, gamma_p)
-    gate = expm(args.dt * L).real
+    gate = expm(dt * L).real
 
-    print(f'[task gamma={gamma}, gamma_p={gamma_p}] J={args.J}  dt={args.dt}  '
+    print(f'[task gamma={gamma}, gamma_p={gamma_p}] J={args.J}  dt={dt}  '
           f'd_ext_single={args.d_ext_single}  '
           f'method={args.method}  n_restarts={args.n_restarts}', flush=True)
 
@@ -322,7 +352,7 @@ def main() -> None:
     np.savez(
         out_path,
         gamma=np.array(gamma), gamma_p=np.array(gamma_p),
-        J=np.array(args.J), dt=np.array(args.dt),
+        J=np.array(args.J), dt=np.array(dt),
         d_ext_single=np.array(args.d_ext_single),
         plateau_tol=np.array(args.plateau_tol),
         f_opt=np.array(f_opt), x_opt=x_opt, D_opt=D_opt,

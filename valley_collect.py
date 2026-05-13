@@ -17,11 +17,14 @@ def main() -> None:
     parser.add_argument('--in_dir',  type=str, default='results_valley')
     parser.add_argument('--out_dir', type=str, default='results_valley')
     parser.add_argument('--d_ext_single', type=int, default=6)
+    parser.add_argument('--tag_suffix', type=str, default='',
+                        help='Suffix used by valley_worker (e.g. "long").')
     args = parser.parse_args()
 
     in_dir = Path(args.in_dir)
     out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
+    suffix_part = f'_{args.tag_suffix}' if args.tag_suffix else ''
 
     gammas    = np.full(N_TASKS, np.nan)
     gamma_ps  = np.full(N_TASKS, np.nan)
@@ -33,7 +36,7 @@ def main() -> None:
 
     missing = []
     for tid, (g, gp) in enumerate(POINTS):
-        f = in_dir / f'valley_task{tid:02d}_d{args.d_ext_single}.npz'
+        f = in_dir / f'valley_task{tid:02d}_d{args.d_ext_single}{suffix_part}.npz'
         if not f.exists():
             missing.append(str(f))
             continue
@@ -55,7 +58,7 @@ def main() -> None:
         for m in missing:
             print('   ', m)
 
-    npz_path = out_dir / f'valley_summary_d{args.d_ext_single}.npz'
+    npz_path = out_dir / f'valley_summary_d{args.d_ext_single}{suffix_part}.npz'
     np.savez(npz_path,
              gammas=gammas, gamma_ps=gamma_ps,
              d_ext_single=np.array(args.d_ext_single),

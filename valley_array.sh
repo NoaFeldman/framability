@@ -39,11 +39,19 @@ PLATEAU_TOL=${PLATEAU_TOL:-1e-4}
 INIT_STEP=${INIT_STEP:-0.1}
 J=${J:-1.0}
 DT=${DT:-0.01}
+LONG_TIME=${LONG_TIME:-0}
+LONG_TIME_FACTOR=${LONG_TIME_FACTOR:-100.0}
+TAG_SUFFIX=${TAG_SUFFIX:-}
 
 source "${SLURM_SUBMIT_DIR}/.venv/bin/activate"
 export MPLCONFIGDIR="/tmp/matplotlib-${SLURM_JOB_ID}"
 
-echo "Task ${SLURM_ARRAY_TASK_ID}: starting  (OUT_DIR=${OUT_DIR}, d=${D_EXT_SINGLE})"
+echo "Task ${SLURM_ARRAY_TASK_ID}: starting  (OUT_DIR=${OUT_DIR}, d=${D_EXT_SINGLE}, LONG_TIME=${LONG_TIME})"
+
+LONG_TIME_FLAG=""
+if [ "$LONG_TIME" = "1" ] || [ "$LONG_TIME" = "true" ]; then
+    LONG_TIME_FLAG="--long_time"
+fi
 
 python valley_worker.py \
     --task_id "$SLURM_ARRAY_TASK_ID" \
@@ -59,6 +67,9 @@ python valley_worker.py \
     --init_step "$INIT_STEP" \
     --J "$J" \
     --dt "$DT" \
+    $LONG_TIME_FLAG \
+    --long_time_factor "$LONG_TIME_FACTOR" \
+    --tag_suffix "$TAG_SUFFIX" \
     --verbose
 
 echo "Task ${SLURM_ARRAY_TASK_ID}: done"

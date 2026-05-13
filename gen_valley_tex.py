@@ -39,10 +39,19 @@ def main() -> None:
                         default='results_valley/valley_matrices.tex')
     parser.add_argument('--d_ext_single', type=int, default=6)
     parser.add_argument('--prec', type=int, default=4)
+    parser.add_argument('--tag_suffix', type=str, default='',
+                        help='Suffix used by valley_worker (e.g. "long"). '
+                             'When set and --out is left at its default, the '
+                             'output filename is suffixed automatically.')
     args = parser.parse_args()
 
+    suffix_part = f'_{args.tag_suffix}' if args.tag_suffix else ''
     in_dir = Path(args.in_dir)
-    out_path = Path(args.out)
+    default_out = 'results_valley/valley_matrices.tex'
+    if args.tag_suffix and args.out == default_out:
+        out_path = Path(f'results_valley/valley_matrices_{args.tag_suffix}.tex')
+    else:
+        out_path = Path(args.out)
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
     lines: list[str] = []
@@ -59,8 +68,8 @@ def main() -> None:
     lines.append(r"For each point $(\gamma, \gamma')$, the two-qubit "
                  r"Lindbladian $\mathcal{L}(J, \gamma, \gamma')$ is built "
                  r"with $J = 1$ and the gate is "
-                 r"$U(\Delta t)=\exp(\Delta t\,\mathcal{L})$ with "
-                 r"$\Delta t = 0.01$. The Heisenberg-picture frame is "
+                 r"$U(\Delta t)=\exp(\Delta t\,\mathcal{L})$. "
+                 r"The Heisenberg-picture frame is "
                  r"$D = S \otimes S$ with $S \in \mathbb{R}^{4 \times d_{\text{ext}}}$. "
                  r"Below we tabulate $S_\text{opt}$ (minimum-framability point) "
                  r"and the matrices $S_k$ found on the edge of the plateau "
@@ -68,7 +77,7 @@ def main() -> None:
     lines.append('')
 
     for tid, (g, gp) in enumerate(POINTS):
-        f = in_dir / f'valley_task{tid:02d}_d{args.d_ext_single}.npz'
+        f = in_dir / f'valley_task{tid:02d}_d{args.d_ext_single}{suffix_part}.npz'
         if not f.exists():
             print(f'[skip] missing {f}')
             continue

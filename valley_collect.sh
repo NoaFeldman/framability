@@ -17,10 +17,12 @@
 IN_DIR=${IN_DIR:-results_valley}
 OUT_DIR=${OUT_DIR:-results_valley}
 D_EXT_SINGLE=${D_EXT_SINGLE:-6}
+TAG_SUFFIX=${TAG_SUFFIX:-}
 
 source "${SLURM_SUBMIT_DIR}/.venv/bin/activate"
 export MPLCONFIGDIR="/tmp/matplotlib-${SLURM_JOB_ID}"
 
 python valley_collect.py \
     --in_dir "$IN_DIR" --out_dir "$OUT_DIR" \
-    --d_ext_single "$D_EXT_SINGLE"
+    --d_ext_single "$D_EXT_SINGLE" \
+    --tag_suffix "$TAG_SUFFIX"
