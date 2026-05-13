@@ -38,7 +38,7 @@ from framability import haar_measure
 
 # ── experiment parameters ────────────────────────────────────────────────────
 P_VALUES   = [0.05, 0.07, 0.09, 0.11, 0.13]
-GATE_NAMES = ['H', 'T', 'CNOT']
+GATE_NAMES = ['H', 'T', 'sqrtT', 'CNOT']
 CHI        = 30
 SEED       = 42          # fixed seed → same random frame for every task
 
@@ -165,6 +165,7 @@ def main():
                         help='Output directory (default: results_depol).')
     args = parser.parse_args()
 
+
     n_p      = len(P_VALUES)
     gate_idx = args.task_id // n_p
     p_idx    = args.task_id %  n_p
@@ -175,12 +176,13 @@ def main():
         sys.exit(1)
 
     p_val = P_VALUES[p_idx]
-    print(f'[task {args.task_id}] gate={GATE_NAMES[gate_idx]}  p={p_val}',
+    gate_name = GATE_NAMES[gate_idx]
+    print(f'[task {args.task_id}] gate={gate_name}  p={p_val}',
           flush=True)
 
     os.makedirs(args.out_dir, exist_ok=True)
     out_path = os.path.join(args.out_dir,
-                            f'depol_fra_{gate_idx}_{p_idx:02d}.npy')
+                            f'depol_fra_{gate_name}_{p_idx:02d}.npy')
     if os.path.exists(out_path):
         print(f'Skip: {out_path} already exists', flush=True)
         return
@@ -189,19 +191,25 @@ def main():
     D1 = _build_D1(CHI)     # shape (4, 30); seed fixed inside
 
     # ── build channel superoperator ───────────────────────────────────────────
-    if gate_idx == 0:
+    if gate_name == 'H':
         # depol(p) ∘ H  — single-qubit
         H       = np.array([[1, 1], [1, -1]], dtype=complex) / np.sqrt(2.0)
         channel = _depol_1q(p_val) @ _superop_1q(H)
         D       = D1                           # (4, 30)
 
-    elif gate_idx == 1:
+    elif gate_name == 'T':
         # depol(p) ∘ T  — single-qubit
         T       = np.diag([1.0, np.exp(1j * np.pi / 4)]).astype(complex)
         channel = _depol_1q(p_val) @ _superop_1q(T)
         D       = D1                           # (4, 30)
 
-    else:
+    elif gate_name == 'sqrtT':
+        # depol(p) ∘ sqrt(T)  — single-qubit
+        sqrtT   = np.diag([1.0, np.exp(1j * np.pi / 8)]).astype(complex)
+        channel = _depol_1q(p_val) @ _superop_1q(sqrtT)
+        D       = D1                           # (4, 30)
+
+    elif gate_name == 'CNOT':
         # depol(p)⊗² ∘ CNOT  — two-qubit
         CNOT    = np.array([[1, 0, 0, 0],
                              [0, 1, 0, 0],
@@ -209,6 +217,10 @@ def main():
                              [0, 0, 1, 0]], dtype=float)
         channel = _depol_2q(p_val) @ _superop_2q(CNOT)
         D       = np.kron(D1, D1)              # (16, 900)
+
+    else:
+        print(f'ERROR: Unknown gate {gate_name}', file=sys.stderr)
+        sys.exit(1)
 
     # ── compute framability ───────────────────────────────────────────────────
     fra = _fra_schroedinger(D, channel)

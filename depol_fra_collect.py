@@ -17,12 +17,15 @@ import numpy as np
 import matplotlib.pyplot as plt
 
 P_VALUES = [0.05, 0.07, 0.09, 0.11, 0.13]
+
 GATE_LABELS = [
     r'$\Lambda_p \circ H$',
     r'$\Lambda_p \circ T$',
+    r'$\Lambda_p \circ \sqrt{T}$',
     r'$\Lambda_p^{\otimes 2} \circ \mathrm{CNOT}$',
 ]
-MARKERS = ['o', 's', '^']
+GATE_NAMES = ['H', 'T', 'sqrtT', 'CNOT']
+MARKERS = ['o', 's', 'd', '^']
 
 
 def main():
@@ -35,15 +38,16 @@ def main():
                     help='Output figure path (default: <out_dir>/depol_fra.png).')
     args = pa.parse_args()
 
+
     n_gates = len(GATE_LABELS)
     n_p     = len(P_VALUES)
 
     fra     = np.full((n_gates, n_p), np.nan)
     missing = []
 
-    for g in range(n_gates):
+    for g, name in enumerate(GATE_NAMES):
         for pi in range(n_p):
-            fpath = os.path.join(args.out_dir, f'depol_fra_{g}_{pi:02d}.npy')
+            fpath = os.path.join(args.out_dir, f'depol_fra_{name}_{pi:02d}.npy')
             if os.path.exists(fpath):
                 fra[g, pi] = float(np.load(fpath)[0])
             else:
