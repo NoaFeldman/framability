@@ -31,11 +31,12 @@ MAXFEV=${MAXFEV:-2000}
 MAX_ITER=${MAX_ITER:-500}
 SEED=${SEED:-0}
 METHOD=${METHOD:-cobyqa}
+GATE_SET=${GATE_SET:-H_CNOT_T}
 
 source "${SLURM_SUBMIT_DIR}/.venv/bin/activate"
 export MPLCONFIGDIR="/tmp/matplotlib-${SLURM_JOB_ID}"
 
-echo "Task ${SLURM_ARRAY_TASK_ID}: starting  (OUT_DIR=${OUT_DIR}, METHOD=${METHOD})"
+echo "Task ${SLURM_ARRAY_TASK_ID}: starting  (OUT_DIR=${OUT_DIR}, METHOD=${METHOD}, GATE_SET=${GATE_SET})"
 
 python minimax_frame_worker.py \
     --task_id "$SLURM_ARRAY_TASK_ID" \
@@ -44,6 +45,7 @@ python minimax_frame_worker.py \
     --maxfev "$MAXFEV" \
     --max_iter "$MAX_ITER" \
     --seed "$SEED" \
-    --method "$METHOD"
+    --method "$METHOD" \
+    --gate_set "$GATE_SET"
 
 echo "Task ${SLURM_ARRAY_TASK_ID}: done"

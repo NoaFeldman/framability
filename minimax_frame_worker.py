@@ -1,11 +1,15 @@
 """
 Per-task worker: minimise over a Kronecker-structured frame D = kron(S, S) the
-worst-case framability across the gate set {H, T, CNOT} under 2-qubit
-depolarisation with rate p.
+worst-case framability across a gate set under 2-qubit depolarisation with
+rate p.
+
+Supported gate sets (selected via --gate_set):
+    H_CNOT_T      {H, T, CNOT}        (default, backward compatible)
+    H_CNOT_sqrtT  {H, CNOT, sqrtT}
 
 For a given (d_ext_single, p):
 
-    min_S   max_{g in {H, T, CNOT}}  framability(D=kron(S,S), N_p^{x2} . g_super)
+    min_S   max_{g in gate_set}  framability(D=kron(S,S), N_p^{x2} . g_super)
 
 S has shape (4, d_ext_single).  The first two columns of S are fixed to I and
 Z (matching optimize_framability._FIXED_COLS); the remaining free columns are
@@ -13,13 +17,14 @@ parameterised by a real vector of length 4*(d_ext_single-2) and normalised
 column-wise via the Bloch projection used by optimize_framability.
 
 Output: <out_dir>/minimax_<d>_<pi:02d>.npz
-  framability: (3,)   per-gate framability at D_opt, in order [H, T, CNOT]
+  framability: (n_gates,) per-gate framability at D_opt
   worst:       ()     max of the above (the minimised objective)
   D:           (16, d_ext)  optimal frame
   S:           (4, d_ext_single)  single-qubit factor
   x:           (n_params,)  raw parameter vector
   d_ext_single: ()    int
   p:           ()     float
+  gates:       (n_gates,)  gate labels
 
 Task layout (set by --task_id):
     task_id = d_idx * N_P + p_idx
@@ -47,15 +52,20 @@ from optimize_framability import (
     _params_to_D,
     _project_columns_bloch,
 )
-from sweep_depol_gates_worker import GATES, build_channel
+from sweep_depol_gates_worker import build_channel
 
+
+# ── gate set definitions ─────────────────────────────────────────────────────
+GATE_SETS = {
+    'H_CNOT_T':     ['CNOT', 'H', 'T'],
+    'H_CNOT_sqrtT': ['H', 'CNOT', 'sqrtT'],
+}
 
 # ── parameter grid ───────────────────────────────────────────────────────────
 D_EXT_SINGLES = [4, 6, 8]
 P_VALUES = [0.01 * i for i in range(11)]
 N_D = len(D_EXT_SINGLES)
 N_P = len(P_VALUES)
-N_GATES = len(GATES)
 N_S_ROWS = 4  # qubit_d^2
 N_QUBITS = 2
 
@@ -141,7 +151,13 @@ def main() -> None:
     parser.add_argument('--method', type=str, default='SLSQP',
                         help='Optimizer. SLSQP/trust-constr/COBYLA support '
                              'the diag(SS^T)>=1 inequality constraint.')
+    parser.add_argument('--gate_set', type=str, default='H_CNOT_T',
+                        choices=list(GATE_SETS.keys()),
+                        help='Gate set to optimise over (default: H_CNOT_T).')
     args = parser.parse_args()
+
+    GATES = GATE_SETS[args.gate_set]
+    N_GATES = len(GATES)
 
     if args.task_id < 0 or args.task_id >= N_D * N_P:
         print(f'ERROR: task_id {args.task_id} out of range '
