@@ -54,6 +54,8 @@ def main():
         for f in missing:
             print(f'  {f}', file=sys.stderr)
 
+    fra2 = fra ** 2
+
     # ── print table ──────────────────────────────────────────────────────────
     header = f"{'p':>6s}" + ''.join(f'  {lbl:>30s}' for lbl in GATE_LABELS)
     print(header)
@@ -61,7 +63,7 @@ def main():
     for pi, p in enumerate(P_VALUES):
         row = f'{p:6.3f}'
         for g in range(n_gates):
-            val = fra[g, pi]
+            val = fra2[g, pi]
             row += f'  {val:>30.6f}' if not np.isnan(val) else f'  {"NaN":>30s}'
         print(row)
 
@@ -69,10 +71,10 @@ def main():
     fig, ax = plt.subplots(figsize=(7, 4.5))
 
     for g in range(n_gates):
-        mask = ~np.isnan(fra[g])
+        mask = ~np.isnan(fra2[g])
         ax.plot(
             np.array(P_VALUES)[mask],
-            fra[g][mask],
+            fra2[g][mask],
             marker=MARKERS[g],
             linewidth=1.8,
             markersize=7,
@@ -80,7 +82,7 @@ def main():
         )
 
     ax.set_xlabel(r'Depolarising probability $p$', fontsize=12)
-    ax.set_ylabel(r'Product-state framability  ($\chi = 30$)', fontsize=12)
+    ax.set_ylabel(r'$\|\lambda^{(j)}\|_1^2$  ($\chi = 30$)', fontsize=12)
     ax.set_title(r'Framability of $\Lambda_p \circ U$ vs noise strength', fontsize=12)
     ax.legend(fontsize=11)
     ax.grid(True, alpha=0.3)
