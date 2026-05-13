@@ -72,6 +72,7 @@ def _depol_2q(p):
 def build_channel(gate_label, p):
     H = np.array([[1, 1], [1, -1]], dtype=complex) / np.sqrt(2.0)
     T = np.diag([1.0, np.exp(1j * np.pi / 4)]).astype(complex)
+    sqrtT = np.diag([1.0, np.exp(1j * np.pi / 8)]).astype(complex)
     CNOT = np.array([[1, 0, 0, 0],
                      [0, 1, 0, 0],
                      [0, 0, 0, 1],
@@ -80,6 +81,8 @@ def build_channel(gate_label, p):
         U = np.kron(H, _I)
     elif gate_label == 'T':
         U = np.kron(T, _I)
+    elif gate_label == 'sqrtT':
+        U = np.kron(sqrtT, _I)
     elif gate_label == 'CNOT':
         U = CNOT
     else:
