@@ -107,13 +107,16 @@ def _build_inits(n_restarts, rng):
     return inits
 
 
-def optimize_free6(gate, n_restarts=10, seed=None, maxfev=2000):
+def optimize_free6(gate, n_restarts=10, seed=None, maxfev=2000, extra_init_xs=None):
     """Minimize framability over D = kron(S,S), S 4×6, all columns free,
     with penalty for diag(S @ S.T) < 1."""
     rng = np.random.default_rng(seed)
     gate = np.asarray(gate, dtype=float)
 
     inits = _build_inits(n_restarts, rng)
+    if extra_init_xs:
+        for x in extra_init_xs:
+            inits.append(np.asarray(x, dtype=float))
 
     best_val = np.inf
     best_x = None
