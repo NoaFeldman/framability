@@ -30,7 +30,7 @@ MAXFEV=${MAXFEV:-2000}
 MAX_ITER=${MAX_ITER:-500}
 J=${J:-1.0}
 DT=${DT:-0.01}
-METHOD=${METHOD:-dual_annealing}
+METHOD=${METHOD:-Nelder-Mead}
 SEED=${SEED:-0}
 
 source "${SLURM_SUBMIT_DIR}/.venv/bin/activate"

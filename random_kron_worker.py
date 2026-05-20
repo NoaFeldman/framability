@@ -72,7 +72,7 @@ def main() -> None:
     parser.add_argument('--n_restarts', type=int,   default=10)
     parser.add_argument('--maxfev',     type=int,   default=2000)
     parser.add_argument('--max_iter',   type=int,   default=500)
-    parser.add_argument('--method',     type=str,   default='dual_annealing')
+    parser.add_argument('--method',     type=str,   default=DEFAULT_METHOD)
     parser.add_argument('--seed',       type=int,   default=0)
     args = parser.parse_args()
 

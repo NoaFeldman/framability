@@ -47,7 +47,7 @@ def main() -> None:
     parser.add_argument('--max_iter',   type=int,   default=500)
     parser.add_argument('--J',          type=float, default=1.0)
     parser.add_argument('--dt',         type=float, default=0.01)
-    parser.add_argument('--method',     type=str,   default='dual_annealing')
+    parser.add_argument('--method',     type=str,   default=DEFAULT_METHOD)
     parser.add_argument('--seed',       type=int,   default=0)
     args = parser.parse_args()
 

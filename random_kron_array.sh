@@ -28,7 +28,7 @@ OUT_DIR=${OUT_DIR:-results_random_kron}
 N_RESTARTS=${N_RESTARTS:-10}
 MAXFEV=${MAXFEV:-2000}
 MAX_ITER=${MAX_ITER:-500}
-METHOD=${METHOD:-dual_annealing}
+METHOD=${METHOD:-Nelder-Mead}
 SEED=${SEED:-0}
 
 source "${SLURM_SUBMIT_DIR}/.venv/bin/activate"
