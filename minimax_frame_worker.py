@@ -188,7 +188,8 @@ def main() -> None:
     d_ext = d_ext_single ** N_QUBITS
     rng = np.random.default_rng(args.seed + 1000 * args.task_id)
 
-    inits = _build_inits(N_S_ROWS, d_ext_single, d_ext, args.n_restarts, rng)
+    inits = _build_inits(N_S_ROWS, d_ext_single, d_ext, args.n_restarts, rng,
+                         use_complex=False)
     # Prepend the X-Y extended-Pauli starting point.  For p above ~0.04
     # this point alone achieves worst-case framability = 1 across
     # {H, T, CNOT}, so without it the optimiser frequently misses the
