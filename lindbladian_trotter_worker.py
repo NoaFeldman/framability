@@ -49,6 +49,9 @@ def main() -> None:
     parser.add_argument('--dt',         type=float, default=0.01)
     parser.add_argument('--method',     type=str,   default=DEFAULT_METHOD)
     parser.add_argument('--seed',       type=int,   default=0)
+    parser.add_argument('--force_real', action='store_true',
+                        help='Force a real-valued S (overrides the auto '
+                             'use_complex selection in minimize_framability).')
     args = parser.parse_args()
 
     total = N_D * N_GAMMA * N_GP
@@ -90,6 +93,7 @@ def main() -> None:
         seed=args.seed + args.task_id,
         verbose=True,
         return_x=True,
+        use_complex=(False if args.force_real else None),
     )
     elapsed = time.perf_counter() - t0
 

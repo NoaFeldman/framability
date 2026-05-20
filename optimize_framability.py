@@ -195,7 +195,8 @@ def _kron_power(S, n):
 def minimize_framability(gate, d_ext_single, *, n_restarts=5,
                          method=None, max_iter=500, maxfev=2000,
                          tol=1e-6, seed=None, verbose=True,
-                         extra_init_xs=None, return_x=False):
+                         extra_init_xs=None, return_x=False,
+                         use_complex=None):
     """
     Find D = kron^n_qubits(S) with unit-norm columns of S that minimises
     heisenberg_framability(D, gate).
@@ -280,7 +281,11 @@ def minimize_framability(gate, d_ext_single, *, n_restarts=5,
     # seeks real u such that D u = Y_j (complex equation) which becomes a
     # 2*n_rows × d_ext real system.  For d_ext < 2*n_rows it is overdetermined
     # and generically infeasible; restrict S to real in that case.
-    _use_complex = (d_ext >= 2 * pauli_string_dim)
+    # Caller may override via use_complex= (True/False); None -> auto-select.
+    if use_complex is None:
+        _use_complex = (d_ext >= 2 * pauli_string_dim)
+    else:
+        _use_complex = bool(use_complex)
 
     n_free = d_ext_single - N_FIXED_COLS
     n_params = (2 if _use_complex else 1) * n_s * n_free

@@ -32,11 +32,17 @@ J=${J:-1.0}
 DT=${DT:-0.01}
 METHOD=${METHOD:-Nelder-Mead}
 SEED=${SEED:-0}
+FORCE_REAL=${FORCE_REAL:-1}   # 1 => force real S (override use_complex auto-select)
 
 source "${SLURM_SUBMIT_DIR}/.venv/bin/activate"
 export MPLCONFIGDIR="/tmp/matplotlib-${SLURM_JOB_ID}"
 
-echo "Task ${SLURM_ARRAY_TASK_ID}: starting  (OUT_DIR=${OUT_DIR})"
+FORCE_REAL_FLAG=""
+if [ "$FORCE_REAL" = "1" ]; then
+    FORCE_REAL_FLAG="--force_real"
+fi
+
+echo "Task ${SLURM_ARRAY_TASK_ID}: starting  (OUT_DIR=${OUT_DIR}, FORCE_REAL=${FORCE_REAL})"
 
 python lindbladian_trotter_worker.py \
     --task_id    "$SLURM_ARRAY_TASK_ID" \
@@ -47,6 +53,7 @@ python lindbladian_trotter_worker.py \
     --J          "$J" \
     --dt         "$DT" \
     --method     "$METHOD" \
-    --seed       "$SEED"
+    --seed       "$SEED" \
+    $FORCE_REAL_FLAG
 
 echo "Task ${SLURM_ARRAY_TASK_ID}: done"
