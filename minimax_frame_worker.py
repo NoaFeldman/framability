@@ -86,6 +86,59 @@ def _build_S(params: np.ndarray, d_ext_single: int) -> np.ndarray:
     return np.hstack([_FIXED_COLS, free])
 
 
+def _ixyz_xy_init(d_ext_single: int, a: float = 1.0) -> np.ndarray:
+    """S = [I | X, Y, Z, a(X+Y)/√2, a(X-Y)/√2, ...]
+
+    Columns: I (fixed), then free = [X, Y, Z, a(X+Y)/√2, a(X-Y)/√2].
+    This covers all four Pauli directions; unlike _ext_pauli_xy_init the
+    Z column is explicit instead of zero-padded.
+    """
+    n_free = d_ext_single - N_FIXED_COLS
+    base = np.array([
+        [0.0, 0.0, 0.0, 0.0,           0.0          ],  # I component
+        [1.0, 0.0, 0.0, a/np.sqrt(2),  a/np.sqrt(2) ],  # X component
+        [0.0, 1.0, 0.0, a/np.sqrt(2), -a/np.sqrt(2) ],  # Y component
+        [0.0, 0.0, 1.0, 0.0,           0.0          ],  # Z component
+    ])
+    free = np.zeros((N_S_ROWS, n_free))
+    k = min(n_free, base.shape[1])
+    free[:, :k] = base[:, :k]
+    return free.ravel()
+
+
+def _random_rotated_inits(d_ext_single: int, n_inits: int,
+                          rng: np.random.Generator) -> list[np.ndarray]:
+    """Generate n_inits starting points, each a Haar-random SO(3) rotation of the
+    XYZ subspace.
+
+    For each init a random 3×3 rotation Q is drawn (via QR of a Gaussian matrix).
+    Free columns 0..2 get Q's columns as their (X,Y,Z) rows; the I row stays 0.
+    Extra free columns (d_ext_single > 4) get independent random unit Bloch vectors,
+    also with I=0.  All columns are projected onto the Bloch ball before ravelling.
+    """
+    n_free = d_ext_single - N_FIXED_COLS
+    inits = []
+    for _ in range(n_inits):
+        G = rng.standard_normal((3, 3))
+        Q, _ = np.linalg.qr(G)
+        if np.linalg.det(Q) < 0:
+            Q[:, 0] *= -1           # ensure det = +1 (proper rotation)
+
+        free = np.zeros((N_S_ROWS, n_free))
+        k_rot = min(3, n_free)
+        free[1:4, :k_rot] = Q[:, :k_rot]   # rows 1,2,3 = X,Y,Z components
+
+        for j in range(3, n_free):          # extra columns: random unit Bloch
+            v = rng.standard_normal(3)
+            norm = np.linalg.norm(v)
+            if norm > 1e-10:
+                v /= norm
+            free[1:4, j] = v
+
+        inits.append(_project_columns_bloch(free).ravel())
+    return inits
+
+
 def _ext_pauli_xy_init(d_ext_single: int, a: float = 0.84) -> np.ndarray:
     """Flat param vector whose decoded S matches the generalised X-Y
     extended-Pauli frame with scale ``a`` (default a = 0.84).
@@ -188,13 +241,8 @@ def main() -> None:
     d_ext = d_ext_single ** N_QUBITS
     rng = np.random.default_rng(args.seed + 1000 * args.task_id)
 
-    inits = _build_inits(N_S_ROWS, d_ext_single, d_ext, args.n_restarts, rng,
-                         use_complex=False)
-    # Prepend the X-Y extended-Pauli starting point.  For p above ~0.04
-    # this point alone achieves worst-case framability = 1 across
-    # {H, T, CNOT}, so without it the optimiser frequently misses the
-    # global optimum at higher p.
-    inits = [_ext_pauli_xy_init(d_ext_single)] + inits
+    rotated = _random_rotated_inits(d_ext_single, args.n_restarts, rng)
+    inits = [_ixyz_xy_init(d_ext_single, a=0.84), _ext_pauli_xy_init(d_ext_single)] + rotated
 
     if args.method == 'SLSQP':
         opts = {'maxiter': args.max_iter, 'ftol': 1e-8}
