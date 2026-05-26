@@ -18,6 +18,7 @@ IN_DIR=${IN_DIR:-results_depol_kron}
 OUT_DIR=${OUT_DIR:-results_depol_kron}
 
 source "${SLURM_SUBMIT_DIR}/.venv/bin/activate"
+cd "${SLURM_SUBMIT_DIR}"
 export MPLCONFIGDIR="/tmp/matplotlib-${SLURM_JOB_ID}"
 
 python depol_kron_collect.py --in_dir "$IN_DIR" --out_dir "$OUT_DIR"

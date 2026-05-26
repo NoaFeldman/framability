@@ -34,6 +34,7 @@ SEED=${SEED:-0}
 FORCE_REAL=${FORCE_REAL:-1}
 
 source "${SLURM_SUBMIT_DIR}/.venv/bin/activate"
+cd "${SLURM_SUBMIT_DIR}"
 export MPLCONFIGDIR="/tmp/matplotlib-${SLURM_JOB_ID}"
 
 FORCE_REAL_FLAG=""

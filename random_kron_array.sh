@@ -32,6 +32,7 @@ METHOD=${METHOD:-Nelder-Mead}
 SEED=${SEED:-0}
 
 source "${SLURM_SUBMIT_DIR}/.venv/bin/activate"
+cd "${SLURM_SUBMIT_DIR}"
 export MPLCONFIGDIR="/tmp/matplotlib-${SLURM_JOB_ID}"
 
 echo "Task ${SLURM_ARRAY_TASK_ID}: starting  (OUT_DIR=${OUT_DIR})"

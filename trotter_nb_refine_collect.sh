@@ -18,6 +18,7 @@ IN_DIR=${IN_DIR:-results_trotter}
 OUT_DIR=${OUT_DIR:-results_trotter}
 
 source "${SLURM_SUBMIT_DIR}/.venv/bin/activate"
+cd "${SLURM_SUBMIT_DIR}"
 export MPLCONFIGDIR="/tmp/matplotlib-${SLURM_JOB_ID}"
 
 python trotter_nb_refine_collect.py --in_dir "$IN_DIR" --out_dir "$OUT_DIR"

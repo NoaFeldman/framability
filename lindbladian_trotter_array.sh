@@ -35,6 +35,7 @@ SEED=${SEED:-0}
 FORCE_REAL=${FORCE_REAL:-1}   # 1 => force real S (override use_complex auto-select)
 
 source "${SLURM_SUBMIT_DIR}/.venv/bin/activate"
+cd "${SLURM_SUBMIT_DIR}"
 export MPLCONFIGDIR="/tmp/matplotlib-${SLURM_JOB_ID}"
 
 FORCE_REAL_FLAG=""

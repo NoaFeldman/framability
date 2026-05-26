@@ -32,6 +32,7 @@ METHOD=${METHOD:-SLSQP}
 GATE_SET=${GATE_SET:-H_CNOT_T}
 
 source "${SLURM_SUBMIT_DIR}/.venv/bin/activate"
+cd "${SLURM_SUBMIT_DIR}"
 export MPLCONFIGDIR="/tmp/matplotlib-${SLURM_JOB_ID}"
 
 echo "Task ${SLURM_ARRAY_TASK_ID}: starting  (OUT_DIR=${OUT_DIR}, METHOD=${METHOD}, n_restarts=${N_RESTARTS})"
