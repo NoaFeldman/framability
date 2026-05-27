@@ -80,15 +80,17 @@ def _build_S(params: np.ndarray, d_ext_single: int) -> np.ndarray:
 
 
 def _ixyz_xy_init(d_ext_single: int, a: float = 0.84) -> np.ndarray:
-    n_free = d_ext_single - N_FIXED_COLS
-    base   = np.array([
-        [0.0, 0.0, 0.0, 0.0,           0.0          ],
-        [1.0, 0.0, 0.0, a/np.sqrt(2),  a/np.sqrt(2) ],
-        [0.0, 1.0, 0.0, a/np.sqrt(2), -a/np.sqrt(2) ],
-        [0.0, 0.0, 1.0, 0.0,           0.0          ],
+    b = a / np.sqrt(2)
+    # 7 structured directions: X, Y, Z, (X+Y)/√2, (X-Y)/√2, (X+Z)/√2, (Y+Z)/√2
+    base = np.array([
+        [0., 0., 0., 0.,  0.,  0.,  0.],
+        [1., 0., 0., b,   b,   b,   0.],
+        [0., 1., 0., b,  -b,   0.,  b ],
+        [0., 0., 1., 0.,  0.,  b,   b ],
     ])
-    free = np.zeros((N_S_ROWS, n_free))
-    k    = min(n_free, base.shape[1])
+    n_free = d_ext_single - N_FIXED_COLS
+    free   = np.zeros((N_S_ROWS, n_free))
+    k      = min(n_free, base.shape[1])
     free[:, :k] = base[:, :k]
     return free.ravel()
 

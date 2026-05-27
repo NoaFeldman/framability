@@ -93,12 +93,14 @@ def _ixyz_xy_init(d_ext_single: int, a: float = 1.0) -> np.ndarray:
     This covers all four Pauli directions; unlike _ext_pauli_xy_init the
     Z column is explicit instead of zero-padded.
     """
+    b = a / np.sqrt(2)
+    # 7 structured directions: X, Y, Z, (X+Y)/√2, (X-Y)/√2, (X+Z)/√2, (Y+Z)/√2
     n_free = d_ext_single - N_FIXED_COLS
     base = np.array([
-        [0.0, 0.0, 0.0, 0.0,           0.0          ],  # I component
-        [1.0, 0.0, 0.0, a/np.sqrt(2),  a/np.sqrt(2) ],  # X component
-        [0.0, 1.0, 0.0, a/np.sqrt(2), -a/np.sqrt(2) ],  # Y component
-        [0.0, 0.0, 1.0, 0.0,           0.0          ],  # Z component
+        [0., 0., 0., 0.,  0.,  0.,  0.],  # I component
+        [1., 0., 0., b,   b,   b,   0.],  # X component
+        [0., 1., 0., b,  -b,   0.,  b ],  # Y component
+        [0., 0., 1., 0.,  0.,  b,   b ],  # Z component
     ])
     free = np.zeros((N_S_ROWS, n_free))
     k = min(n_free, base.shape[1])
