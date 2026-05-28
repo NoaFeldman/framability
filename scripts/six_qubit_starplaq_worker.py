@@ -41,7 +41,7 @@ from pathlib import Path
 import numpy as np
 from scipy.linalg import expm
 from scipy.sparse import csc_matrix, eye as sp_eye, hstack as sp_hstack, vstack as sp_vstack
-from scipy.sparse.linalg import eigs
+from scipy.sparse.linalg import eigs, spsolve
 from scipy.optimize import linprog, minimize
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -118,32 +118,36 @@ def _steady_state_and_decay(L):
     c_ss: 4096-vec, the Pauli-basis coefficients of the steady state
           normalised so c_ss[0] = 1/64 (unit trace).
     decay_rate: magnitude of the slowest non-zero eigenvalue of L.
+
+    Steady state is found via a direct linear solve (pin the identity
+    coefficient to 1/d) rather than from an eigenvector, which is
+    numerically unstable when c_ss[0] is small.
     """
-    L_sp = csc_matrix(L.astype(complex))
-    # Eigenvalues closest to 0: the steady state (=0) plus the slowest mode
-    evals, evecs = eigs(L_sp, k=3, sigma=1e-10, which='LM', tol=1e-10, maxiter=2000)
-    abs_e = np.abs(evals)
-    order = np.argsort(abs_e)
+    n = L.shape[0]
+    d = 2 ** N_QUBITS_6Q  # 64
 
-    # steady state
-    ss_idx = int(order[0])
-    c_ss = evecs[:, ss_idx].real
-    if abs(c_ss[0]) < 1e-12:
-        # try the second smallest |eigenvalue|
-        ss_idx = int(order[1])
-        c_ss = evecs[:, ss_idx].real
-        if abs(c_ss[0]) < 1e-12:
-            raise RuntimeError('Could not identify steady state (no eigenvector '
-                               'with non-zero identity coefficient).')
-    c_ss = c_ss / (c_ss[0] * (2 ** N_QUBITS_6Q))
+    # --- steady state: replace row 0 with trace-normalisation constraint ---
+    L_mod = L.astype(float).copy()
+    L_mod[0, :] = 0.0
+    L_mod[0, 0] = 1.0
+    rhs = np.zeros(n)
+    rhs[0] = 1.0 / d
+    c_ss = spsolve(csc_matrix(L_mod), rhs)
+    if np.iscomplexobj(c_ss):
+        c_ss = c_ss.real
 
-    # decay rate: smallest non-zero |eig|
+    # --- decay rate via shift-invert eigs ---
     decay = float('nan')
-    for k in order[1:]:
-        e = evals[k]
-        if abs(e) > 1e-8:
-            decay = float(abs(e.real))
-            break
+    try:
+        L_sp = csc_matrix(L.astype(complex))
+        evals, _ = eigs(L_sp, k=4, sigma=1e-10, which='LM', tol=1e-8, maxiter=5000)
+        for e in sorted(np.abs(evals)):
+            if e > 1e-6:
+                decay = float(e)
+                break
+    except Exception:
+        pass
+
     return c_ss, decay
 
 
