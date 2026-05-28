@@ -121,7 +121,7 @@ def _steady_state_and_decay(L):
     """
     L_sp = csc_matrix(L.astype(complex))
     # Eigenvalues closest to 0: the steady state (=0) plus the slowest mode
-    evals, evecs = eigs(L_sp, k=3, sigma=0.0, which='LM', tol=1e-10, maxiter=2000)
+    evals, evecs = eigs(L_sp, k=3, sigma=1e-10, which='LM', tol=1e-10, maxiter=2000)
     abs_e = np.abs(evals)
     order = np.argsort(abs_e)
 
