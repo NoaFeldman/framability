@@ -3,10 +3,11 @@ sign_problem.py
 
 Sign problem of a (possibly non-unitary) gate U:
 
-    s(U) = |tr(U) / tr(|U|)|
+    s(U) = |sum(U) / sum(|U|)|
 
-where |U| is the element-wise absolute value (NOT the operator |·|), so
-s(U) is basis-dependent.
+where sum is over ALL matrix elements and |U| is element-wise absolute
+value.  s(U) is basis-dependent and lies in [0, 1]; s=1 means no sign
+problem, s→0 means severe cancellation.
 
 Translationally-invariant local basis search:
 given U on n qubits, conjugate by R^⊗n with
@@ -37,11 +38,11 @@ _Z = np.array([[1, 0], [0, -1]], dtype=complex)
 
 # ── sign problem ─────────────────────────────────────────────────────────────
 def sign_problem(U: np.ndarray) -> float:
-    """|tr(U) / tr(|U|)|, with |U| the element-wise absolute value."""
-    denom = np.trace(np.abs(U))
+    """|sum(U) / sum(|U|)|, summing over all matrix elements."""
+    denom = np.sum(np.abs(U))
     if denom == 0:
         return float('inf')
-    return float(np.abs(np.trace(U) / denom))
+    return float(np.abs(np.sum(U) / denom))
 
 
 # ── single-qubit rotation and its n-fold Kronecker power ─────────────────────
