@@ -34,6 +34,7 @@ import time
 import numpy as np
 from scipy.linalg import expm
 
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from sign_problem import minimize_sign_problem, sign_problem
 
 # ── grid ─────────────────────────────────────────────────────────────────────
