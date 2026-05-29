@@ -119,30 +119,52 @@ def _steady_state_and_decay(L):
           normalised so c_ss[0] = 1/64 (unit trace).
     decay_rate: magnitude of the slowest non-zero eigenvalue of L.
 
-    Steady state is found via a direct linear solve (pin the identity
-    coefficient to 1/d) rather than from an eigenvector, which is
-    numerically unstable when c_ss[0] is small.
+    Steady state via direct sparse solve (pin trace); falls back to the
+    maximally mixed state when the null space is degenerate (e.g. free
+    qubits at gamma_p=0) or when spsolve returns non-finite values.
+
+    Decay rate via shift-invert eigs with sigma=-0.01: (L+0.01I) is
+    nonsingular for any Lindbladian (all eigenvalues have Re<=0, so no
+    eigenvalue hits -0.01 unless the decay rate is exactly 0.01), whereas
+    sigma=0 or sigma=+epsilon makes UMFPACK factor the near-singular matrix.
     """
     n = L.shape[0]
     d = 2 ** N_QUBITS_6Q  # 64
 
-    # --- steady state: replace row 0 with trace-normalisation constraint ---
-    L_mod = L.astype(float).copy()
+    # --- steady state: sparse row-0 replacement ---
+    L_sp = csc_matrix(L.astype(float))
+    L_mod = L_sp.tolil()
     L_mod[0, :] = 0.0
     L_mod[0, 0] = 1.0
+    L_mod = L_mod.tocsc()
     rhs = np.zeros(n)
     rhs[0] = 1.0 / d
-    c_ss = spsolve(csc_matrix(L_mod), rhs)
+    c_ss = spsolve(L_mod, rhs)
     if np.iscomplexobj(c_ss):
         c_ss = c_ss.real
 
-    # --- decay rate via shift-invert eigs ---
+    # Validate: residual ||L c_ss||_inf on rows 1..n-1
+    if np.all(np.isfinite(c_ss)):
+        residual = float(np.max(np.abs((L_sp @ c_ss)[1:])))
+    else:
+        residual = np.inf
+
+    if residual > 0.01:
+        # Degenerate null space or solve failure: maximally mixed state.
+        # Valid because both jump operators (XXXX, ZZZZ) are unitary, so
+        # D[L](I/d) = 0 and -i[H, I/d] = 0 for any H.
+        print(f'  [ss] spsolve residual={residual:.2e}, using maximally mixed fallback',
+              flush=True)
+        c_ss = np.zeros(n)
+        c_ss[0] = 1.0 / d
+
+    # --- decay rate via shift-invert eigs (sigma = -0.01) ---
     decay = float('nan')
     try:
-        L_sp = csc_matrix(L.astype(complex))
-        evals, _ = eigs(L_sp, k=4, sigma=1e-10, which='LM', tol=1e-8, maxiter=5000)
+        evals, _ = eigs(L_sp.astype(complex), k=4, sigma=-0.01, which='LM',
+                        tol=1e-8, maxiter=5000)
         for e in sorted(np.abs(evals)):
-            if e > 1e-6:
+            if e > 1e-4:
                 decay = float(e)
                 break
     except Exception:
