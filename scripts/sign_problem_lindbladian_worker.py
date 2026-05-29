@@ -112,11 +112,16 @@ def minimize_sign_problem_pauli_basis(gate: np.ndarray,
                                       seed: int = 0,
                                       verbose: bool = False
                                       ) -> tuple[float, np.ndarray]:
+    """MAXIMISE s(M(R) kron M(R) . gate . (...).T) over local R.
+
+    s=1 is no sign problem (best); s->0 is severe cancellation.
+    We minimise -s internally to drive s toward 1.
+    """
     from scipy.optimize import minimize
     rng = np.random.default_rng(seed)
 
-    def obj(params: np.ndarray) -> float:
-        return sign_problem(_rotate_gate_pauli_basis(gate, params))
+    def neg_obj(params: np.ndarray) -> float:
+        return -sign_problem(_rotate_gate_pauli_basis(gate, params))
 
     best_val = sign_problem(gate)
     best_n = np.zeros(3)
@@ -125,9 +130,9 @@ def minimize_sign_problem_pauli_basis(gate: np.ndarray,
     for r in range(n_restarts):
         x0 = rng.standard_normal(3)
         x0 /= max(np.linalg.norm(x0), 1e-14)
-        res = minimize(obj, x0, method=method)
-        f_cand = float(res.fun)
-        if f_cand < best_val:
+        res = minimize(neg_obj, x0, method=method)
+        f_cand = float(-res.fun)
+        if f_cand > best_val:
             best_val = f_cand
             best_n = res.x.copy()
         if verbose:

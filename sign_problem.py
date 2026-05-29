@@ -86,14 +86,18 @@ def minimize_sign_problem(U: np.ndarray,
                           normalize: bool = False,
                           verbose: bool = False
                           ) -> tuple[float, np.ndarray]:
-    """Gradient descent over (nx,ny,nz) for the basis that minimises s(U).
+    """Gradient ascent over (nx,ny,nz) for the basis that MAXIMISES s(U).
+
+    s=1 means no sign problem (best), s->0 means severe cancellation.
+    The function name is kept for backward compatibility; internally we
+    minimise -s to drive s toward 1.
 
     Returns (best_value, best_n).  best_n is normalised iff normalize=True.
     """
     rng = np.random.default_rng(seed)
 
-    def obj(params: np.ndarray) -> float:
-        return sign_problem(rotated_gate(U, params, normalize=normalize))
+    def neg_obj(params: np.ndarray) -> float:
+        return -sign_problem(rotated_gate(U, params, normalize=normalize))
 
     best_val = sign_problem(U)
     best_n = np.zeros(3)
@@ -103,9 +107,9 @@ def minimize_sign_problem(U: np.ndarray,
     for r in range(n_restarts):
         x0 = rng.standard_normal(3)
         x0 /= max(np.linalg.norm(x0), 1e-14)
-        res = minimize(obj, x0, method=method)
-        f_cand = float(res.fun)
-        if f_cand < best_val:
+        res = minimize(neg_obj, x0, method=method)
+        f_cand = float(-res.fun)
+        if f_cand > best_val:
             best_val = f_cand
             best_n = res.x.copy()
             if normalize and np.linalg.norm(best_n) > 1e-14:
