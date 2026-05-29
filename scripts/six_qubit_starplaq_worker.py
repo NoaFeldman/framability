@@ -36,6 +36,7 @@ import argparse
 import os
 import sys
 import time
+import warnings
 from pathlib import Path
 
 import numpy as np
@@ -139,7 +140,15 @@ def _steady_state_and_decay(L):
     L_mod = L_mod.tocsc()
     rhs = np.zeros(n)
     rhs[0] = 1.0 / d
-    c_ss = spsolve(L_mod, rhs)
+    # Suppress MatrixRankWarning + RuntimeWarning when L_mod is singular
+    # (degenerate null space, e.g. free qubits at gamma_p=0 or gamma_s=0):
+    # the fallback below handles it.
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        try:
+            c_ss = spsolve(L_mod, rhs)
+        except Exception:
+            c_ss = np.full(n, np.nan)
     if np.iscomplexobj(c_ss):
         c_ss = c_ss.real
 
