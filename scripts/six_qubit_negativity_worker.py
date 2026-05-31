@@ -14,6 +14,8 @@ import time
 
 import numpy as np
 
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 from six_qubit_lindbladian import (
     build_lindbladian_comp, LATTICE_SHAPE, HILBERT_DIM
 )

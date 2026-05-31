@@ -34,6 +34,8 @@ import scipy.linalg as la
 from scipy.optimize import linprog
 from scipy.sparse import csc_matrix
 
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 from framability import haar_measure
 
 # ── experiment parameters ────────────────────────────────────────────────────

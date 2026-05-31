@@ -49,6 +49,8 @@ import sys
 import numpy as np
 from scipy.linalg import expm
 
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 from two_qubit_lindbladian import numeric_two_qubit_lindbladian, qubit_d
 from framability import extended_pauli_D
 from optimize_framability import minimize_framability, DEFAULT_METHOD

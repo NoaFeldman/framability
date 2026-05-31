@@ -41,6 +41,8 @@ import numpy as np
 from scipy.linalg import expm
 from scipy.optimize import minimize
 
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 from two_qubit_lindbladian import (
     numeric_two_qubit_lindbladian,
     pauli_string_dim,

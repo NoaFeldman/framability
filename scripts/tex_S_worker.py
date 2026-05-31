@@ -21,6 +21,10 @@ import os
 import numpy as np
 from scipy.linalg import expm
 
+import sys
+import os
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 from framability import extended_pauli_D
 from optimize_framability import minimize_framability, DEFAULT_METHOD, _project_columns
 from analysis import compute_steady_state

@@ -27,6 +27,8 @@ import sys
 
 import numpy as np
 
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 from analysis import compute_steady_state, compute_max_bond_dim
 
 FIDELITY_THRESHOLD = 0.99

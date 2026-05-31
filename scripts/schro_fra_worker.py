@@ -30,6 +30,8 @@ from scipy.linalg import expm
 from scipy.optimize import linprog
 from scipy.sparse import csc_matrix
 
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 from two_qubit_lindbladian import numeric_two_qubit_lindbladian
 
 # Chi values to compute (chi=10 and chi=30 are already done; chi=20 was skipped)

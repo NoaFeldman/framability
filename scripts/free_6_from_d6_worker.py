@@ -20,6 +20,8 @@ import sys
 import numpy as np
 from scipy.linalg import expm
 
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 from analysis import compute_steady_state
 from free_6_scan_worker import optimize_free6
 

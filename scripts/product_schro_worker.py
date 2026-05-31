@@ -38,6 +38,8 @@ from scipy.linalg import expm
 from scipy.optimize import linprog
 from scipy.sparse import csc_matrix
 
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 from two_qubit_lindbladian import numeric_two_qubit_lindbladian
 
 CHI = 30   # single-qubit frame size; two-qubit frame has CHI² = 900 columns

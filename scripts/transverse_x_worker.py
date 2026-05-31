@@ -29,6 +29,8 @@ import time
 import numpy as np
 from scipy.linalg import expm
 
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 from optimize_framability import minimize_framability
 
 GAMMA_MAX  = 8.0

@@ -47,6 +47,8 @@ import numpy as np
 from scipy.linalg import expm
 from scipy.sparse.linalg import expm_multiply
 
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
 from two_qubit_lindbladian import numeric_two_qubit_lindbladian
 from framability import (
     extended_pauli_D, heisenberg_framability, dyadic_stabilizer_framability,

@@ -51,6 +51,15 @@ def _panel(ax, data, gamma_vals, gp_vals, title, *,
     g_edges  = np.append(gamma_vals - GAMMA_STEP / 2, gamma_vals[-1] + GAMMA_STEP / 2)
     im = ax.pcolormesh(gp_edges, g_edges, data,
                        cmap=cmap, vmin=vmin, vmax=vmax, shading='flat')
+    # Contour marking the sign-problem-free locus s = 1
+    if np.any(np.isfinite(data)):
+        finite = data[np.isfinite(data)]
+        if finite.min() < 1.0 < finite.max():
+            try:
+                ax.contour(gp_vals, gamma_vals, data,
+                           levels=[1.0], colors='red', linewidths=1.2)
+            except Exception:
+                pass
     plt.colorbar(im, ax=ax)
     ax.set_xlabel(r"$\gamma'$", fontsize=11)
     ax.set_ylabel(r'$\gamma$',  fontsize=11)

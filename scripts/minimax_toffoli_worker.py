@@ -33,6 +33,8 @@ import time
 import numpy as np
 from scipy.optimize import minimize
 
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 from optimize_framability import (
     N_FIXED_COLS,
     _FIXED_COLS,
