@@ -42,7 +42,7 @@ from pathlib import Path
 import numpy as np
 from scipy.linalg import expm
 from scipy.sparse import csc_matrix, eye as sp_eye, hstack as sp_hstack, vstack as sp_vstack
-from scipy.sparse.linalg import eigs, spsolve
+from scipy.sparse.linalg import eigs, spsolve, expm_multiply
 from scipy.optimize import linprog, minimize
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -235,17 +235,21 @@ def _otoc(L, t, V_qubit=_QU, W_qubit=_QR):
     """OTOC at time t with V = X_{V_qubit}, W = X_{W_qubit}, psi_0 = |0>^6.
 
         OTOC(t) = <0| W(t)^† V^† W(t) V |0>
+
+    Uses expm_multiply on the sparse L to avoid the O(n^3) dense expm.
+    E_t^† c = e^{L^† t} c, so we apply expm_multiply(L^† * t, c).
     """
     if t <= 0:
         return float('nan')
-    E_t = expm(L * t)
+    L_sp = csc_matrix(L.astype(complex))
 
     w_str = [I_] * N_QUBITS_6Q
     w_str[W_qubit] = X_
     c_w0 = np.zeros(DIM_6Q, dtype=float)
     c_w0[_string_to_index(w_str)] = 1.0
 
-    c_wt = (E_t.conj().T @ c_w0).real
+    # (E_t)^† c_w0 = e^{L^† t} c_w0
+    c_wt = expm_multiply(L_sp.conj().T * t, c_w0).real
     W_t = _pauli_vec_to_rho(c_wt)        # Hermitian linear combo of Paulis
 
     v_str = [I_] * N_QUBITS_6Q
