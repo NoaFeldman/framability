@@ -9,13 +9,13 @@ Lindbladian:  L = -i[H, .] + D[L_s] + D[L_p]
 Grid:
     h = lam = 1
     gamma_s, gamma_p in [GAMMA_STEP * i for i in range(N_GRID)],
-        with GAMMA_STEP = 0.2, N_GRID = 20  (so values 0.0 .. 3.8)
-    dt = GAMMA_STEP / 10 = 0.02
-    Total: 20*20 = 400 grid points
+        with GAMMA_STEP = 0.4, N_GRID = 10  (so values 0.0 .. 3.6)
+    dt = GAMMA_STEP / 10 = 0.04
+    Total: 10*10 = 100 grid points
 
-Parallelisation: 10 jobs.  Each job processes 40 grid points.
+Parallelisation: 10 jobs.  Each job processes 10 grid points.
     task_id in 0..9
-    For task t, the grid indices it owns are start..start+39 where
+    For task t, the grid indices it owns are start..start+9 where
     start = t * 40 (linear index = ig * N_GRID + igp).
 
 Per-point output: <out_dir>/starplaq_<ig:03d>_<igp:03d>.npz with keys:
@@ -36,13 +36,12 @@ import argparse
 import os
 import sys
 import time
-import warnings
 from pathlib import Path
 
 import numpy as np
 from scipy.linalg import expm
 from scipy.sparse import csc_matrix, eye as sp_eye, hstack as sp_hstack, vstack as sp_vstack
-from scipy.sparse.linalg import eigs, spsolve, expm_multiply
+from scipy.sparse.linalg import eigs, expm_multiply
 from scipy.optimize import linprog, minimize
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -60,10 +59,10 @@ from scipy.optimize._linprog_util import _LPProblem, _clean_inputs
 
 
 # ── grid ─────────────────────────────────────────────────────────────────────
-GAMMA_STEP = 0.2
-N_GRID     = int(round(4.0 / GAMMA_STEP))           # 20
-DT         = GAMMA_STEP / 10.0                      # 0.02
-N_TOTAL    = N_GRID * N_GRID                        # 400
+GAMMA_STEP = 0.4
+N_GRID     = int(round(4.0 / GAMMA_STEP))           # 10
+DT         = GAMMA_STEP / 10.0                      # 0.04
+N_TOTAL    = N_GRID * N_GRID                        # 100
 
 # qubit ordering [u, r, d, l, ur, ru] in the 6-qubit string
 _QU, _QR, _QD, _QL, _QUR, _QRU = 0, 1, 2, 3, 4, 5
@@ -112,72 +111,81 @@ def _permute_qubits(rho, n_qubits, perm):
     return rho_t.transpose(new_axes).reshape(d, d)
 
 
+def _initial_zero_state_pauli_vec():
+    """Pauli-basis coefficient vector of |0>^6 <0|.
+
+    |0><0| = (I + Z)/2 per qubit, so the 6-qubit product has coefficient
+    1/2^6 = 1/d for every Pauli string composed only of {I, Z} and 0 else.
+    (I has Pauli index 0, Z has index 3.)
+    """
+    d = 2 ** N_QUBITS_6Q  # 64
+    c0 = np.zeros(DIM_6Q, dtype=float)
+    for idx in range(DIM_6Q):
+        s = _index_to_string_n(idx, N_QUBITS_6Q)
+        if all(p in (0, 3) for p in s):
+            c0[idx] = 1.0 / d
+    return c0
+
+
+# Cached |0>^6 initial state (independent of L).
+_C0_ZERO_STATE = None
+
+
 # ── steady state and spectral quantities ────────────────────────────────────
 def _steady_state_and_decay(L):
     """Return (c_ss, decay_rate).
 
-    c_ss: 4096-vec, the Pauli-basis coefficients of the steady state
-          normalised so c_ss[0] = 1/64 (unit trace).
-    decay_rate: magnitude of the slowest non-zero eigenvalue of L.
+    The Lindbladian of two Hermitian Pauli-string jumps (XXXX, ZZZZ) has a
+    HIGHLY degenerate null space (~128-dim), so "the" steady state is not
+    unique -- it depends on the initial condition.  We therefore define the
+    steady state as the t->infinity limit of the physical relaxation of
+    |0>^6 <0|, computed via expm_multiply (projection onto null(L) along the
+    dynamics).  This is well-defined and consistent with the OTOC initial
+    state.
 
-    Steady state via direct sparse solve (pin trace); falls back to the
-    maximally mixed state when the null space is degenerate (e.g. free
-    qubits at gamma_p=0) or when spsolve returns non-finite values.
-
-    Decay rate via shift-invert eigs with sigma=-0.01: (L+0.01I) is
-    nonsingular for any Lindbladian (all eigenvalues have Re<=0, so no
-    eigenvalue hits -0.01 unless the decay rate is exactly 0.01), whereas
-    sigma=0 or sigma=+epsilon makes UMFPACK factor the near-singular matrix.
+    decay_rate: magnitude of the slowest non-zero eigenvalue of L, used to
+    pick an evolution time long enough to converge.
     """
-    n = L.shape[0]
-    d = 2 ** N_QUBITS_6Q  # 64
-
-    # --- steady state: sparse row-0 replacement ---
+    global _C0_ZERO_STATE
     L_sp = csc_matrix(L.astype(float))
-    L_mod = L_sp.tolil()
-    L_mod[0, :] = 0.0
-    L_mod[0, 0] = 1.0
-    L_mod = L_mod.tocsc()
-    rhs = np.zeros(n)
-    rhs[0] = 1.0 / d
-    # Suppress MatrixRankWarning + RuntimeWarning when L_mod is singular
-    # (degenerate null space, e.g. free qubits at gamma_p=0 or gamma_s=0):
-    # the fallback below handles it.
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
-        try:
-            c_ss = spsolve(L_mod, rhs)
-        except Exception:
-            c_ss = np.full(n, np.nan)
-    if np.iscomplexobj(c_ss):
-        c_ss = c_ss.real
 
-    # Validate: residual ||L c_ss||_inf on rows 1..n-1
-    if np.all(np.isfinite(c_ss)):
-        residual = float(np.max(np.abs((L_sp @ c_ss)[1:])))
-    else:
-        residual = np.inf
-
-    if residual > 0.01:
-        # Degenerate null space or solve failure: maximally mixed state.
-        # Valid because both jump operators (XXXX, ZZZZ) are unitary, so
-        # D[L](I/d) = 0 and -i[H, I/d] = 0 for any H.
-        print(f'  [ss] spsolve residual={residual:.2e}, using maximally mixed fallback',
-              flush=True)
-        c_ss = np.zeros(n)
-        c_ss[0] = 1.0 / d
-
-    # --- decay rate via shift-invert eigs (sigma = -0.01) ---
+    # --- decay rate: spectral gap (slowest non-zero relaxation mode) ---
+    # The null space is ~128-dim, so a shift-invert near 0 returns mostly the
+    # zero eigenvalues.  Request k well above the null dimension and take the
+    # eigenvalue with the smallest non-zero |.| as the gap.
     decay = float('nan')
     try:
-        evals, _ = eigs(L_sp.astype(complex), k=4, sigma=-0.01, which='LM',
-                        tol=1e-8, maxiter=5000)
+        evals, _ = eigs(L_sp.astype(complex), k=160, sigma=-0.01, which='LM',
+                        tol=1e-8, maxiter=10000)
         for e in sorted(np.abs(evals)):
             if e > 1e-4:
                 decay = float(e)
                 break
     except Exception:
         pass
+
+    # --- steady state: relax |0>^6 to t -> infinity ---
+    if _C0_ZERO_STATE is None:
+        _C0_ZERO_STATE = _initial_zero_state_pauli_vec()
+    c0 = _C0_ZERO_STATE
+
+    # Evolve long enough that the slowest non-zero mode is suppressed.
+    # e^{-decay * t} < ~1e-9 needs t ~ 20/decay; clamp to [50, 4000].
+    if np.isfinite(decay) and decay > 1e-6:
+        t_evolve = float(np.clip(40.0 / decay, 50.0, 4000.0))
+    else:
+        t_evolve = 400.0
+
+    c_ss = expm_multiply(L_sp * t_evolve, c0).real
+
+    # Validate convergence; if not converged, evolve further once.
+    residual = float(np.max(np.abs(L_sp @ c_ss)))
+    if residual > 1e-6:
+        c_ss = expm_multiply(L_sp * (4.0 * t_evolve), c0).real
+        residual = float(np.max(np.abs(L_sp @ c_ss)))
+        if residual > 1e-4:
+            print(f'  [ss] WARNING: not converged, residual={residual:.2e} '
+                  f'(t_evolve={4.0 * t_evolve:.0f})', flush=True)
 
     return c_ss, decay
 

@@ -3,7 +3,7 @@ Aggregate per-point results from six_qubit_starplaq_worker.py into a single
 summary .npz, and produce a multi-panel colormap figure analogous to
 results/two_qubit_scan_full.png.
 
-Grid: 20 x 20 over (gamma_s, gamma_p), step 0.2.
+Grid: 10 x 10 over (gamma_s, gamma_p), step 0.4.
 """
 
 from __future__ import annotations
@@ -14,8 +14,8 @@ from pathlib import Path
 import numpy as np
 import matplotlib.pyplot as plt
 
-GAMMA_STEP = 0.2
-N_GRID     = int(round(4.0 / GAMMA_STEP))   # 20
+GAMMA_STEP = 0.4
+N_GRID     = int(round(4.0 / GAMMA_STEP))   # 10
 
 # Output keys we care about
 _KEYS = [
@@ -112,7 +112,7 @@ def main() -> None:
         r'$H=h(X_u+X_r)+\lambda(Z_u+Z_r)$,  '
         r'$L_s=\sqrt{\gamma_s}\,X_uX_rX_dX_l$,  '
         r'$L_p=\sqrt{\gamma_p}\,Z_uZ_rZ_{ur}Z_{ru}$;  '
-        r'$h=\lambda=1$,  $dt=0.02$',
+        r'$h=\lambda=1$,  $dt=0.04$',
         fontsize=12,
     )
 

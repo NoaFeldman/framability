@@ -2,8 +2,8 @@
 # ============================================================
 #  SLURM job-array: 6-qubit star+plaquette Lindbladian Trotter scan.
 #
-#  10 jobs (task_id 0..9), each processing 40 grid points
-#  (400 total over a 20x20 grid in (gamma_s, gamma_p) with step 0.2).
+#  10 jobs (task_id 0..9), each processing 10 grid points
+#  (100 total over a 10x10 grid in (gamma_s, gamma_p) with step 0.4).
 #
 #  Submit:
 #    mkdir -p logs results_six_starplaq
@@ -24,9 +24,9 @@
 OUT_DIR=${OUT_DIR:-results_six_starplaq}
 H_FIELD=${H_FIELD:-1.0}
 LAM=${LAM:-1.0}
-DT=${DT:-0.02}
+DT=${DT:-0.04}
 DO_FRA_4=${DO_FRA_4:-1}
-DO_FRA_6=${DO_FRA_6:-0}
+DO_FRA_6=${DO_FRA_6:-1}
 FRA_RESTARTS=${FRA_RESTARTS:-2}
 FRA_MAXFEV=${FRA_MAXFEV:-30}
 SEED=${SEED:-0}
