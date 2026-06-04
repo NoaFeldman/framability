@@ -57,6 +57,15 @@ from lpdo import purification_sqrt, _bond_entropy
 from scipy.optimize._linprog_highs import _linprog_highs
 from scipy.optimize._linprog_util import _LPProblem, _clean_inputs
 
+# highspy: build the LP model once and warm-start across columns (~10x faster
+# than rebuilding the scipy model per column).  Optional; falls back to the
+# scipy per-column path if not installed.
+try:
+    import highspy
+    _HAS_HIGHSPY = True
+except ImportError:
+    _HAS_HIGHSPY = False
+
 
 # ── grid ─────────────────────────────────────────────────────────────────────
 GAMMA_STEP = 0.4
@@ -286,8 +295,64 @@ def _pauli_framability(gate):
     return float(np.max(np.sum(np.abs(gate), axis=1)))
 
 
+def _highspy_per_column_framability(D, gate):
+    """Per-column L1-minimisation framability using a single reused HiGHS model.
+
+    Solves, for every column j of Y = gate^T D,
+        min ||u||_1  s.t.  D u = Y[:, j]
+    via the standard split  min sum(t)  s.t.  D u = y,  u - t <= 0,  -u - t <= 0.
+
+    The constraint matrix is fixed across all columns, so the HiGHS model is
+    built once and only the equality-row bounds (the RHS y) change per column.
+    HiGHS warm-starts the simplex from the previous optimal basis, giving an
+    ~10x speedup over rebuilding the scipy model each call.
+    """
+    D = np.asarray(D, dtype=float)
+    n, d_ext = D.shape
+    if np.max(np.abs(gate.imag)) > 1e-12:
+        raise ValueError('gate must be real for the LP framability.')
+    Y = (gate.real.T @ D)
+
+    inf = highspy.kHighsInf
+    h = highspy.Highs()
+    h.setOptionValue('output_flag', False)
+    h.setOptionValue('presolve', 'off')          # warm start is incompatible w/ presolve
+    h.setOptionValue('solver', 'simplex')
+
+    nv = 2 * d_ext  # [u (free), t (>=0)]
+    cost = np.concatenate([np.zeros(d_ext), np.ones(d_ext)])
+    lb = np.concatenate([-inf * np.ones(d_ext), np.zeros(d_ext)])
+    ub = inf * np.ones(nv)
+    h.addVars(nv, lb, ub)
+    h.changeColsCost(nv, np.arange(nv, dtype=np.int32), cost)
+
+    # Rows: n equality (D u = y) + 2*d_ext inequality (|u| <= t).
+    I_de = sp_eye(d_ext, format='csr')
+    A_eq = sp_hstack([csc_matrix(D), csc_matrix((n, d_ext))]).tocsr()
+    A_ub = sp_vstack([sp_hstack([I_de, -I_de]),
+                      sp_hstack([-I_de, -I_de])]).tocsr()
+    A = sp_vstack([A_eq, A_ub]).tocsr()
+    row_lb = np.concatenate([np.zeros(n), -inf * np.ones(2 * d_ext)])
+    row_ub = np.concatenate([np.zeros(n), np.zeros(2 * d_ext)])
+    h.addRows(A.shape[0], row_lb, row_ub, A.nnz,
+              A.indptr.astype(np.int32), A.indices.astype(np.int32), A.data)
+
+    eq_idx = np.arange(n, dtype=np.int32)
+    best = 0.0
+    for j in range(d_ext):
+        y = Y[:, j]
+        h.changeRowsBounds(n, eq_idx, y, y)
+        h.run()
+        x = np.asarray(h.getSolution().col_value[:d_ext])
+        best = max(best, float(np.sum(np.abs(x))))
+    return best
+
+
 def _fast_per_column_framability(D, gate):
-    """Per-column L1-minimisation framability with pre-cleaned LP + direct HiGHS call.
+    """Per-column L1-minimisation framability.
+
+    Dispatches to the reused-model HiGHS path when highspy is available
+    (~10x faster), otherwise the scipy per-column fallback below.
 
     For each column j of Y = gate^T D, solve
         min ||u||_1  s.t.  D u = Y[:, j]
@@ -302,6 +367,9 @@ def _fast_per_column_framability(D, gate):
     Eliminates scipy's per-call validation overhead (~50–200 ms per LP),
     which is the dominant cost for d_ext in the hundreds-to-thousands range.
     """
+    if _HAS_HIGHSPY:
+        return _highspy_per_column_framability(D, gate)
+
     D = np.asarray(D, dtype=float)
     n, d_ext = D.shape
     if np.max(np.abs(gate.imag)) > 1e-12:
@@ -571,12 +639,18 @@ def _process_point(ig, igp, args):
             continue
         if d_ext_single == 6 and not args.do_fra_6:
             continue
+        # d_ext_single=6 LPs are ~270x more expensive per eval than d=4, so
+        # use a smaller Powell budget for it.
+        if d_ext_single == 4:
+            n_restarts, maxfev = args.fra_restarts, args.fra_maxfev
+        else:
+            n_restarts, maxfev = args.fra_restarts_6, args.fra_maxfev_6
         t0 = time.perf_counter()
         val = _minimax_framability_4q(
             gate_1, gate_2,
             d_ext_single=d_ext_single,
-            n_restarts=args.fra_restarts,
-            maxfev=args.fra_maxfev,
+            n_restarts=n_restarts,
+            maxfev=maxfev,
             seed=args.seed + ig * 100 + igp,
             verbose=True,
         )
@@ -614,9 +688,9 @@ def _process_point(ig, igp, args):
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument('--task_id',  type=int, required=True,
-                        help=f'0..{(N_TOTAL // 40) - 1} (10 chunks of 40 points).')
-    parser.add_argument('--n_jobs',   type=int, default=10,
-                        help='Total number of parallel jobs (default 10).')
+                        help=f'0..n_jobs-1 (N_TOTAL={N_TOTAL} points split across jobs).')
+    parser.add_argument('--n_jobs',   type=int, default=100,
+                        help='Total number of parallel jobs (default 100 = 1 point/job).')
     parser.add_argument('--out_dir',  type=str, default='results_six_starplaq')
     parser.add_argument('--h',        type=float, default=1.0)
     parser.add_argument('--lam',      type=float, default=1.0)
@@ -626,8 +700,16 @@ def main() -> None:
     parser.add_argument('--do_fra_6', type=int, default=1,
                         help='Compute 4q-minimax framability with d_ext_single=6 '
                              '(this is the slow one; ~hours per point).')
-    parser.add_argument('--fra_restarts', type=int, default=2)
-    parser.add_argument('--fra_maxfev',   type=int, default=30)
+    parser.add_argument('--fra_restarts', type=int, default=2,
+                        help='Powell restarts for d_ext_single=4.')
+    parser.add_argument('--fra_maxfev',   type=int, default=30,
+                        help='Powell maxfev for d_ext_single=4.')
+    parser.add_argument('--fra_restarts_6', type=int, default=1,
+                        help='Powell restarts for d_ext_single=6 (kept low; '
+                             'each eval is ~14 min).')
+    parser.add_argument('--fra_maxfev_6',   type=int, default=10,
+                        help='Powell maxfev for d_ext_single=6 (kept low; '
+                             'each eval is ~14 min).')
     parser.add_argument('--seed',     type=int, default=0)
     args = parser.parse_args()
 
