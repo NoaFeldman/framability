@@ -316,15 +316,17 @@ def _maximise_sign(gate, n_restarts=10, seed=0):
 
 # ── per-point ─────────────────────────────────────────────────────────────────
 def _process_point(idx, args):
-    gamma = GAMMA_STEP * idx
+    gamma = GAMMA_STEP * idx                 # = gamma_L (the swept drive rate)
+    gamma_R = gamma * args.gamma_ratio       # gamma_R = ratio * gamma_L
     out = Path(args.out_dir) / f'xyz_{idx:02d}.npz'
     if out.exists():
         print(f'  skip {out.name} (exists)', flush=True)
         return
     t_start = time.perf_counter()
-    print(f'[idx={idx:02d}] gamma={gamma:.2f}  Jx={JX} Jy={JY} Jz={JZ}', flush=True)
+    print(f'[idx={idx:02d}] gamma_L={gamma:.2f} gamma_R={gamma_R:.2f} '
+          f'(ratio={args.gamma_ratio})  Jx={JX} Jy={JY} Jz={JZ}', flush=True)
 
-    L = build_lindbladian_pauli(JX, JY, JZ, gamma, gamma, N_QUBITS)
+    L = build_lindbladian_pauli(JX, JY, JZ, gamma, gamma_R, N_QUBITS)
 
     # --- steady state ---
     c_ss, decay = _steady_state_and_decay(L)
@@ -385,6 +387,7 @@ def _process_point(idx, args):
              opt_fra_4=np.array(opt_fra_4), opt_fra_6=np.array(opt_fra_6),
              sign_init=np.array(sign_init), sign_opt=np.array(sign_opt),
              nsign_init=np.array(nsign_init), nsign_opt=np.array(nsign_opt),
+             gamma_R=np.array(gamma_R), gamma_ratio=np.array(args.gamma_ratio),
              Jx=np.array(JX), Jy=np.array(JY), Jz=np.array(JZ), dt=np.array(args.dt))
     print(f'  saved {out.name}  (total {time.perf_counter()-t_start:.0f}s)', flush=True)
 
@@ -394,6 +397,9 @@ def main():
     p.add_argument('--task_id', type=int, required=True, help=f'0..{N_POINTS-1}')
     p.add_argument('--n_jobs', type=int, default=N_POINTS)
     p.add_argument('--out_dir', type=str, default='results_xyz_chain')
+    p.add_argument('--gamma_ratio', type=float, default=1.0,
+                   help='gamma_R / gamma_L. 1.0 = symmetric (default), '
+                        '0.5 = half right drain, 0.0 = left pump only.')
     p.add_argument('--dt', type=float, default=DT)
     p.add_argument('--do_fra_4', type=int, default=1)
     p.add_argument('--do_fra_6', type=int, default=1)

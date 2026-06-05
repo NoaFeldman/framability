@@ -25,6 +25,7 @@
 #SBATCH --error=logs/xyz_chain_%A_%a.err
 
 OUT_DIR=${OUT_DIR:-results_xyz_chain}
+GAMMA_RATIO=${GAMMA_RATIO:-1.0}
 DT=${DT:-0.05}
 DO_FRA_4=${DO_FRA_4:-1}
 DO_FRA_6=${DO_FRA_6:-1}
@@ -46,6 +47,7 @@ python scripts/xyz_chain_worker.py \
     --task_id        "$SLURM_ARRAY_TASK_ID" \
     --n_jobs         "$N_JOBS" \
     --out_dir        "$OUT_DIR" \
+    --gamma_ratio    "$GAMMA_RATIO" \
     --dt             "$DT" \
     --do_fra_4       "$DO_FRA_4" \
     --do_fra_6       "$DO_FRA_6" \

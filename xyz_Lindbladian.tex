@@ -1,0 +1,94 @@
+\documentclass[11pt]{article}
+\usepackage{amsmath,amssymb}
+\usepackage{graphicx}
+\usepackage[a3paper,landscape,margin=1cm]{geometry}
+\begin{document}
+
+\section*{Boundary-driven anisotropic XYZ chain: Liouvillian superoperator ($N=2$)}
+
+The dynamics $\dot\rho = \mathcal{L}\rho$ with
+\[ \mathcal{L}\rho = -i[H,\rho] + \gamma_L\!\left(L_L\rho L_L^\dagger - \tfrac12\{L_L^\dagger L_L,\rho\}\right) + \gamma_R\!\left(L_R\rho L_R^\dagger - \tfrac12\{L_R^\dagger L_R,\rho\}\right), \]
+\[ H = \sum_{j=1}^{N-1} \big(J_x\,\sigma^x_j\sigma^x_{j+1} + J_y\,\sigma^y_j\sigma^y_{j+1} + J_z\,\sigma^z_j\sigma^z_{j+1}\big), \quad L_L = \sigma^+_1,\quad L_R = \sigma^-_N. \]
+
+In the Pauli-string basis $P_a = \sigma_{a_1}\!\otimes\cdots\otimes\sigma_{a_N}$ the superoperator is
+$M_{ab} = \tfrac{1}{2^N}\,\mathrm{Tr}\!\big(P_a\,\mathcal{L}(P_b)\big)$ (rows $=a$, columns $=b$).
+
+\[
+M =
+\renewcommand{\arraystretch}{1.2}
+\resizebox{\textwidth}{!}{$
+\begin{array}{c|cccccccccccccccc}
+ & \mathbf{II} & \mathbf{IX} & \mathbf{IY} & \mathbf{IZ} & \mathbf{XI} & \mathbf{XX} & \mathbf{XY} & \mathbf{XZ} & \mathbf{YI} & \mathbf{YX} & \mathbf{YY} & \mathbf{YZ} & \mathbf{ZI} & \mathbf{ZX} & \mathbf{ZY} & \mathbf{ZZ} \\ \hline
+\mathbf{II} & \cdot & \cdot & \cdot & \cdot & \cdot & \cdot & \cdot & \cdot & \cdot & \cdot & \cdot & \cdot & \cdot & \cdot & \cdot & \cdot \\
+\mathbf{IX} & \cdot & - \frac{\gamma_{R}}{2} & \cdot & \cdot & \cdot & \cdot & \cdot & \cdot & \cdot & \cdot & \cdot & 2 J_{y} & \cdot & \cdot & - 2 J_{z} & \cdot \\
+\mathbf{IY} & \cdot & \cdot & - \frac{\gamma_{R}}{2} & \cdot & \cdot & \cdot & \cdot & - 2 J_{x} & \cdot & \cdot & \cdot & \cdot & \cdot & 2 J_{z} & \cdot & \cdot \\
+\mathbf{IZ} & - \gamma_{R} & \cdot & \cdot & - \gamma_{R} & \cdot & \cdot & 2 J_{x} & \cdot & \cdot & - 2 J_{y} & \cdot & \cdot & \cdot & \cdot & \cdot & \cdot \\
+\mathbf{XI} & \cdot & \cdot & \cdot & \cdot & - \frac{\gamma_{L}}{2} & \cdot & \cdot & \cdot & \cdot & \cdot & \cdot & - 2 J_{z} & \cdot & \cdot & 2 J_{y} & \cdot \\
+\mathbf{XX} & \cdot & \cdot & \cdot & \cdot & \cdot & - \frac{\gamma_{L}}{2} - \frac{\gamma_{R}}{2} & \cdot & \cdot & \cdot & \cdot & \cdot & \cdot & \cdot & \cdot & \cdot & \cdot \\
+\mathbf{XY} & \cdot & \cdot & \cdot & - 2 J_{x} & \cdot & \cdot & - \frac{\gamma_{L}}{2} - \frac{\gamma_{R}}{2} & \cdot & \cdot & \cdot & \cdot & \cdot & 2 J_{y} & \cdot & \cdot & \cdot \\
+\mathbf{XZ} & \cdot & \cdot & 2 J_{x} & \cdot & - \gamma_{R} & \cdot & \cdot & - \frac{\gamma_{L}}{2} - \gamma_{R} & - 2 J_{z} & \cdot & \cdot & \cdot & \cdot & \cdot & \cdot & \cdot \\
+\mathbf{YI} & \cdot & \cdot & \cdot & \cdot & \cdot & \cdot & \cdot & 2 J_{z} & - \frac{\gamma_{L}}{2} & \cdot & \cdot & \cdot & \cdot & - 2 J_{x} & \cdot & \cdot \\
+\mathbf{YX} & \cdot & \cdot & \cdot & 2 J_{y} & \cdot & \cdot & \cdot & \cdot & \cdot & - \frac{\gamma_{L}}{2} - \frac{\gamma_{R}}{2} & \cdot & \cdot & - 2 J_{x} & \cdot & \cdot & \cdot \\
+\mathbf{YY} & \cdot & \cdot & \cdot & \cdot & \cdot & \cdot & \cdot & \cdot & \cdot & \cdot & - \frac{\gamma_{L}}{2} - \frac{\gamma_{R}}{2} & \cdot & \cdot & \cdot & \cdot & \cdot \\
+\mathbf{YZ} & \cdot & - 2 J_{y} & \cdot & \cdot & 2 J_{z} & \cdot & \cdot & \cdot & - \gamma_{R} & \cdot & \cdot & - \frac{\gamma_{L}}{2} - \gamma_{R} & \cdot & \cdot & \cdot & \cdot \\
+\mathbf{ZI} & \gamma_{L} & \cdot & \cdot & \cdot & \cdot & \cdot & - 2 J_{y} & \cdot & \cdot & 2 J_{x} & \cdot & \cdot & - \gamma_{L} & \cdot & \cdot & \cdot \\
+\mathbf{ZX} & \cdot & \gamma_{L} & - 2 J_{z} & \cdot & \cdot & \cdot & \cdot & \cdot & 2 J_{x} & \cdot & \cdot & \cdot & \cdot & - \gamma_{L} - \frac{\gamma_{R}}{2} & \cdot & \cdot \\
+\mathbf{ZY} & \cdot & 2 J_{z} & \gamma_{L} & \cdot & - 2 J_{y} & \cdot & \cdot & \cdot & \cdot & \cdot & \cdot & \cdot & \cdot & \cdot & - \gamma_{L} - \frac{\gamma_{R}}{2} & \cdot \\
+\mathbf{ZZ} & \cdot & \cdot & \cdot & \gamma_{L} & \cdot & \cdot & \cdot & \cdot & \cdot & \cdot & \cdot & \cdot & - \gamma_{R} & \cdot & \cdot & - \gamma_{L} - \gamma_{R} \\
+\end{array}$}
+\]
+
+\subsection*{Non-zero entries}
+Total non-zero entries: 47.
+
+\begin{align*}
+  \mathcal{L}_{(IX,\,IX)} &= - \frac{\gamma_{R}}{2} \\
+  \mathcal{L}_{(IX,\,YZ)} &= 2 J_{y} \\
+  \mathcal{L}_{(IX,\,ZY)} &= - 2 J_{z} \\
+  \mathcal{L}_{(IY,\,IY)} &= - \frac{\gamma_{R}}{2} \\
+  \mathcal{L}_{(IY,\,XZ)} &= - 2 J_{x} \\
+  \mathcal{L}_{(IY,\,ZX)} &= 2 J_{z} \\
+  \mathcal{L}_{(IZ,\,II)} &= - \gamma_{R} \\
+  \mathcal{L}_{(IZ,\,IZ)} &= - \gamma_{R} \\
+  \mathcal{L}_{(IZ,\,XY)} &= 2 J_{x} \\
+  \mathcal{L}_{(IZ,\,YX)} &= - 2 J_{y} \\
+  \mathcal{L}_{(XI,\,XI)} &= - \frac{\gamma_{L}}{2} \\
+  \mathcal{L}_{(XI,\,YZ)} &= - 2 J_{z} \\
+  \mathcal{L}_{(XI,\,ZY)} &= 2 J_{y} \\
+  \mathcal{L}_{(XX,\,XX)} &= - \frac{\gamma_{L}}{2} - \frac{\gamma_{R}}{2} \\
+  \mathcal{L}_{(XY,\,IZ)} &= - 2 J_{x} \\
+  \mathcal{L}_{(XY,\,XY)} &= - \frac{\gamma_{L}}{2} - \frac{\gamma_{R}}{2} \\
+  \mathcal{L}_{(XY,\,ZI)} &= 2 J_{y} \\
+  \mathcal{L}_{(XZ,\,IY)} &= 2 J_{x} \\
+  \mathcal{L}_{(XZ,\,XI)} &= - \gamma_{R} \\
+  \mathcal{L}_{(XZ,\,XZ)} &= - \frac{\gamma_{L}}{2} - \gamma_{R} \\
+  \mathcal{L}_{(XZ,\,YI)} &= - 2 J_{z} \\
+  \mathcal{L}_{(YI,\,XZ)} &= 2 J_{z} \\
+  \mathcal{L}_{(YI,\,YI)} &= - \frac{\gamma_{L}}{2} \\
+  \mathcal{L}_{(YI,\,ZX)} &= - 2 J_{x} \\
+  \mathcal{L}_{(YX,\,IZ)} &= 2 J_{y} \\
+  \mathcal{L}_{(YX,\,YX)} &= - \frac{\gamma_{L}}{2} - \frac{\gamma_{R}}{2} \\
+  \mathcal{L}_{(YX,\,ZI)} &= - 2 J_{x} \\
+  \mathcal{L}_{(YY,\,YY)} &= - \frac{\gamma_{L}}{2} - \frac{\gamma_{R}}{2} \\
+  \mathcal{L}_{(YZ,\,IX)} &= - 2 J_{y} \\
+  \mathcal{L}_{(YZ,\,XI)} &= 2 J_{z} \\
+  \mathcal{L}_{(YZ,\,YI)} &= - \gamma_{R} \\
+  \mathcal{L}_{(YZ,\,YZ)} &= - \frac{\gamma_{L}}{2} - \gamma_{R} \\
+  \mathcal{L}_{(ZI,\,II)} &= \gamma_{L} \\
+  \mathcal{L}_{(ZI,\,XY)} &= - 2 J_{y} \\
+  \mathcal{L}_{(ZI,\,YX)} &= 2 J_{x} \\
+  \mathcal{L}_{(ZI,\,ZI)} &= - \gamma_{L} \\
+  \mathcal{L}_{(ZX,\,IX)} &= \gamma_{L} \\
+  \mathcal{L}_{(ZX,\,IY)} &= - 2 J_{z} \\
+  \mathcal{L}_{(ZX,\,YI)} &= 2 J_{x} \\
+  \mathcal{L}_{(ZX,\,ZX)} &= - \gamma_{L} - \frac{\gamma_{R}}{2} \\
+  \mathcal{L}_{(ZY,\,IX)} &= 2 J_{z} \\
+  \mathcal{L}_{(ZY,\,IY)} &= \gamma_{L} \\
+  \mathcal{L}_{(ZY,\,XI)} &= - 2 J_{y} \\
+  \mathcal{L}_{(ZY,\,ZY)} &= - \gamma_{L} - \frac{\gamma_{R}}{2} \\
+  \mathcal{L}_{(ZZ,\,IZ)} &= \gamma_{L} \\
+  \mathcal{L}_{(ZZ,\,ZI)} &= - \gamma_{R} \\
+  \mathcal{L}_{(ZZ,\,ZZ)} &= - \gamma_{L} - \gamma_{R}
+\end{align*}
+
+\end{document}
