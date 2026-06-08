@@ -292,10 +292,57 @@ def _ixyz_init(d_ext_single: int) -> np.ndarray:
     return free.ravel()
 
 
+def frame_from_params(x: np.ndarray, d_ext_single: int) -> np.ndarray:
+    """Reconstruct the single-qubit frame S (4 × d_ext_single) from a flat
+    parameter vector: column 0 is the fixed identity (1,0,0,0)ᵀ and the
+    remaining d_ext_single-1 columns are the Bloch-projected free parameters
+    (matching the encoding used inside optimise_framability)."""
+    if x is None:
+        return np.full((4, d_ext_single), np.nan)
+    n_free = d_ext_single - 1
+    free = _project_bloch(np.asarray(x, dtype=float).reshape(4, n_free))
+    return np.hstack([_FIXED_COL, free])
+
+
+def params_from_frame(S: np.ndarray) -> np.ndarray:
+    """Flat parameter vector (the free columns) from a frame S — inverse of
+    frame_from_params, suitable as a warm-start seed for optimise_framability."""
+    return np.asarray(S, dtype=float)[:, 1:].ravel()
+
+
+def embed_frame_params(x_small: np.ndarray, d_ext_small: int,
+                       d_ext_large: int) -> np.ndarray:
+    """Embed an optimised frame from a smaller d_ext into a larger one.
+
+    The flat parameter vector encodes the (4 × n_free) free columns of S.
+    The extra columns needed for the larger frame are filled by replicating
+    ("multiplying") the last free column.  Because kron(S_large, S_large) then
+    contains every column of kron(S_small, S_small), the framability over the
+    larger frame is guaranteed ≤ the smaller-frame value — a monotone warm
+    start for the larger d_ext optimisation.
+    """
+    nf_s = d_ext_small - 1
+    nf_l = d_ext_large - 1
+    if nf_l < nf_s:
+        raise ValueError('target d_ext must be >= source d_ext')
+    block = np.asarray(x_small, dtype=float).reshape(4, nf_s)
+    pad   = np.repeat(block[:, -1:], nf_l - nf_s, axis=1)
+    return np.hstack([block, pad]).ravel()
+
+
 def optimise_framability(gate: np.ndarray, d_ext_single: int,
                          n_restarts: int = 5, maxfev: int = 1000,
-                         seed: int = 0) -> float:
-    """Min framability of the 2-qubit gate over D = kron(S, S) (S: 4×d_ext_single)."""
+                         seed: int = 0, extra_init_xs=None,
+                         return_x: bool = False):
+    """Min framability of the 2-qubit gate over D = kron(S, S) (S: 4×d_ext_single).
+
+    extra_init_xs : optional list of flat parameter vectors (length 4*(d_ext-1))
+        used as additional warm-start seeds, appended after the standard
+        ixyz + random restarts (e.g. a neighbour's optimum or an embedded
+        smaller-d_ext frame).
+    return_x : if True, return (f_best, x_best) instead of just f_best, where
+        x_best is the flat parameter vector for the optimal S.
+    """
     n_free   = d_ext_single - 1
     n_params = 4 * n_free
 
@@ -309,13 +356,17 @@ def optimise_framability(gate: np.ndarray, d_ext_single: int,
     rng   = np.random.default_rng(seed)
     seeds = [_ixyz_init(d_ext_single)]
     seeds += [rng.standard_normal(n_params) * 0.3 for _ in range(max(0, n_restarts - 1))]
-    best  = float('inf')
+    if extra_init_xs:
+        seeds += [np.asarray(x, dtype=float).ravel() for x in extra_init_xs]
+
+    best, best_x = float('inf'), None
     for x0 in seeds:
-        res  = minimize(objective, x0, method='Powell',
-                        options={'maxfev': maxfev, 'maxiter': maxfev,
-                                 'ftol': 1e-6, 'xtol': 1e-6})
-        best = min(best, float(res.fun))
-    return best
+        res = minimize(objective, x0, method='Powell',
+                       options={'maxfev': maxfev, 'maxiter': maxfev,
+                                'ftol': 1e-6, 'xtol': 1e-6})
+        if float(res.fun) < best:
+            best, best_x = float(res.fun), np.asarray(res.x, dtype=float).copy()
+    return (best, best_x) if return_x else best
 
 
 # ── sign problem (with local single-qubit rotation search) ───────────────────
@@ -387,8 +438,12 @@ def compute_point(h: float, J: float, gamma: float, dt: float = 0.05,
     if verbose:
         print(f'  pauli_fra={out["pauli_fra"]:.4f}', flush=True)
 
-    out['opt_fra_4'] = optimise_framability(gate, 4, fra_restarts, fra_maxfev_4, seed)
-    out['opt_fra_6'] = optimise_framability(gate, 6, fra_restarts, fra_maxfev_6, seed + 1)
+    out['opt_fra_4'], x4 = optimise_framability(gate, 4, fra_restarts,
+                                                 fra_maxfev_4, seed, return_x=True)
+    out['opt_fra_6'], x6 = optimise_framability(gate, 6, fra_restarts,
+                                                 fra_maxfev_6, seed + 1, return_x=True)
+    out['opt_S_4'] = frame_from_params(x4, 4)
+    out['opt_S_6'] = frame_from_params(x6, 6)
 
     if verbose:
         print(f'  opt_fra: d4={out["opt_fra_4"]:.4f}  d6={out["opt_fra_6"]:.4f}', flush=True)

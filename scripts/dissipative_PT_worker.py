@@ -77,6 +77,8 @@ def main() -> None:
              pauli_fra  = np.array(res['pauli_fra']),
              opt_fra_4  = np.array(res['opt_fra_4']),
              opt_fra_6  = np.array(res['opt_fra_6']),
+             opt_S_4    = np.asarray(res['opt_S_4']),
+             opt_S_6    = np.asarray(res['opt_S_6']),
              sign_init  = np.array(res['sign_init']),
              sign_opt   = np.array(res['sign_opt']),
              chan_stab  = np.array(res['chan_stab']),
