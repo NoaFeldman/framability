@@ -3,9 +3,9 @@ Per-point cluster worker for the 2D dissipative phase transition scan.
 
 Parameter grid (J=1 fixed):
     h      in [0.1*i for i in range(-10, 10)]  ->  -1.0 … 0.9, N_H=20
-    gamma  in [0.1*i for i in range(2)]         ->   0.0 … 0.1, N_G=2
+    gamma  in [0.1*i for i in range(10)]        ->   0.0 … 0.9, N_G=10
 
-task_id = ih * N_G + ig   (0 … N_H*N_G-1 = 39)
+task_id = ih * N_G + ig   (0 … N_H*N_G-1 = 199)
 
 Output: <out_dir>/dpt_<ih:02d>_<ig:02d>.npz
 """

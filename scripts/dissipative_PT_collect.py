@@ -60,6 +60,12 @@ def load_results(in_dir: Path) -> np.ndarray:
 def plot_colormaps(arr: np.ndarray, out_png: Path) -> None:
     h_vals     = np.array(H_LIST)
     gamma_vals = np.array(GAMMA_LIST)
+    h_edges    = _edges(h_vals)
+    g_edges    = _edges(gamma_vals)
+
+    # Shared colour limits for all framability panels, forced to include 1.0.
+    fra_idx = [qi for qi, (k, _) in enumerate(QUANTITIES) if 'fra' in k]
+    fra_vmin, fra_vmax = _shared_fra_limits(arr, fra_idx)
 
     n_cols = 4
     n_rows = (N_Q + n_cols - 1) // n_cols
@@ -68,29 +74,45 @@ def plot_colormaps(arr: np.ndarray, out_png: Path) -> None:
                              constrained_layout=True)
     axes_flat = axes.flat
 
+    fra_im   = None          # one mappable to back the shared framability colorbar
+    fra_axes = []            # framability panels the shared colorbar will span
+
     for qi, (key, label) in enumerate(QUANTITIES):
         ax = axes_flat[qi]
         data = arr[:, :, qi].T   # (N_G, N_H) — gamma on y, h on x
 
-        # Use pcolormesh with the actual axis values
-        h_edges = _edges(h_vals)
-        g_edges = _edges(gamma_vals)
-        vmin, vmax = _robust_limits(data)
+        is_fra = 'fra' in key
+        if is_fra:
+            vmin, vmax = fra_vmin, fra_vmax
+        else:
+            vmin, vmax = _robust_limits(data)
+
         im = ax.pcolormesh(h_edges, g_edges, data,
                            cmap='viridis', vmin=vmin, vmax=vmax, shading='flat')
-        fig.colorbar(im, ax=ax, pad=0.02)
 
         ax.set_xlabel('h')
         ax.set_ylabel('γ')
         ax.set_title(label, fontsize=10)
 
-        # Add contour at value=1 for framability panels
-        if 'fra' in key:
+        if is_fra:
+            # No per-panel colorbar: share one across all framability panels.
+            fra_im = im
+            fra_axes.append(ax)
+            # Contour at framability = 1 (boundary of the framable region).
             try:
                 ax.contour(h_vals, gamma_vals, data,
                            levels=[1.0], colors='white', linewidths=1.0)
             except Exception:
                 pass
+        else:
+            fig.colorbar(im, ax=ax, pad=0.02)
+
+    # Single shared colorbar spanning all framability panels; ticks include 1.0.
+    if fra_im is not None:
+        cbar = fig.colorbar(fra_im, ax=fra_axes, pad=0.02)
+        ticks = sorted(set(np.linspace(fra_vmin, fra_vmax, 5).tolist() + [1.0]))
+        cbar.set_ticks(ticks)
+        cbar.set_label('framability')
 
     # hide unused panels
     for qi in range(N_Q, n_rows * n_cols):
@@ -118,6 +140,19 @@ def _robust_limits(data: np.ndarray) -> tuple[float, float]:
     if finite.size == 0:
         return 0.0, 1.0
     return float(np.nanpercentile(finite, 2)), float(np.nanpercentile(finite, 98))
+
+
+def _shared_fra_limits(arr: np.ndarray, fra_idx: list) -> tuple[float, float]:
+    """Common (vmin, vmax) across all framability panels, always spanning 1.0."""
+    finite = arr[:, :, fra_idx]
+    finite = finite[np.isfinite(finite)]
+    if finite.size == 0:
+        return 0.0, 1.0
+    vmin = min(float(finite.min()), 1.0)
+    vmax = max(float(finite.max()), 1.0)
+    if vmin == vmax:                       # degenerate (all values equal 1.0)
+        vmin, vmax = vmin - 0.05, vmax + 0.05
+    return vmin, vmax
 
 
 def main() -> None:

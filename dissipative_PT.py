@@ -424,13 +424,13 @@ def compute_point(h: float, J: float, gamma: float, dt: float = 0.05,
 
 
 # ── parameter grid (shared with worker and collect scripts) ──────────────────
-H_LIST     = [round(0.1 * i, 10) for i in range(-10, 10)]   # 20 h values
-GAMMA_LIST = [round(0.1 * i, 10) for i in range(2)]          # 2 gamma values
+H_LIST     = [round(0.1 * i, 10) for i in range(-10, 10)]   # 20 h values: -1.0 … 0.9
+GAMMA_LIST = [round(0.1 * i, 10) for i in range(10)]         # 10 gamma values: 0.0 … 0.9
 J_DEFAULT  = 1.0
 DT_DEFAULT = 0.05
 N_H        = len(H_LIST)
 N_G        = len(GAMMA_LIST)
-N_TOTAL    = N_H * N_G   # 40
+N_TOTAL    = N_H * N_G   # 200
 
 
 # ── self-test ─────────────────────────────────────────────────────────────────
