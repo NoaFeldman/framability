@@ -111,23 +111,11 @@ def _refine_dext(out_dir: Path, ih: int, ig: int, d_ext_single: int,
     return (f, x) if f < my_val else (my_val, None)
 
 
-def main() -> None:
-    p = argparse.ArgumentParser()
-    p.add_argument('--task_id',      type=int, required=True, help=f'0..{N_TOTAL - 1}')
-    p.add_argument('--out_dir',      type=str, default='results_dpt')
-    p.add_argument('--n_restarts',   type=int, default=5)
-    p.add_argument('--fra_maxfev_4', type=int, default=1000)
-    p.add_argument('--fra_maxfev_6', type=int, default=500)
-    p.add_argument('--seed',         type=int, default=0)
-    args = p.parse_args()
-
-    if not (0 <= args.task_id < N_TOTAL):
-        print(f'ERROR: task_id must be in [0, {N_TOTAL})', file=sys.stderr)
-        sys.exit(1)
-
+def run_point(point_id: int, args) -> None:
+    """Refine one grid point (skips if its refine npz already exists)."""
     out_dir = Path(args.out_dir)
-    ih = args.task_id // N_G
-    ig = args.task_id %  N_G
+    ih = point_id // N_G
+    ig = point_id %  N_G
     out = out_dir / f'dpt_refine_{ih:02d}_{ig:02d}.npz'
 
     if out.exists():
@@ -146,10 +134,10 @@ def main() -> None:
     J  = float(d_base['J'])  if 'J'  in d_base else J_DEFAULT
     dt = float(d_base['dt']) if 'dt' in d_base else DT_DEFAULT
     h, gamma = H_LIST[ih], GAMMA_LIST[ig]
-    seed = args.seed + args.task_id
+    seed = args.seed + point_id
 
     t0 = time.perf_counter()
-    print(f'[task {args.task_id}/{N_TOTAL}] ih={ih} ig={ig} h={h:.2f} gamma={gamma:.2f} '
+    print(f'[point {point_id}/{N_TOTAL}] ih={ih} ig={ig} h={h:.2f} gamma={gamma:.2f} '
           f'dt={dt}  base: d4={m4:.6f} d6={m6:.6f}', flush=True)
 
     gate_self = bond_trotter_gate(J, h, gamma, dt)
@@ -193,6 +181,37 @@ def main() -> None:
     elapsed = time.perf_counter() - t0
     print(f'  saved {out.name}: d4 {m4:.6f}→{f4:.6f}  d6 {m6:.6f}→{f6:.6f}  '
           f'({elapsed:.0f}s)', flush=True)
+
+
+def main() -> None:
+    p = argparse.ArgumentParser()
+    p.add_argument('--task_id',      type=int, required=True,
+                   help='array index: point id when --n_chunks=1, else chunk id 0..n_chunks-1')
+    p.add_argument('--n_chunks',     type=int, default=1,
+                   help='split the N_TOTAL grid into this many array tasks (strided)')
+    p.add_argument('--out_dir',      type=str, default='results_dpt')
+    p.add_argument('--n_restarts',   type=int, default=5)
+    p.add_argument('--fra_maxfev_4', type=int, default=1000)
+    p.add_argument('--fra_maxfev_6', type=int, default=500)
+    p.add_argument('--seed',         type=int, default=0)
+    args = p.parse_args()
+
+    if args.n_chunks <= 1:
+        if not (0 <= args.task_id < N_TOTAL):
+            print(f'ERROR: task_id must be in [0, {N_TOTAL})', file=sys.stderr)
+            sys.exit(1)
+        run_point(args.task_id, args)
+        return
+
+    if not (0 <= args.task_id < args.n_chunks):
+        print(f'ERROR: chunk id must be in [0, {args.n_chunks})', file=sys.stderr)
+        sys.exit(1)
+
+    point_ids = list(range(args.task_id, N_TOTAL, args.n_chunks))
+    print(f'[chunk {args.task_id}/{args.n_chunks}] {len(point_ids)} points: '
+          f'{point_ids}', flush=True)
+    for pid in point_ids:
+        run_point(pid, args)
 
 
 if __name__ == '__main__':

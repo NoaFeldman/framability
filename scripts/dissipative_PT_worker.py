@@ -29,25 +29,10 @@ J  = J_DEFAULT
 DT = DT_DEFAULT
 
 
-def main() -> None:
-    p = argparse.ArgumentParser()
-    p.add_argument('--task_id',      type=int,   required=True,
-                   help=f'0..{N_TOTAL - 1}')
-    p.add_argument('--out_dir',      type=str,   default='results_dpt')
-    p.add_argument('--dt',           type=float, default=DT)
-    p.add_argument('--fra_restarts', type=int,   default=5)
-    p.add_argument('--fra_maxfev_4', type=int,   default=1000)
-    p.add_argument('--fra_maxfev_6', type=int,   default=500)
-    p.add_argument('--sign_restarts',type=int,   default=10)
-    p.add_argument('--seed',         type=int,   default=0)
-    args = p.parse_args()
-
-    if not (0 <= args.task_id < N_TOTAL):
-        print(f'ERROR: task_id must be in [0, {N_TOTAL})', file=sys.stderr)
-        sys.exit(1)
-
-    ih    = args.task_id // N_G
-    ig    = args.task_id %  N_G
+def run_point(point_id: int, args) -> None:
+    """Compute and save one grid point (skips if its npz already exists)."""
+    ih    = point_id // N_G
+    ig    = point_id %  N_G
     h     = H_LIST[ih]
     gamma = GAMMA_LIST[ig]
     out   = Path(args.out_dir) / f'dpt_{ih:02d}_{ig:02d}.npz'
@@ -59,7 +44,7 @@ def main() -> None:
     Path(args.out_dir).mkdir(parents=True, exist_ok=True)
     t_start = time.perf_counter()
 
-    print(f'[task {args.task_id}/{N_TOTAL}] ih={ih} ig={ig} '
+    print(f'[point {point_id}/{N_TOTAL}] ih={ih} ig={ig} '
           f'h={h:.2f} gamma={gamma:.2f} J={J} dt={args.dt}', flush=True)
 
     res = compute_point(
@@ -68,7 +53,7 @@ def main() -> None:
         fra_maxfev_4=args.fra_maxfev_4,
         fra_maxfev_6=args.fra_maxfev_6,
         sign_restarts=args.sign_restarts,
-        seed=args.seed + args.task_id,
+        seed=args.seed + point_id,
         Lx=2, Ly=2, verbose=True,
     )
 
@@ -91,6 +76,39 @@ def main() -> None:
 
     elapsed = time.perf_counter() - t_start
     print(f'  saved {out.name}  ({elapsed:.0f}s)', flush=True)
+
+
+def main() -> None:
+    p = argparse.ArgumentParser()
+    p.add_argument('--task_id',      type=int,   required=True,
+                   help='array index: point id when --n_chunks=1, else chunk id 0..n_chunks-1')
+    p.add_argument('--n_chunks',     type=int,   default=1,
+                   help='split the N_TOTAL grid into this many array tasks (strided)')
+    p.add_argument('--out_dir',      type=str,   default='results_dpt')
+    p.add_argument('--dt',           type=float, default=DT)
+    p.add_argument('--fra_restarts', type=int,   default=5)
+    p.add_argument('--fra_maxfev_4', type=int,   default=1000)
+    p.add_argument('--fra_maxfev_6', type=int,   default=500)
+    p.add_argument('--sign_restarts',type=int,   default=10)
+    p.add_argument('--seed',         type=int,   default=0)
+    args = p.parse_args()
+
+    if args.n_chunks <= 1:
+        if not (0 <= args.task_id < N_TOTAL):
+            print(f'ERROR: task_id must be in [0, {N_TOTAL})', file=sys.stderr)
+            sys.exit(1)
+        run_point(args.task_id, args)
+        return
+
+    if not (0 <= args.task_id < args.n_chunks):
+        print(f'ERROR: chunk id must be in [0, {args.n_chunks})', file=sys.stderr)
+        sys.exit(1)
+
+    point_ids = list(range(args.task_id, N_TOTAL, args.n_chunks))
+    print(f'[chunk {args.task_id}/{args.n_chunks}] {len(point_ids)} points: '
+          f'{point_ids}', flush=True)
+    for pid in point_ids:
+        run_point(pid, args)
 
 
 if __name__ == '__main__':

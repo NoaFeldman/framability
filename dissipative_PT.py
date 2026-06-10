@@ -488,12 +488,15 @@ def compute_point(h: float, J: float, gamma: float, dt: float = 0.05,
 
 # ── parameter grid (shared with worker and collect scripts) ──────────────────
 H_LIST     = [round(0.1 * i, 10) for i in range(-10, 10)]   # 20 h values: -1.0 … 0.9
-GAMMA_LIST = [round(0.1 * i, 10) for i in range(10)]         # 10 gamma values: 0.0 … 0.9
+# gamma grid: fine (step 0.1) up to 1.0 — indices 0..9 (0.0…0.9) reuse the
+# original scan data — then coarse (step 0.2) from 1.0 up to 5.0.
+GAMMA_LIST = ([round(0.1 * i, 10) for i in range(11)]            # 0.0 … 1.0  (11 vals)
+              + [round(1.0 + 0.2 * i, 10) for i in range(1, 21)])  # 1.2 … 5.0  (20 vals)
 J_DEFAULT  = 1.0
 DT_DEFAULT = 0.05
 N_H        = len(H_LIST)
-N_G        = len(GAMMA_LIST)
-N_TOTAL    = N_H * N_G   # 200
+N_G        = len(GAMMA_LIST)  # 31
+N_TOTAL    = N_H * N_G   # 620
 
 
 # ── self-test ─────────────────────────────────────────────────────────────────
