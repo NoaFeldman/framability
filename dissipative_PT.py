@@ -274,8 +274,13 @@ def _framability_lp(D: np.ndarray, gate: np.ndarray) -> float:
     best = 0.0
     for j in range(d_ext):
         r = _linprog_highs(lp._replace(b_eq=Y[:, j].copy()), solver=None, presolve=False)
-        if r['status'] == 0:
-            best = max(best, float(np.sum(np.abs(r['x'][:d_ext]))))
+        if r['status'] != 0:
+            # Column j of the gate cannot be expanded in this frame: the frame
+            # is incomplete for the gate, so its framability is +inf.  Returning
+            # 0 here (the old behaviour) silently dropped the column and let the
+            # optimiser cheat by collapsing D to a rank-deficient frame.
+            return float('inf')
+        best = max(best, float(np.sum(np.abs(r['x'][:d_ext]))))
     return best
 
 
@@ -349,9 +354,12 @@ def optimise_framability(gate: np.ndarray, d_ext_single: int,
     def _to_S(p):
         return np.hstack([_FIXED_COL, _project_bloch(p.reshape(4, n_free))])
 
+    _PENALTY = 1e6   # finite stand-in for an infeasible (rank-deficient) frame
+
     def objective(p):
         D = _kron_power(_to_S(p), _N_BOND)
-        return float(_framability_lp(D, gate))
+        f = _framability_lp(D, gate)
+        return f if np.isfinite(f) else _PENALTY
 
     rng   = np.random.default_rng(seed)
     seeds = [_ixyz_init(d_ext_single)]
