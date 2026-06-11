@@ -18,6 +18,7 @@
 
 IN_DIR=${IN_DIR:-results_dpt}
 OUT_PNG=${OUT_PNG:-results_plots/dissipative_PT.png}
+ROUND=${ROUND:-1}
 
 source "${SLURM_SUBMIT_DIR}/.venv/bin/activate"
 cd "${SLURM_SUBMIT_DIR}"
@@ -26,6 +27,7 @@ mkdir -p results_plots
 
 python scripts/dissipative_PT_refine_collect.py \
     --in_dir  "$IN_DIR" \
-    --out_png "$OUT_PNG"
+    --out_png "$OUT_PNG" \
+    --round   "$ROUND"
 
 echo "Refine-collect done: $OUT_PNG"

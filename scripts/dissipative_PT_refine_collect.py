@@ -33,16 +33,20 @@ def main() -> None:
     p = argparse.ArgumentParser()
     p.add_argument('--in_dir',  type=str, default='results_dpt')
     p.add_argument('--out_png', type=str, default='results_plots/dissipative_PT.png')
+    p.add_argument('--round',   type=int, default=0,
+                   help='refinement round to collect (0 = legacy dpt_refine_*.npz, '
+                        '1+ = dpt_refine_r<N>_*.npz)')
     args = p.parse_args()
 
     in_dir = Path(args.in_dir)
+    round_tag = f'_r{args.round:02d}' if args.round > 0 else ''
     n_improved = 0
     n_missing  = 0
 
     for ih in range(N_H):
         for ig in range(N_G):
             base = in_dir / f'dpt_{ih:02d}_{ig:02d}.npz'
-            ref  = in_dir / f'dpt_refine_{ih:02d}_{ig:02d}.npz'
+            ref  = in_dir / f'dpt_refine{round_tag}_{ih:02d}_{ig:02d}.npz'
             if not base.exists():
                 continue
             if not ref.exists():

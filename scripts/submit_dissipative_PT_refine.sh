@@ -22,6 +22,7 @@ set -euo pipefail
 
 OUT_DIR=results_dpt
 OUT_PNG=results_plots/dissipative_PT.png
+ROUND=1
 N_RESTARTS=5
 FRA_MAXFEV_4=1000
 FRA_MAXFEV_6=500
@@ -32,6 +33,7 @@ while [[ $# -gt 0 ]]; do
     case "$1" in
         --out_dir)        OUT_DIR="$2";        shift 2 ;;
         --out_png)        OUT_PNG="$2";        shift 2 ;;
+        --round)          ROUND="$2";          shift 2 ;;
         --n_restarts)     N_RESTARTS="$2";     shift 2 ;;
         --fra_maxfev_4)   FRA_MAXFEV_4="$2";   shift 2 ;;
         --fra_maxfev_6)   FRA_MAXFEV_6="$2";   shift 2 ;;
@@ -56,24 +58,24 @@ fi
 
 echo "========================================================"
 echo "  Dissipative-PT neighbor-seeded framability refinement"
-echo "  OUT_DIR=${OUT_DIR}  OUT_PNG=${OUT_PNG}"
+echo "  OUT_DIR=${OUT_DIR}  OUT_PNG=${OUT_PNG}  ROUND=${ROUND}"
 echo "  n_restarts=${N_RESTARTS}  maxfev_4=${FRA_MAXFEV_4}  maxfev_6=${FRA_MAXFEV_6}"
 echo "  max concurrent=${MAX_CONCURRENT}"
 [[ -n "$AFTER_JOB" ]] && echo "  dependency=afterok:${AFTER_JOB}"
 echo "========================================================"
 
 ARRAY_JOB_ID=$(
-    OUT_DIR="$OUT_DIR" N_RESTARTS="$N_RESTARTS" \
+    OUT_DIR="$OUT_DIR" ROUND="$ROUND" N_RESTARTS="$N_RESTARTS" \
     FRA_MAXFEV_4="$FRA_MAXFEV_4" FRA_MAXFEV_6="$FRA_MAXFEV_6" \
     sbatch --parsable \
            --array="0-199%${MAX_CONCURRENT}" \
            ${DEPEND_FLAG} \
            scripts/dissipative_PT_refine.slurm.sh
 )
-echo "Submitted refine array job: ${ARRAY_JOB_ID}"
+echo "Submitted refine array job: ${ARRAY_JOB_ID}  (round ${ROUND})"
 
 COLLECT_JOB_ID=$(
-    IN_DIR="$OUT_DIR" OUT_PNG="$OUT_PNG" \
+    IN_DIR="$OUT_DIR" OUT_PNG="$OUT_PNG" ROUND="$ROUND" \
     sbatch --parsable \
            --dependency="afterok:${ARRAY_JOB_ID}" \
            scripts/dissipative_PT_refine_collect.slurm.sh

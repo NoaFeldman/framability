@@ -116,7 +116,8 @@ def run_point(point_id: int, args) -> None:
     out_dir = Path(args.out_dir)
     ih = point_id // N_G
     ig = point_id %  N_G
-    out = out_dir / f'dpt_refine_{ih:02d}_{ig:02d}.npz'
+    round_tag = f'_r{args.round:02d}' if args.round > 0 else ''
+    out = out_dir / f'dpt_refine{round_tag}_{ih:02d}_{ig:02d}.npz'
 
     if out.exists():
         print(f'[skip] {out.name} already exists', flush=True)
@@ -173,6 +174,7 @@ def run_point(point_id: int, args) -> None:
 
     out_dir.mkdir(parents=True, exist_ok=True)
     np.savez(out,
+             round=np.array(args.round),
              opt_fra_4=np.array(f4), opt_fra_6=np.array(f6),
              opt_S_4=S4, opt_S_6=S6,
              base_fra_4=np.array(m4), base_fra_6=np.array(m6),
@@ -189,6 +191,9 @@ def main() -> None:
                    help='array index: point id when --n_chunks=1, else chunk id 0..n_chunks-1')
     p.add_argument('--n_chunks',     type=int, default=1,
                    help='split the N_TOTAL grid into this many array tasks (strided)')
+    p.add_argument('--round',        type=int, default=0,
+                   help='refinement round (0 = legacy name dpt_refine_*.npz, '
+                        '1+ = dpt_refine_r<N>_*.npz)')
     p.add_argument('--out_dir',      type=str, default='results_dpt')
     p.add_argument('--n_restarts',   type=int, default=5)
     p.add_argument('--fra_maxfev_4', type=int, default=1000)

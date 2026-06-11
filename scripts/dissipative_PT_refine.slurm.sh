@@ -32,6 +32,7 @@
 
 OUT_DIR=${OUT_DIR:-results_dpt}
 N_CHUNKS=${N_CHUNKS:-200}
+ROUND=${ROUND:-1}
 N_RESTARTS=${N_RESTARTS:-5}
 FRA_MAXFEV_4=${FRA_MAXFEV_4:-1000}
 FRA_MAXFEV_6=${FRA_MAXFEV_6:-500}
@@ -41,11 +42,12 @@ source "${SLURM_SUBMIT_DIR}/.venv/bin/activate"
 cd "${SLURM_SUBMIT_DIR}"
 export MPLCONFIGDIR="/tmp/matplotlib-${SLURM_JOB_ID}"
 
-echo "Chunk ${SLURM_ARRAY_TASK_ID}/${N_CHUNKS}: starting dpt refine"
+echo "Chunk ${SLURM_ARRAY_TASK_ID}/${N_CHUNKS} round ${ROUND}: starting dpt refine"
 
 python scripts/dissipative_PT_refine_worker.py \
     --task_id      "$SLURM_ARRAY_TASK_ID" \
     --n_chunks     "$N_CHUNKS" \
+    --round        "$ROUND" \
     --out_dir      "$OUT_DIR" \
     --n_restarts   "$N_RESTARTS" \
     --fra_maxfev_4 "$FRA_MAXFEV_4" \
