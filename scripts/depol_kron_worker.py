@@ -31,10 +31,12 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from optimize_framability import (
     N_FIXED_COLS,
+    OPT_VERSION,
     _FIXED_COLS,
     _get_framability_fast,
     _kron_power,
     _project_columns_bloch,
+    spectral_floor,
 )
 from sweep_depol_gates_worker import _depol_2q, _superop_2q
 
@@ -120,6 +122,24 @@ def _random_rotated_inits(d_ext_single: int, n_inits: int,
     return inits
 
 
+def _is_current(out_path: str) -> bool:
+    """True iff out_path exists and was produced by the current OPT_VERSION.
+
+    Results written by an older version of the framability optimiser (or with
+    no version stamp / no floor) are treated as stale so the optimisation is
+    re-run.
+    """
+    if not os.path.exists(out_path):
+        return False
+    try:
+        d = np.load(out_path, allow_pickle=True)
+        return ('code_version' in d
+                and str(d['code_version']) == OPT_VERSION
+                and 'floor' in d)
+    except Exception:
+        return False
+
+
 def make_objective(channel: np.ndarray, d_ext_single: int):
     def obj(params: np.ndarray) -> float:
         S = _build_S(params, d_ext_single)
@@ -168,9 +188,13 @@ def main() -> None:
         args.out_dir,
         f'depol_kron_{d_ext_single}_{sample_idx:02d}_{p_idx:02d}.npz',
     )
-    if os.path.exists(out_path):
-        print(f'Skip: {out_path} already exists', flush=True)
+    if _is_current(out_path):
+        print(f'Skip: {out_path} already exists (version {OPT_VERSION})',
+              flush=True)
         return
+    elif os.path.exists(out_path):
+        print(f'Rerun: {out_path} exists but was made with an older code '
+              f'version (need {OPT_VERSION}) -> re-optimising', flush=True)
 
     print(f'[task {args.task_id}] d={d_ext_single}  sample={sample_idx}  '
           f'p={p:.3f}  alpha={alpha:.4f}  beta={beta:.4f}  gamma={gamma:.4f}',
@@ -210,9 +234,11 @@ def main() -> None:
     S_opt   = _build_S(best_x, d_ext_single)
     D_opt   = _kron_power(S_opt, N_QUBITS)
     fra     = float(_get_framability_fast(D_opt, channel))
+    floor   = spectral_floor(channel)   # framability floor = spectral radius
 
     np.savez(out_path,
              framability  = np.array(fra),
+             floor        = np.array(floor),
              D            = D_opt,
              S            = S_opt,
              x            = best_x,
@@ -221,9 +247,11 @@ def main() -> None:
              gamma        = np.array(gamma),
              p            = np.array(p),
              d_ext_single = np.array(d_ext_single),
-             sample_idx   = np.array(sample_idx))
+             sample_idx   = np.array(sample_idx),
+             code_version = np.array(OPT_VERSION))
     print(f'[task {args.task_id}] saved {out_path}  '
-          f'fra={fra:.6f}  elapsed={elapsed:.1f}s', flush=True)
+          f'fra={fra:.6f}  floor={floor:.6f}  gap={fra - floor:.6f}  '
+          f'elapsed={elapsed:.1f}s', flush=True)
 
 
 if __name__ == '__main__':

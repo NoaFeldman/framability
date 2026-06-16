@@ -24,6 +24,7 @@ QUANTITIES = [
     ('pauli_fra',   'Pauli framability'),
     ('opt_fra_4',   'Opt framability (d=4)'),
     ('opt_fra_6',   'Opt framability (d=6)'),
+    ('floor',       'Framability floor (ρ)'),
     ('sign_init',   'Sign problem (raw)'),
     ('sign_opt',    'Sign problem (opt)'),
     ('chan_stab',   'Channel stab. purity'),
@@ -34,6 +35,12 @@ QUANTITIES = [
     ('max_lpdo',    'Max LPDO bond entropy'),
 ]
 N_Q = len(QUANTITIES)
+
+
+def _is_fra(key: str) -> bool:
+    """Framability-family panels (shared colour scale + contour at 1): the
+    Pauli/optimised framabilities and the spectral-radius floor."""
+    return ('fra' in key) or (key == 'floor')
 
 
 def load_results(in_dir: Path) -> np.ndarray:
@@ -64,7 +71,7 @@ def plot_colormaps(arr: np.ndarray, out_png: Path) -> None:
     g_edges    = _edges(gamma_vals)
 
     # Shared colour limits for all framability panels, forced to include 1.0.
-    fra_idx = [qi for qi, (k, _) in enumerate(QUANTITIES) if 'fra' in k]
+    fra_idx = [qi for qi, (k, _) in enumerate(QUANTITIES) if _is_fra(k)]
     fra_vmin, fra_vmax = _shared_fra_limits(arr, fra_idx)
 
     n_cols = 4
@@ -81,7 +88,7 @@ def plot_colormaps(arr: np.ndarray, out_png: Path) -> None:
         ax = axes_flat[qi]
         data = arr[:, :, qi].T   # (N_G, N_H) — gamma on y, h on x
 
-        is_fra = 'fra' in key
+        is_fra = _is_fra(key)
         if is_fra:
             vmin, vmax = fra_vmin, fra_vmax
         else:

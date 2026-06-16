@@ -42,7 +42,10 @@ import matplotlib.pyplot as plt
 import numpy as np
 from scipy.linalg import expm
 
+import unified_framability
 from two_qubit_lindbladian import numeric_two_qubit_lindbladian
+from optimize_framability import OPT_VERSION, spectral_floor
+from analysis import compute_steady_state
 
 
 def run_cmd(cmd, cwd=None):
@@ -71,20 +74,73 @@ def all_row_files_exist(out_dir, n_pts):
     return True
 
 
+def _row_version(out_dir, ig):
+    """Version stamp of row ig, or None if the row or its sidecar is absent."""
+    ver = Path(out_dir) / f"row_{ig:04d}.ver"
+    if not ver.exists():
+        return None
+    try:
+        return ver.read_text().strip()
+    except Exception:
+        return None
+
+
+def stale_or_missing_rows(out_dir, n_pts):
+    """Row indices that are missing, or were produced by an older OPT_VERSION.
+
+    A row counts as stale when its .npy is absent, or its .ver sidecar is
+    absent / does not match the current OPT_VERSION (e.g. the optimised
+    framability column was generated before the optimiser changed).
+    """
+    stale = []
+    for ig in range(n_pts):
+        npy = Path(out_dir) / f"row_{ig:04d}.npy"
+        if not npy.exists() or _row_version(out_dir, ig) != OPT_VERSION:
+            stale.append(ig)
+    return stale
+
+
+def _invalidate_downstream(out_dir):
+    """Remove caches derived from the row files so they are rebuilt.
+
+    Called when stale rows are re-optimised: scan_full.npy and the unified
+    optimized-framability dataset must not be reused, or the plot would show
+    the old optimisation.
+    """
+    for name in ("scan_full.npy",):
+        f = Path(out_dir) / name
+        if f.exists():
+            print(f"[invalidate] {f} (stale optimisation)")
+            f.unlink()
+    for f in (unified_framability.DEFAULT_PATH, unified_framability.DEFAULT_META):
+        if Path(f).exists():
+            print(f"[invalidate] {f} (stale optimisation)")
+            Path(f).unlink()
+
+
 def ensure_scan_full(args):
-    """Ensure out_dir/scan_full.npy exists by reusing or generating prerequisites."""
+    """Ensure out_dir/scan_full.npy exists by reusing or generating prerequisites.
+
+    Rows whose optimised framability was produced by an older OPT_VERSION are
+    re-optimised, and the derived scan_full.npy / unified dataset are
+    invalidated so the rebuilt optimisation is what gets plotted.
+    """
     scan_full = Path(args.out_dir) / "scan_full.npy"
-    if scan_full.exists():
+    stale = stale_or_missing_rows(args.out_dir, args.n_pts)
+
+    if scan_full.exists() and not stale:
         print(f"[reuse] {scan_full}")
         return
 
-    if not all_row_files_exist(args.out_dir, args.n_pts):
-        # Generate missing base rows locally (one row per task_id).
-        print("[gen] Missing row_XXXX.npy files -> running scan_worker.py locally.")
-        for ig in range(args.n_pts):
-            row_file = Path(args.out_dir) / f"row_{ig:04d}.npy"
-            if row_file.exists():
-                continue
+    if stale:
+        present_stale = [ig for ig in stale
+                         if (Path(args.out_dir) / f"row_{ig:04d}.npy").exists()]
+        if present_stale:
+            print(f"[rerun] {len(present_stale)} row(s) predate OPT_VERSION "
+                  f"{OPT_VERSION} -> re-optimising: {present_stale}")
+        # Regenerate every stale/missing row (one row per task_id).
+        print("[gen] Generating row_XXXX.npy files -> running scan_worker.py locally.")
+        for ig in stale:
             run_cmd([
                 sys.executable,
                 "scan_worker.py",
@@ -94,6 +150,8 @@ def ensure_scan_full(args):
                 "--gamma_step", str(args.gamma_step),
                 "--out_dir", args.out_dir,
             ])
+        # Derived caches must not reflect the old optimisation.
+        _invalidate_downstream(args.out_dir)
 
     if not all_point_extra_exist(args.out_dir, args.n_pts):
         # Generate missing per-point extras locally.
@@ -272,6 +330,45 @@ def compute_channel_stabilizer_grid(args):
     return grid
 
 
+def ensure_floor_grid(args):
+    """Spectral-radius floor of the optimised-framability gate on the grid.
+
+    For each (gamma, gamma') the plotted optimised framability is computed for
+    the gate exp(L*dt) with dt = 0.01*gamma_step (see scan_worker.py).  The
+    framability of that gate is bounded below by its spectral radius (an
+    induced-norm floor no frame can beat), which this grid records so it can be
+    shown next to the optimised framability.  Deterministic, so it is simply
+    cached and recomputed only when missing.
+    """
+    n  = args.n_pts
+    gs = args.gamma_step
+    dt = 0.01 * gs                      # matches scan_worker.py gate construction
+    out = Path(args.out_dir) / "spectral_floor.npy"
+
+    if out.exists():
+        grid = np.load(out)
+        if grid.shape == (n, n):
+            print(f"[reuse] {out}")
+            return grid
+        print(f"[regen] {out} shape {grid.shape} != ({n},{n})")
+
+    print("[gen] spectral_floor.npy = rho(exp(L*dt)) per grid point")
+    grid = np.zeros((n, n), dtype=float)
+    for ig in range(n):
+        gamma = gs * ig
+        for igp in range(n):
+            gp = gs * igp
+            _, L = compute_steady_state(args.J, gamma, gp)
+            gate = expm(dt * L).real
+            grid[ig, igp] = spectral_floor(gate)
+        if ig % 5 == 0:
+            print(f"  row {ig}/{n-1}")
+
+    os.makedirs(args.out_dir, exist_ok=True)
+    np.save(out, grid)
+    return grid
+
+
 def ensure_product_chi30(args, scan_full):
     f = Path(args.out_dir) / "product_fra_schro_chi030.npy"
     if f.exists():
@@ -306,32 +403,62 @@ def ensure_product_chi30(args, scan_full):
     )
 
 
-def plot_full_scan(args, scan_full, operator_bond, otoc_small, otoc_large, stabilizer, chi30):
+def plot_full_scan(args, scan_full, operator_bond, otoc_small, otoc_large, stabilizer, chi30, floor):
+    ngp = getattr(args, 'n_pts_gp', args.n_pts)
     # Column mapping from scan_full (shape expected >= (n,n,12))
-    entropy = scan_full[:, :, 0]
-    negativity = scan_full[:, :, 1]
-    pauli_fra = scan_full[:, :, 2]
-    min_fra = scan_full[:, :, 3]
-    decay_rate = scan_full[:, :, 4]
-    mag_x = scan_full[:, :, 6]
-    dyadic_stab = scan_full[:, :, 7]
-    max_bond_entropy = scan_full[:, :, 11]
+    entropy = scan_full[:, :ngp, 0]
+    negativity = scan_full[:, :ngp, 1]
+    pauli_fra = scan_full[:, :ngp, 2]
+    # l1-coherence (optional; produced by compute_two_qubit_coherence.py)
+    coherence = None
+    coh_path = Path(args.out_dir) / f"two_qubit_coherence_{args.n_pts}x{args.n_pts}.npy"
+    if coh_path.exists():
+        try:
+            coherence = np.load(coh_path)[:, :ngp]
+            print(f"[load] {coh_path}")
+        except Exception as e:
+            print(f"[warn] could not load {coh_path}: {e}")
+    # Optimized framability sourced from unified dataset.
+    try:
+        fra_unified, _ = unified_framability.load()
+        min_fra = unified_framability.crop(fra_unified, args.n_pts, ngp)
+        print(f"[unified] optimized framability sourced from "
+              f"{unified_framability.DEFAULT_PATH}")
+    except (FileNotFoundError, ValueError) as e:
+        print(f"[warn] {e}\n[fallback] using scan_full column 3")
+        min_fra = scan_full[:, :ngp, 3]
+    decay_rate = scan_full[:, :ngp, 4]
+    mag_x = scan_full[:, :ngp, 6]
+    dyadic_stab = scan_full[:, :ngp, 7]
+    max_bond_entropy = scan_full[:, :ngp, 11]
+    operator_bond = operator_bond[:, :ngp]
+    otoc_small = otoc_small[:, :ngp]
+    otoc_large = otoc_large[:, :ngp]
+    stabilizer = stabilizer[:, :ngp]
+    chi30 = chi30[:, :ngp]
+    floor = floor[:, :ngp]
 
-    # Shared colour limits for all framability panels
-    fra_arrays = [pauli_fra, min_fra, dyadic_stab, chi30]
+    # Shared colour limits for all framability panels (incl. the floor)
+    fra_arrays = [pauli_fra, min_fra, dyadic_stab, chi30, floor]
     fra_vmin = min(np.nanmin(a) for a in fra_arrays)
     fra_vmax = max(np.nanmax(a) for a in fra_arrays)
 
     # Entropy/entanglement panels that get a zero-contour (use id() for identity check)
     entropy_panel_ids = {id(entropy), id(negativity), id(max_bond_entropy), id(operator_bond)}
+    if coherence is not None:
+        entropy_panel_ids.add(id(coherence))
+
+    top_row = [
+        (entropy, "Von Neumann entropy"),
+        (negativity, "Negativity"),
+        (max_bond_entropy, "Max LPDO bond entropy"),
+        (operator_bond, "Operator bond entropy"),
+    ]
+    if coherence is not None:
+        top_row.append((coherence, r"$\ell_1$-coherence $\sum_{i\neq j}|\rho_{ij}|$"))
 
     rows = [
-        [
-            (entropy, "Von Neumann entropy"),
-            (negativity, "Negativity"),
-            (max_bond_entropy, "Max LPDO bond entropy"),
-            (operator_bond, "Operator bond entropy"),
-        ],
+        top_row,
         [
             (mag_x, r"$X$ magnetization"),
             (decay_rate, "Decay rate"),
@@ -342,17 +469,21 @@ def plot_full_scan(args, scan_full, operator_bond, otoc_small, otoc_large, stabi
         [
             (pauli_fra, "Pauli state framability"),
             (min_fra, "Optimized framability"),
+            (floor, "Framability floor (spectral radius)"),
             (dyadic_stab, "Dyadic stabilizer framability"),
             (chi30, r"Product-state framability ($\chi=30$)"),
         ],
     ]
 
     ncols = max(len(r) for r in rows)
-    fig, axes = plt.subplots(3, ncols, figsize=(5.8 * ncols, 14))
+    panel_h = 14 / 3
+    fig, axes = plt.subplots(3, ncols, figsize=(panel_h * ncols, 14))
 
-    gammas = args.gamma_step * np.arange(args.n_pts)
+    ngp = getattr(args, 'n_pts_gp', args.n_pts)
+    gammas_y = args.gamma_step * np.arange(args.n_pts)
+    gammas_x = args.gamma_step * np.arange(ngp)
     half = args.gamma_step / 2
-    extent = [gammas[0] - half, gammas[-1] + half, gammas[0] - half, gammas[-1] + half]
+    extent = [gammas_x[0] - half, gammas_x[-1] + half, gammas_y[0] - half, gammas_y[-1] + half]
 
     for r, row in enumerate(rows):
         for c in range(ncols):
@@ -365,14 +496,14 @@ def plot_full_scan(args, scan_full, operator_bond, otoc_small, otoc_large, stabi
             is_fra = any(arr is a for a in fra_arrays)
 
             if is_fra:
-                im = ax.imshow(arr, origin="lower", extent=extent, aspect="equal",
+                im = ax.imshow(arr, origin="lower", extent=extent, aspect="auto",
                                cmap="viridis", vmin=fra_vmin, vmax=fra_vmax)
                 # White contour at framability = 1
                 if np.nanmin(arr) < 1.0 < np.nanmax(arr):
                     ax.contour(arr, levels=[1.0], colors="white", linewidths=0.8,
                                extent=extent, origin="lower")
             else:
-                im = ax.imshow(arr, origin="lower", extent=extent, aspect="equal", cmap="viridis")
+                im = ax.imshow(arr, origin="lower", extent=extent, aspect="auto", cmap="viridis")
                 # White contour at 0 for entropy/entanglement panels
                 if id(arr) in entropy_panel_ids:
                     if np.nanmin(arr) < 0.0 < np.nanmax(arr) or np.nanmax(arr) > 1e-10:
@@ -398,33 +529,52 @@ def plot_full_scan(args, scan_full, operator_bond, otoc_small, otoc_large, stabi
 
 def plot_bond_entropy_vs_framability(args, scan_full):
     """Side-by-side: max LPDO bond entropy | optimized framability."""
-    max_bond_entropy = scan_full[:, :, 11]
-    min_fra = scan_full[:, :, 3]
+    ngp = getattr(args, 'n_pts_gp', args.n_pts)
+    max_bond_entropy = scan_full[:, :ngp, 11]
+    # Optimized framability sourced from unified dataset.
+    try:
+        fra_unified, _ = unified_framability.load()
+        min_fra = unified_framability.crop(fra_unified, args.n_pts, ngp)
+        print(f"[unified] optimized framability sourced from "
+              f"{unified_framability.DEFAULT_PATH}")
+    except (FileNotFoundError, ValueError) as e:
+        print(f"[warn] {e}\n[fallback] using scan_full columns 3 & 2")
+        pauli_fra = scan_full[:, :ngp, 2]
+        min_fra = np.minimum(scan_full[:, :ngp, 3], pauli_fra)
 
-    gammas = args.gamma_step * np.arange(args.n_pts)
+    gammas_y = args.gamma_step * np.arange(args.n_pts)
+    gammas_x = args.gamma_step * np.arange(ngp)
     half = args.gamma_step / 2
-    extent = [gammas[0] - half, gammas[-1] + half, gammas[0] - half, gammas[-1] + half]
+    extent = [gammas_x[0] - half, gammas_x[-1] + half, gammas_y[0] - half, gammas_y[-1] + half]
 
     fig, axes = plt.subplots(1, 2, figsize=(11, 5))
 
     # Max LPDO bond entropy
     ax = axes[0]
-    im0 = ax.imshow(max_bond_entropy, origin="lower", extent=extent, aspect="equal", cmap="viridis")
+    vmin0, vmax0 = np.nanmin(max_bond_entropy), np.nanmax(max_bond_entropy)
+    # Ensure 0 is included in the colorbar range
+    vmin0 = min(vmin0, 0.0)
+    vmax0 = max(vmax0, 0.0)
+    im0 = ax.imshow(max_bond_entropy, origin="lower", extent=extent, aspect="auto",
+                    cmap="viridis", vmin=vmin0, vmax=vmax0)
     ax.set_title("Max LPDO bond entropy")
     ax.set_xlabel(r"$\gamma'$")
     ax.set_ylabel(r"$\gamma$")
-    fig.colorbar(im0, ax=ax)
-    if np.nanmax(max_bond_entropy) > 1e-10:
+    cb0 = fig.colorbar(im0, ax=ax)
+    cb0.ax.axhline(y=(0.0 - vmin0) / (vmax0 - vmin0), color="white", linewidth=0.8)
+    cb0.set_ticks(sorted(set(list(cb0.get_ticks()) + [0.0])))
+    # White contour at 0
+    if np.nanmin(max_bond_entropy) < 0.0 < np.nanmax(max_bond_entropy):
         try:
-            ax.contour(max_bond_entropy, levels=[1e-10], colors="white", linewidths=0.8,
+            ax.contour(max_bond_entropy, levels=[0.0], colors="white", linewidths=0.8,
                        extent=extent, origin="lower")
         except Exception:
             pass
 
     # Optimized framability
     ax = axes[1]
-    im1 = ax.imshow(min_fra, origin="lower", extent=extent, aspect="equal", cmap="viridis")
-    ax.set_title("Optimized framability")
+    im1 = ax.imshow(min_fra, origin="lower", extent=extent, aspect="auto", cmap="viridis")
+    ax.set_title("Optimized framability\n(min of optimized and Pauli)")
     ax.set_xlabel(r"$\gamma'$")
     ax.set_ylabel(r"$\gamma$")
     fig.colorbar(im1, ax=ax)
@@ -445,6 +595,8 @@ def plot_bond_entropy_vs_framability(args, scan_full):
 def main():
     parser = argparse.ArgumentParser(description="Build full two-qubit scan figure with reuse-first data generation.")
     parser.add_argument("--n_pts", type=int, default=41)
+    parser.add_argument("--n_pts_gp", type=int, default=None,
+                        help="Number of gamma' points to plot (defaults to n_pts).")
     parser.add_argument("--J", type=float, default=1.0)
     parser.add_argument("--gamma_step", type=float, default=0.2)
     parser.add_argument("--out_dir", type=str, default="results")
@@ -464,6 +616,9 @@ def main():
 
     os.makedirs(args.out_dir, exist_ok=True)
 
+    if args.n_pts_gp is None:
+        args.n_pts_gp = args.n_pts
+
     maybe_submit_neighbor_twice(args)
 
     ensure_scan_full(args)
@@ -473,6 +628,7 @@ def main():
     otoc_small, otoc_large = ensure_otoc_arrays(args)
     stabilizer = compute_channel_stabilizer_grid(args)
     chi30 = ensure_product_chi30(args, scan_full)
+    floor = ensure_floor_grid(args)
 
     plot_full_scan(
         args=args,
@@ -482,6 +638,7 @@ def main():
         otoc_large=otoc_large,
         stabilizer=stabilizer,
         chi30=chi30,
+        floor=floor,
     )
     plot_bond_entropy_vs_framability(args, scan_full)
 

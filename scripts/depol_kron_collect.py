@@ -24,16 +24,22 @@ N_D, N_P      = len(D_EXT_SINGLES), len(P_VALUES)
 
 
 def _load_summary(in_dir: Path):
-    fra = np.full((N_SAMPLES, N_P, N_D), np.nan)
+    fra   = np.full((N_SAMPLES, N_P, N_D), np.nan)
+    # Floor (spectral radius) is a property of the channel, independent of the
+    # frame size d, so it is indexed only by (sample, p).
+    floor = np.full((N_SAMPLES, N_P), np.nan)
     for d_idx, d in enumerate(D_EXT_SINGLES):
         for s_idx in range(N_SAMPLES):
             for p_idx in range(N_P):
                 f = in_dir / f'depol_kron_{d}_{s_idx:02d}_{p_idx:02d}.npz'
                 if f.exists():
-                    fra[s_idx, p_idx, d_idx] = float(np.load(f)['framability'])
+                    data = np.load(f)
+                    fra[s_idx, p_idx, d_idx] = float(data['framability'])
+                    if 'floor' in data:
+                        floor[s_idx, p_idx] = float(data['floor'])
                 else:
                     print(f'  missing: {f.name}')
-    return fra
+    return fra, floor
 
 
 def main() -> None:
@@ -47,7 +53,7 @@ def main() -> None:
     out_dir = Path(args.out_dir)
     out_dir.mkdir(exist_ok=True)
 
-    fra = _load_summary(in_dir)
+    fra, floor = _load_summary(in_dir)
 
     rng    = np.random.default_rng(MASTER_SEED)
     angles = rng.uniform(0.0, np.pi / 2.0, size=(N_SAMPLES, 3))
@@ -55,6 +61,7 @@ def main() -> None:
     p_values = np.array(P_VALUES)
     np.savez(out_dir / 'depol_kron_summary.npz',
              framability   = fra,
+             floor         = floor,
              p_values      = p_values,
              d_ext_singles = np.array(D_EXT_SINGLES),
              angles        = angles)
@@ -88,6 +95,17 @@ def main() -> None:
                 markersize=6, label=fr'$d={d}$  (mean)')
         ax.fill_between(p_values, mean - std, mean + std,
                         color=col, alpha=0.2)
+
+    # Floor (spectral radius): the achievable lower bound on framability for
+    # any frame.  Averaged over the random gates, drawn next to the optimised
+    # framability curves.
+    if not np.all(np.isnan(floor)):
+        floor_mean = np.nanmean(floor, axis=0)   # (N_P,)
+        floor_std  = np.nanstd(floor,  axis=0)
+        ax.plot(p_values, floor_mean, color='k', marker='x', lw=2,
+                ls='--', markersize=6, label='floor (spectral radius, mean)')
+        ax.fill_between(p_values, floor_mean - floor_std, floor_mean + floor_std,
+                        color='k', alpha=0.12)
 
     ax.axhline(1.0, color='k', lw=0.8, ls=':')
     ax.set_xlabel(r'depolarisation $p$', fontsize=12)

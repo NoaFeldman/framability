@@ -36,6 +36,12 @@ import sys
 
 import numpy as np
 import matplotlib.pyplot as plt
+from scipy.linalg import expm
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from optimize_framability import spectral_floor
+from analysis import compute_steady_state
 
 
 # (merged_col, title)
@@ -134,6 +140,31 @@ def main():
             print(f'WARNING: {fpath} not found – column filled with NaN',
                   file=sys.stderr)
 
+    # ── Framability floor (spectral radius of the gate) ──────────────────
+    # For each (gamma, gamma') the optimised framability is computed for the
+    # gate exp(L*dt) with dt = 0.01*gamma_step (see scan_worker.py).  Its
+    # framability is bounded below by the gate's spectral radius — an
+    # induced-norm floor no frame can beat.  Cached to spectral_floor.npy and
+    # appended as a column so it can be plotted next to optimised framability.
+    floor_path = os.path.join(args.out_dir, 'spectral_floor.npy')
+    dt = 0.01 * args.gamma_step
+    if os.path.exists(floor_path) and np.load(floor_path).shape == (n, n):
+        floor_grid = np.load(floor_path)
+        print(f'[reuse] {floor_path}')
+    else:
+        print('Computing spectral-radius floor grid ...')
+        floor_grid = np.zeros((n, n), dtype=float)
+        for ig in range(n):
+            gamma = args.gamma_step * ig
+            for igp in range(n):
+                gp = args.gamma_step * igp
+                _, L = compute_steady_state(args.J, gamma, gp)
+                floor_grid[ig, igp] = spectral_floor(expm(dt * L).real)
+        np.save(floor_path, floor_grid)
+        print(f'Saved {floor_path}')
+    floor_col = data.shape[2]
+    data = np.concatenate([data, floor_grid[:, :, None]], axis=2)
+
     # ── Save combined array ──────────────────────────────────────────────
     combined_path = os.path.join(args.out_dir, 'scan_full.npy')
     np.save(combined_path, data)
@@ -145,7 +176,10 @@ def main():
     gamma_ps = [gs * i for i in range(n)]
     extent   = [gamma_ps[0], gamma_ps[-1], gammas[0], gammas[-1]]
 
-    ncols = max(len(TOP_ROW), len(BOTTOM_ROW))
+    # Floor panel sits next to "Optimised framability" on the bottom row.
+    bottom_row = BOTTOM_ROW + [(floor_col, 'Framability floor (ρ)')]
+
+    ncols = max(len(TOP_ROW), len(bottom_row))
     fig, axes = plt.subplots(2, ncols, figsize=(6 * ncols, 10))
 
     # Build shared colour-limit lookup: col_index -> (vmin, vmax)
@@ -171,20 +205,26 @@ def main():
         ax.set_ylabel(r"$\gamma$")
         ax.set_title(title)
 
-    for col, (k, title) in enumerate(BOTTOM_ROW):
+    for col, (k, title) in enumerate(bottom_row):
         ax = axes[1, col]
         if k < data.shape[2]:
-            im = ax.imshow(data[:, :, k], origin='lower', aspect='auto',
-                           extent=extent, vmin=1.0)
-            ax.contour(data[:, :, k], levels=[1.0 + 1e-6], colors='white',
-                       linewidths=0.8, extent=extent, origin='lower')
+            if k == floor_col:
+                # Floor is <= 1 (spectral radius of a trace-preserving gate);
+                # use its own scale rather than the framability vmin=1.
+                im = ax.imshow(data[:, :, k], origin='lower', aspect='auto',
+                               extent=extent)
+            else:
+                im = ax.imshow(data[:, :, k], origin='lower', aspect='auto',
+                               extent=extent, vmin=1.0)
+                ax.contour(data[:, :, k], levels=[1.0 + 1e-6], colors='white',
+                           linewidths=0.8, extent=extent, origin='lower')
             fig.colorbar(im, ax=ax)
         ax.set_xlabel(r"$\gamma'$")
         ax.set_ylabel(r"$\gamma$")
         ax.set_title(title)
 
     # Hide unused axes when rows have different lengths
-    for row, row_spec in enumerate([TOP_ROW, BOTTOM_ROW]):
+    for row, row_spec in enumerate([TOP_ROW, bottom_row]):
         for col in range(len(row_spec), ncols):
             axes[row, col].set_visible(False)
 

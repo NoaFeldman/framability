@@ -26,12 +26,42 @@ where d_ext = d_ext_single ** n_qubits.
 """
 
 import numpy as np
-from scipy.optimize import minimize, differential_evolution
+from scipy.optimize import minimize, differential_evolution, linprog
 from scipy.optimize._linprog_highs import _linprog_highs
 from scipy.optimize._linprog_util import _LPProblem, _clean_inputs
 
 from two_qubit_lindbladian import pauli_string_dim, qubit_d
 from framability import heisenberg_framability, extended_pauli_D
+
+# ---------------------------------------------------------------------------
+#  Code version stamp
+# ---------------------------------------------------------------------------
+# Bumped whenever the framability optimisation changes in a way that makes
+# previously cached results stale.  Downstream workers store this string in
+# their output and re-run the optimisation when the stored stamp differs from
+# the current one (see depol_kron_worker, dissipative_PT, scan_worker).
+#
+#   2.0-dual-floor : dual certificate + spectral-radius floor, analytic
+#                    subgradient, smooth conditioning penalty (replaces the
+#                    hard 1e6 infeasibility cliff).
+OPT_VERSION = '2.0-dual-floor'
+
+
+def spectral_floor(gate) -> float:
+    """Spectral radius of the gate's transfer matrix = floor on framability.
+
+    Framability is an induced operator norm of ``gate`` (the gauge of the
+    frame polytope), and every induced norm is bounded below by the spectral
+    radius rho(gate) = max_i |lambda_i|.  No frame — of any size or shape —
+    can push the framability below this value, so it is the achievable floor
+    (reached in the limit by a norm in which the gate is an isometry).
+
+    For a unitary channel rho = 1; for a dissipative (CPTP) channel rho <= 1.
+    """
+    gate = np.asarray(gate)
+    eig = np.linalg.eigvals(gate)
+    return float(np.max(np.abs(eig)))
+
 
 # Nelder-Mead is the default: the simplex method makes no smoothness assumption,
 # handling the nonsmooth max-of-LP objective well, and converges reliably within
@@ -64,17 +94,18 @@ except ImportError:
 # performed inside _clean_inputs) and then update A_eq.data and b_eq
 # in-place on every call, bypassing scipy's per-call validation overhead.
 
-_LP_CACHE: dict = {}   # d_ext -> (lp_clean, coo_eq, blk_nnz)
+_LP_CACHE: dict = {}   # (d_ext, n) -> (lp_clean, coo_eq, blk_nnz)
 
 
 def _get_lp_cache(d_ext: int, n: int):
-    """Return (lp_clean, coo_eq, blk_nnz) for the batched LP, cached by d_ext.
+    """Return (lp_clean, coo_eq, blk_nnz) for the batched LP, cached by (d_ext, n).
 
     Each complex equality D u_j = Y[:, j] is split into its real and imaginary
     parts, so n_eq = 2 * n * d_ext and the per-target block is [Re(D); Im(D)]
     stacked vertically (shape 2n × d_ext).
     """
-    if d_ext not in _LP_CACHE:
+    key = (d_ext, n)
+    if key not in _LP_CACHE:
         from scipy.sparse import (
             kron as sp_kron, eye as sp_eye, csc_matrix,
             hstack as sp_hstack,
@@ -109,15 +140,15 @@ def _get_lp_cache(d_ext: int, n: int):
         # A_eq_tmpl (col-major).  Update .data in-place each call.
         coo_eq = lp_clean.A_eq
 
-        _LP_CACHE[d_ext] = (lp_clean, coo_eq, blk_nnz)
-    return _LP_CACHE[d_ext]
+        _LP_CACHE[key] = (lp_clean, coo_eq, blk_nnz)
+    return _LP_CACHE[key]
 
 
 # ---------------------------------------------------------------------------
 #  Fast framability: single batched LP  (one linprog call instead of d_ext)
 # ---------------------------------------------------------------------------
 
-def _get_framability_fast(D, gate):
+def _get_framability_fast(D, gate, return_norms=False):
     """
     Compute framability in a *single* LP call.
 
@@ -153,7 +184,157 @@ def _get_framability_fast(D, gate):
     lp_upd = lp_clean._replace(b_eq=b_eq)
 
     res = _linprog_highs(lp_upd, solver=None, presolve=False)
-    return res['x'][0] if res['status'] == 0 else np.inf
+    if res['status'] != 0:
+        if return_norms:
+            return np.inf, None
+        return np.inf
+
+    val = res['x'][0]
+    if not return_norms:
+        return val
+
+    # Recover the per-target-column atomic norms s_j = Σ_k (u⁺+u⁻)_{jk}.
+    # Variable layout: x = [t, u⁺ (d_ext²), u⁻ (d_ext²)]; the coefficient
+    # vector for target column j occupies the contiguous block j*d_ext:(j+1)*d_ext
+    # (kron(eye(d_ext), D) is block-diagonal with one D-block per target).
+    n_up = d_ext * d_ext
+    u_plus  = res['x'][1:1 + n_up]
+    u_minus = res['x'][1 + n_up:1 + 2 * n_up]
+    col_norms = (u_plus + u_minus).reshape(d_ext, d_ext).sum(axis=1)
+    return val, col_norms
+
+
+def framability_certificate(D, gate):
+    """Return (value, gap-free) certificate data for a real frame/gate.
+
+    Returns a dict with:
+        value    : the framability  max_j ||gateᵀ d_j||_{A(D)}
+        argmax   : index j* of the binding frame column
+        witness  : dual vector w* ∈ R^nrows with <w*, gateᵀ d_{j*}> = value
+                   and ||Dᵀ w*||_∞ ≤ 1  (certifies the value of column j*)
+        col_norms: per-column atomic norms (length d_ext)
+
+    The witness is the Lagrange multiplier of the binding column; its outer
+    products give the analytic subgradient of the framability w.r.t. D
+    (see framability_value_and_grad).  Real D and real gate only — the case
+    used by every production pipeline (gates are real superoperators).
+
+    Cost: one batched primal LP (value + binding column) plus a single small
+    dual LP for the witness — far cheaper than the per-parameter
+    finite-difference gradient it replaces.
+    """
+    D = np.asarray(D, dtype=float)
+    gate = np.asarray(gate).real
+    nrows, d_ext = D.shape
+
+    val, col_norms = _get_framability_fast(D, gate, return_norms=True)
+    if not np.isfinite(val) or col_norms is None:
+        return dict(value=np.inf, argmax=-1, witness=None, col_norms=None)
+
+    j_star = int(np.argmax(col_norms))
+    y = gate.T @ D[:, j_star]            # target = gateᵀ d_{j*}
+
+    # Dual LP for the binding column:  max <w, y>  s.t.  -1 ≤ Dᵀ w ≤ 1.
+    # linprog minimises, so minimise -<w, y>.
+    DT = D.T
+    res = linprog(c=-y, A_ub=np.vstack([DT, -DT]), b_ub=np.ones(2 * d_ext),
+                  bounds=[(None, None)] * nrows, method='highs')
+    witness = res.x.copy() if res.success else None
+    return dict(value=float(val), argmax=j_star, witness=witness,
+                col_norms=col_norms)
+
+
+def framability_value_and_grad(S, gate, n_qubits=2):
+    """Framability value and its analytic (sub)gradient w.r.t. the frame S.
+
+    For D = S⊗…⊗S (n_qubits copies) and a real gate, returns (value, dS)
+    where dS has the shape of S and is a subgradient of
+    Φ(S) = max_j ||gateᵀ (S^{⊗n})_j||_{A(D)} at S.
+
+    Derivation
+    ----------
+    With the binding column j* (witness w*, primal coefficients u*) the
+    envelope theorem gives the subgradient w.r.t. D:
+
+        ∂Φ/∂D = (gate · w*) e_{j*}ᵀ  −  w* (u*)ᵀ            (nrows × d_ext)
+
+    which is then chain-ruled through the Kronecker structure D = S⊗S.
+
+    Only n_qubits == 2 is handled analytically (the production case); other
+    values raise NotImplementedError so callers fall back to finite
+    differences.
+    """
+    if n_qubits != 2:
+        raise NotImplementedError(
+            'analytic gradient implemented only for n_qubits == 2')
+
+    S = np.asarray(S, dtype=float)
+    gate = np.asarray(gate).real
+    n_s, m = S.shape
+    D = _kron_power(S, 2)               # (n_s², m²)
+
+    cert = framability_certificate(D, gate)
+    val, j_star, w = cert['value'], cert['argmax'], cert['witness']
+    if not np.isfinite(val) or w is None:
+        return val, np.zeros_like(S)
+
+    # Recover the binding column's primal coefficients u* (min-1-norm
+    # representation of gateᵀ d_{j*} in D) via one atomic-norm LP.
+    y = gate.T @ D[:, j_star]
+    nrows, d_ext = D.shape
+    c = np.concatenate([np.ones(d_ext), np.ones(d_ext)])
+    res = linprog(c=c, A_eq=np.hstack([D, -D]), b_eq=y,
+                  bounds=[(0, None)] * (2 * d_ext), method='highs')
+    if not res.success:
+        return val, np.zeros_like(S)
+    u = res.x[:d_ext] - res.x[d_ext:]
+
+    # Subgradient w.r.t. D:  (gate·w) e_{j*}ᵀ − w uᵀ
+    gD = np.zeros((nrows, d_ext))
+    gD[:, j_star] += gate @ w
+    gD -= np.outer(w, u)
+
+    # Chain rule through D = S⊗S:  D_{(a,b),(i,j)} = S_{a,i} S_{b,j}.
+    T = gD.reshape(n_s, n_s, m, m)     # T[a,b,i,j]
+    dS = np.einsum('abij,bj->ai', T, S) + np.einsum('baji,bj->ai', T, S)
+    return val, dS
+
+
+def _check_subgradient_against_fd(seed=0, eps=1e-6):
+    """Self-test: compare the analytic subgradient to a finite difference.
+
+    Validates framability_value_and_grad.  Run manually:
+
+        python -c "import optimize_framability as o; o._check_subgradient_against_fd()"
+
+    Note: the framability is nonsmooth where two frame columns tie for the
+    binding maximum.  At such a point the analytic value is a valid
+    subgradient but a one-sided finite difference measures a different
+    directional derivative, so a large error there is expected, not a bug —
+    the check reports the tie so it is not misread.  At differentiable points
+    (unique binding column) the agreement is ~1e-6.
+    """
+    rng = np.random.default_rng(seed)
+    gate = rng.standard_normal((pauli_string_dim, pauli_string_dim)) * 0.3
+    n_s = qubit_d ** 2
+    S = _project_columns_bloch(rng.standard_normal((n_s, 5)))
+    val, dS = framability_value_and_grad(S, gate, n_qubits=2)
+
+    cert = framability_certificate(_kron_power(S, 2), gate)
+    cn = np.sort(cert['col_norms'])[::-1]
+    binding_gap = float(cn[0] - cn[1])     # 0 => nonsmooth (tied columns)
+
+    fd = np.zeros_like(S)
+    for a in range(S.shape[0]):
+        for i in range(S.shape[1]):
+            Sp = S.copy(); Sp[a, i] += eps
+            vp = _get_framability_fast(_kron_power(Sp, 2), gate)
+            fd[a, i] = (vp - val) / eps
+    err = np.linalg.norm(dS - fd) / max(np.linalg.norm(fd), 1e-12)
+    tag = '  [nonsmooth: tied binding columns]' if binding_gap < 1e-9 else ''
+    print(f'analytic vs FD subgradient relative error: {err:.3e}  '
+          f'(binding gap {binding_gap:.2e}){tag}')
+    return err
 
 
 # ---------------------------------------------------------------------------
@@ -196,7 +377,7 @@ def minimize_framability(gate, d_ext_single, *, n_restarts=5,
                          method=None, max_iter=500, maxfev=2000,
                          tol=1e-6, seed=None, verbose=True,
                          extra_init_xs=None, return_x=False,
-                         use_complex=None):
+                         use_complex=None, return_floor=False):
     """
     Find D = kron^n_qubits(S) with unit-norm columns of S that minimises
     heisenberg_framability(D, gate).
@@ -218,20 +399,27 @@ def minimize_framability(gate, d_ext_single, *, n_restarts=5,
         Random restarts for local methods.  The first restart uses the
         standard extended-Pauli S when d_ext_single == 6 (two qubits).
     method : str | None
-        Optimisation algorithm.  None (default) falls back to DEFAULT_METHOD
-        which is 'dual_annealing'.
+        Optimisation algorithm.  None (default) falls back to DEFAULT_METHOD,
+        which is 'Nelder-Mead' (a local simplex method run with n_restarts
+        random restarts).
 
-        'dual_annealing'      Recommended.  Cauchy-Lorentz simulated annealing
-                              with Powell polishing.  Handles the nonsmooth
-                              max-of-LP objective without any smoothness
-                              assumption and performs global search in one call.
-                              Uses maxfev evaluations total; warm-starts from
-                              extra_init_xs[0] when provided (useful for sweeps).
-        'subgradient'         Projected numerical subgradient with Polyak step
-                              size.  Converges to the global optimum when the
-                              objective is convex in S (not guaranteed by the
-                              Kronecker structure but often holds in practice).
-                              Uses n_restarts × budget iterations.
+        'dual_annealing'      Cauchy-Lorentz simulated annealing with Powell
+                              polishing.  Handles the nonsmooth max-of-LP
+                              objective without any smoothness assumption and
+                              performs global search in one call; use it when a
+                              large budget (maxfev >> 5000) is available.
+                              Warm-starts from extra_init_xs[0] when provided.
+        'subgradient'         Projected subgradient with Polyak step size, using
+                              the analytic subgradient from the LP dual witness
+                              (framability_value_and_grad) for n_qubits == 2 and
+                              a real gate, else a finite-difference fallback.
+                              NOTE: Φ(S) is NOT convex — the framability is
+                              convex in D, but D appears in both the dictionary
+                              and the target (Y = gateᵀD), and D = S⊗S adds
+                              further nonconvexity.  This method is therefore a
+                              local descent with no global guarantee; rely on
+                              restarts and the spectral-radius floor (see
+                              return_floor) to judge how close it gets.
         'basinhopping'        Basin-hopping with Powell local minimiser.
                               Good when a rough global layout is known but
                               individual basins are hard to escape.
@@ -254,12 +442,19 @@ def minimize_framability(gate, d_ext_single, *, n_restarts=5,
         length qubit_d² * d_ext_single (same as the optimiser's own
         parameter space, i.e. the raw x returned when return_x=True).
     return_x : bool
-        If True, return a 3-tuple (D_opt, f_opt, x_opt) where x_opt is
-        the raw flat parameter vector for S corresponding to D_opt.
-        Default False returns the usual 2-tuple (D_opt, f_opt).
+        If True, append the raw flat parameter vector x_opt for S_opt to the
+        returned tuple.  Default False.
+    return_floor : bool
+        If True, append the spectral-radius floor (see spectral_floor) to the
+        returned tuple — the achievable lower bound on framability for *any*
+        frame, reported whether or not the optimisation reached it.
 
     Returns
     -------
+    By default a 2-tuple (D_opt, f_opt).  With the flags set, the extra values
+    are appended in this order: x_opt (return_x), floor (return_floor).
+    E.g. return_x=True, return_floor=True  ->  (D_opt, f_opt, x_opt, floor).
+
     D_opt : ndarray, shape (pauli_string_dim, d_ext)
         Optimal frame matrix D = kron^n_qubits(S_opt).
     f_opt : float
@@ -267,11 +462,14 @@ def minimize_framability(gate, d_ext_single, *, n_restarts=5,
     x_opt : ndarray  (only when return_x=True)
         Raw flat parameter vector for S_opt (seed-compatible with
         extra_init_xs of a subsequent call).
+    floor : float  (only when return_floor=True)
+        Spectral radius of the gate = framability floor.
     """
     if method is None:
         method = DEFAULT_METHOD
     rng = np.random.default_rng(seed)
     gate = np.asarray(gate, dtype=complex)
+    floor = spectral_floor(gate)
 
     n_s = qubit_d ** 2                                        # rows of S (4 per qubit)
     n_qubits = int(round(np.log(pauli_string_dim) / np.log(n_s)))  # inferred qubit count
@@ -290,21 +488,40 @@ def minimize_framability(gate, d_ext_single, *, n_restarts=5,
     n_free = d_ext_single - N_FIXED_COLS
     n_params = (2 if _use_complex else 1) * n_s * n_free
 
-    _PENALTY = 1e6   # returned when LP is infeasible (rank-deficient D)
+    # When the frame D is (near) rank-deficient the framability LP is
+    # infeasible.  Instead of a flat 1e6 cliff (a discontinuous wall that
+    # derivative-free methods stumble on and gradients cannot see across),
+    # return a barrier that *grows smoothly* as D loses rank, so the optimiser
+    # is pushed back toward well-conditioned frames.
+    _PENALTY_BASE = 1e3
 
     def objective(params):
         D = _params_to_D(params, n_s, d_ext_single, n_qubits,
                          use_complex=_use_complex)
         f = _get_framability_fast(D, gate)
-        return f if np.isfinite(f) else _PENALTY
+        if np.isfinite(f):
+            return f
+        # smallest singular value -> 0 as the frame collapses; 1/sigma_min
+        # gives a finite-valued, monotone barrier away from the cliff.
+        sigma_min = float(np.linalg.svd(D, compute_uv=False)[-1])
+        return _PENALTY_BASE * (1.0 + 1.0 / max(sigma_min, 1e-12))
 
     result = _run_restarts(
         objective, n_params, d_ext, n_s, d_ext_single, n_qubits,
         rng, n_restarts, method, max_iter, maxfev, tol, verbose,
         extra_init_xs=extra_init_xs,
-        use_complex=_use_complex,
+        use_complex=_use_complex, gate=gate,
     )
-    return result if return_x else result[:2]
+
+    if verbose:
+        f_opt = result[1]
+        print(f'floor (spectral radius) = {floor:.6f}   '
+              f'framability = {f_opt:.6f}   gap = {f_opt - floor:.6f}')
+
+    out = list(result) if return_x else list(result[:2])
+    if return_floor:
+        out.append(floor)
+    return tuple(out)
 
 
 def _project_x(x, n_s, n_free, *, use_complex=True):
@@ -322,13 +539,21 @@ def _project_x(x, n_s, n_free, *, use_complex=True):
 
 def _run_subgradient(objective, n_params, n_s, d_ext_single, n_qubits, d_ext,
                      rng, n_restarts, maxfev, tol, verbose, *,
-                     extra_init_xs=None, use_complex=True):
-    """Projected numerical-subgradient descent with Polyak step size.
+                     extra_init_xs=None, use_complex=True, gate=None):
+    """Projected subgradient descent with Polyak step size.
 
-    Exploits convexity of the objective in D (framability = max of LP values
-    is convex in D).  The Kronecker constraint D = kron^n(S) breaks convexity
-    in S, but empirically the landscape is well-behaved for the depol-sweep
-    gates, and the Polyak step drives fast convergence near the optimum.
+    NOT a convex method.  The framability is convex in D, but D enters both
+    the dictionary and the target (Y = gateᵀD), and D = S⊗S adds further
+    nonconvexity, so Φ(S) is nonconvex with no global guarantee — this is a
+    local descent leaning on restarts (and the spectral-radius floor) for
+    confidence.
+
+    Gradient source
+    ---------------
+    For a real gate with n_qubits == 2 the analytic subgradient from the LP
+    dual witness (framability_value_and_grad) is used — two LP solves per
+    step instead of the n_params solves a finite difference needs.  Otherwise
+    (complex S, or n_qubits != 2) it falls back to forward differences.
 
     Algorithm
     ---------
@@ -348,8 +573,23 @@ def _run_subgradient(objective, n_params, n_s, d_ext_single, n_qubits, d_ext,
                          extra_init_xs=extra_init_xs,
                          use_complex=use_complex)
 
+    # Analytic subgradient available only for a real gate on two qubits.
+    _use_analytic = (gate is not None and not use_complex and n_qubits == 2
+                     and np.max(np.abs(np.asarray(gate).imag)) < 1e-12)
+    gate_real = np.asarray(gate).real if _use_analytic else None
+
+    def _analytic_grad(x_flat):
+        """Flat parameter-space subgradient from the LP-dual witness."""
+        free = x_flat.reshape(n_s, n_free)
+        S = np.hstack([_FIXED_COLS, _project_columns_bloch(free)])
+        _, dS = framability_value_and_grad(S, gate_real, n_qubits=2)
+        return dS[:, N_FIXED_COLS:].ravel()
+
     budget_per_restart = maxfev // max(1, n_restarts)
-    n_iter = max(5, budget_per_restart // (n_params + 1))
+    # An FD gradient costs n_params LP solves per step; the analytic gradient
+    # costs ~2, so it affords many more steps for the same budget.
+    cost_per_step = 2 if _use_analytic else (n_params + 1)
+    n_iter = max(5, budget_per_restart // cost_per_step)
     eps_fd = 1e-5  # forward-difference step
 
     global_best_val = np.inf
@@ -372,11 +612,15 @@ def _run_subgradient(objective, n_params, n_s, d_ext_single, n_qubits, d_ext,
         alpha_0 = None
 
         for k in range(n_iter):
-            # Forward-difference subgradient (n_params LP evaluations).
-            grad = np.empty(n_params)
-            for i in range(n_params):
-                xp = x.copy(); xp[i] += eps_fd
-                grad[i] = (objective(xp) - f) / eps_fd
+            if _use_analytic:
+                # Analytic subgradient from the LP dual witness (~2 LP solves).
+                grad = _analytic_grad(x)
+            else:
+                # Forward-difference subgradient (n_params LP evaluations).
+                grad = np.empty(n_params)
+                for i in range(n_params):
+                    xp = x.copy(); xp[i] += eps_fd
+                    grad[i] = (objective(xp) - f) / eps_fd
 
             gnorm_sq = float(np.dot(grad, grad))
             if gnorm_sq < 1e-20:
@@ -422,19 +666,19 @@ def _run_subgradient(objective, n_params, n_s, d_ext_single, n_qubits, d_ext,
 
 def _run_restarts(objective, n_params, d_ext, n_s, d_ext_single, n_qubits,
                   rng, n_restarts, method, max_iter, maxfev, tol,
-                  verbose, *, extra_init_xs=None, use_complex=True):
+                  verbose, *, extra_init_xs=None, use_complex=True, gate=None):
     """Optimisation driver for Kronecker-structured framability.  Returns (D_opt, f_opt, x_opt).
 
     Methods
     -------
     'dual_annealing'      Cauchy-Lorentz SA with Powell polishing.  No smoothness
-                          assumption; good global search.  Recommended default.
+                          assumption; good global search (large budgets).
     'basinhopping'        Random basin-hopping around deterministic inits with
                           Powell local minimiser.
-    'subgradient'         Projected numerical subgradient w/ Polyak step size.
-                          Converges to global optimum when f(S) is convex (not
-                          guaranteed due to Kronecker structure, but often holds
-                          empirically for the depol-sweep gates).
+    'subgradient'         Projected subgradient w/ Polyak step size, using the
+                          analytic LP-dual gradient for real 2-qubit gates.
+                          Φ(S) is nonconvex, so this is local descent with no
+                          global guarantee (see _run_subgradient).
     'differential_evolution'  SciPy DE; thorough but slow.
     'cobyqa','Powell','Nelder-Mead'  Local methods with random restarts (legacy).
     """
@@ -515,7 +759,7 @@ def _run_restarts(objective, n_params, d_ext, n_s, d_ext_single, n_qubits,
             objective, n_params, n_s, d_ext_single, n_qubits, d_ext,
             rng, n_restarts, maxfev, tol, verbose,
             extra_init_xs=extra_init_xs,
-            use_complex=use_complex,
+            use_complex=use_complex, gate=gate,
         )
 
     # ------------------------------------------------------------------

@@ -26,6 +26,18 @@ from scipy.sparse import csc_matrix, eye as sp_eye, hstack as sp_hstack, vstack 
 from scipy.optimize._linprog_highs import _linprog_highs
 from scipy.optimize._linprog_util import _LPProblem, _clean_inputs
 
+# Version stamp for cached dissipative-PT results.  Bumped when the framability
+# optimisation (or the set of stored quantities) changes so that workers re-run
+# points whose cached npz predates the change.
+#   2.0-floor : added the spectral-radius framability floor.
+DPT_VERSION = '2.0-floor'
+
+
+def spectral_floor(gate) -> float:
+    """Spectral radius of the gate = framability floor (see optimize_framability)."""
+    return float(np.max(np.abs(np.linalg.eigvals(np.asarray(gate)))))
+
+
 # ── single-qubit primitives ───────────────────────────────────────────────────
 _I2 = np.eye(2, dtype=complex)
 _SX = np.array([[0, 1], [1, 0]], dtype=complex)
@@ -442,6 +454,7 @@ def compute_point(h: float, J: float, gamma: float, dt: float = 0.05,
 
     out['pauli_fra'] = pauli_framability(gate)
     out['chan_stab'] = channel_stab_purity(gate)
+    out['floor']     = spectral_floor(gate)   # framability floor = spectral radius
 
     if verbose:
         print(f'  pauli_fra={out["pauli_fra"]:.4f}', flush=True)

@@ -21,12 +21,29 @@ from pathlib import Path
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from dissipative_PT import (compute_point,
+from dissipative_PT import (compute_point, DPT_VERSION,
                              H_LIST, GAMMA_LIST, N_H, N_G, N_TOTAL,
                              J_DEFAULT, DT_DEFAULT)
 
 J  = J_DEFAULT
 DT = DT_DEFAULT
+
+
+def _is_current(out: Path) -> bool:
+    """True iff `out` exists and was produced by the current DPT_VERSION.
+
+    Results from an older code version (or missing the version stamp / floor)
+    are treated as stale so the point is recomputed.
+    """
+    if not out.exists():
+        return False
+    try:
+        d = np.load(out, allow_pickle=True)
+        return ('code_version' in d
+                and str(d['code_version']) == DPT_VERSION
+                and 'floor' in d)
+    except Exception:
+        return False
 
 
 def run_point(point_id: int, args) -> None:
@@ -37,9 +54,13 @@ def run_point(point_id: int, args) -> None:
     gamma = GAMMA_LIST[ig]
     out   = Path(args.out_dir) / f'dpt_{ih:02d}_{ig:02d}.npz'
 
-    if out.exists():
-        print(f'[skip] {out.name} already exists', flush=True)
+    if _is_current(out):
+        print(f'[skip] {out.name} already exists (version {DPT_VERSION})',
+              flush=True)
         return
+    elif out.exists():
+        print(f'[rerun] {out.name} predates current code (need {DPT_VERSION})'
+              f' -> recomputing', flush=True)
 
     Path(args.out_dir).mkdir(parents=True, exist_ok=True)
     t_start = time.perf_counter()
@@ -60,6 +81,7 @@ def run_point(point_id: int, args) -> None:
     np.savez(out,
              h=np.array(h), J=np.array(J), gamma=np.array(gamma), dt=np.array(args.dt),
              pauli_fra  = np.array(res['pauli_fra']),
+             floor      = np.array(res['floor']),
              opt_fra_4  = np.array(res['opt_fra_4']),
              opt_fra_6  = np.array(res['opt_fra_6']),
              opt_S_4    = np.asarray(res['opt_S_4']),
@@ -72,7 +94,8 @@ def run_point(point_id: int, args) -> None:
              mean_mag   = np.array(res['mean_mag']),
              neg_half   = np.array(res['neg_half']),
              max_lpdo   = np.array(res['max_lpdo']),
-             ih=np.array(ih), ig=np.array(ig))
+             ih=np.array(ih), ig=np.array(ig),
+             code_version=np.array(DPT_VERSION))
 
     elapsed = time.perf_counter() - t_start
     print(f'  saved {out.name}  ({elapsed:.0f}s)', flush=True)
