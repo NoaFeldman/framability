@@ -67,48 +67,71 @@ def _load_frame(out_dir: Path, ih: int, ig: int, s_key: str):
     return S if np.all(np.isfinite(S)) else None
 
 
-def _best_neighbor(out_dir: Path, ih: int, ig: int, key: str):
-    """Lowest-opt_fra 4-connected neighbour: returns (value, (ni, nj)) or (inf, None)."""
-    best_val, best = np.inf, None
+def _refine_paths(out_dir: Path, ih: int, ig: int):
+    """Base scan file + every refine file for this point (any round)."""
+    paths = [_base_path(out_dir, ih, ig)]
+    paths += sorted(out_dir.glob(f'dpt_refine*_{ih:02d}_{ig:02d}.npz'))
+    return [p for p in paths if p.exists()]
+
+
+def _best_known(out_dir: Path, ih: int, ig: int, key: str, s_key: str):
+    """Best startup we can find for this point: the lowest-framability (value,
+    frame S) over the base scan AND every refine file (old refined results).
+    Returns (inf, None) if no valid frame is available."""
+    best_val, best_S = np.inf, None
+    for f in _refine_paths(out_dir, ih, ig):
+        try:
+            d = np.load(f)
+        except Exception:
+            continue
+        if key not in d or s_key not in d:
+            continue
+        v = float(d[key])
+        if np.isfinite(v) and v < best_val:
+            S = np.asarray(d[s_key], dtype=float)
+            if np.all(np.isfinite(S)):
+                best_val, best_S = v, S
+    return best_val, best_S
+
+
+def _best_neighbor(out_dir: Path, ih: int, ig: int, key: str, s_key: str):
+    """Best 4-connected neighbour's (value, frame), over base + refine files."""
+    best_val, best_S = np.inf, None
     for di, dj in NEIGHBORS:
         ni, nj = ih + di, ig + dj
         if 0 <= ni < N_H and 0 <= nj < N_G:
-            v = _load_fra(out_dir, ni, nj, key)
-            if v is not None and v < best_val:
-                best_val, best = v, (ni, nj)
-    return best_val, best
+            v, S = _best_known(out_dir, ni, nj, key, s_key)
+            if S is not None and v < best_val:
+                best_val, best_S = v, S
+    return best_val, best_S
 
 
 def _refine_dext(out_dir: Path, ih: int, ig: int, d_ext_single: int,
-                 key: str, s_key: str, my_val: float, gate_self: np.ndarray,
-                 J: float, dt: float, n_restarts: int, maxfev: int, seed: int):
-    """Neighbour-seeded refinement of one frame size.
+                 key: str, s_key: str, gate_self: np.ndarray,
+                 n_restarts: int, maxfev: int, seed: int):
+    """Re-optimise one frame size, seeded from the best startup frame available
+    for this point — the best of {old refined result, current optimised result}
+    — plus the best neighbour's frame.  Returns (f_best, x_best); never
+    regresses below the best known startup."""
+    self_val, self_S = _best_known(out_dir, ih, ig, key, s_key)
+    nb_val,   nb_S   = _best_neighbor(out_dir, ih, ig, key, s_key)
 
-    Returns (f_best, x_best); x_best is None if this point was not re-optimised.
-    """
-    best_val, best_nb = _best_neighbor(out_dir, ih, ig, key)
-    if best_nb is None or best_val >= my_val - TOL:
-        return my_val, None
+    seeds = []
+    if self_S is not None:
+        seeds.append(params_from_frame(self_S))
+    if nb_S is not None:
+        seeds.append(params_from_frame(nb_S))
 
-    ni, nj = best_nb
-    # Neighbour seed: use the stored optimal frame; recompute only if absent
-    # (e.g. base scan produced before frames were saved).
-    S_nb = _load_frame(out_dir, ni, nj, s_key)
-    if S_nb is not None:
-        x_nb = params_from_frame(S_nb)
-    else:
-        gate_nb = bond_trotter_gate(J, H_LIST[ni], GAMMA_LIST[nj], dt)
-        _, x_nb = optimise_framability(gate_nb, d_ext_single, n_restarts=1,
-                                       maxfev=maxfev, seed=seed, return_x=True)
-    if x_nb is None:
-        return my_val, None
-
-    print(f'  d{d_ext_single}: neighbour ({ni},{nj}) {best_val:.6f} '
-          f'< self {my_val:.6f} → seeding', flush=True)
+    print(f'  d{d_ext_single}: startup best={self_val:.6f} '
+          f'(neighbour best={nb_val:.6f}) → re-optimising', flush=True)
     f, x = optimise_framability(gate_self, d_ext_single, n_restarts=n_restarts,
                                 maxfev=maxfev, seed=seed,
-                                extra_init_xs=[x_nb], return_x=True)
-    return (f, x) if f < my_val else (my_val, None)
+                                extra_init_xs=seeds if seeds else None,
+                                return_x=True)
+    # Never regress below the best known startup frame.
+    if self_S is not None and self_val <= f:
+        return self_val, params_from_frame(self_S)
+    return f, x
 
 
 def run_point(point_id: int, args) -> None:
@@ -143,28 +166,24 @@ def run_point(point_id: int, args) -> None:
 
     gate_self = bond_trotter_gate(J, h, gamma, dt)
 
-    # ── neighbour-seeded refinement per frame size ────────────────────────────
-    f4, x4 = _refine_dext(out_dir, ih, ig, 4, 'opt_fra_4', 'opt_S_4', m4,
-                          gate_self, J, dt, args.n_restarts, args.fra_maxfev_4, seed)
-    f6, x6 = _refine_dext(out_dir, ih, ig, 6, 'opt_fra_6', 'opt_S_6', m6,
-                          gate_self, J, dt, args.n_restarts, args.fra_maxfev_6, seed + 1)
+    # ── refinement per frame size, seeded from the best startup frame we can
+    #    find (this point's best known frame — old refined or current — plus
+    #    the best neighbour's frame), re-optimised with the current code ───────
+    f4, x4 = _refine_dext(out_dir, ih, ig, 4, 'opt_fra_4', 'opt_S_4',
+                          gate_self, args.n_restarts, args.fra_maxfev_4, seed)
+    f6, x6 = _refine_dext(out_dir, ih, ig, 6, 'opt_fra_6', 'opt_S_6',
+                          gate_self, args.n_restarts, args.fra_maxfev_6, seed + 1)
 
     # ── cross-d_ext: if d=4 beats d=6, seed d=6 from the embedded d=4 frame ───
-    if f4 < f6 - TOL:
-        if x4 is None:                       # need the optimal d=4 frame to embed
-            f4b, x4 = optimise_framability(gate_self, 4, n_restarts=args.n_restarts,
-                                           maxfev=args.fra_maxfev_4, seed=seed,
-                                           return_x=True)
-            f4 = min(f4, f4b)
-        if x4 is not None:
-            x6_seed = embed_frame_params(x4, 4, 6)
-            f6c, x6c = optimise_framability(gate_self, 6, n_restarts=args.n_restarts,
-                                            maxfev=args.fra_maxfev_6, seed=seed + 1,
-                                            extra_init_xs=[x6_seed], return_x=True)
-            if f6c < f6:
-                print(f'  cross-seed d4→d6: {f6:.6f} → {f6c:.6f}  (d4={f4:.6f})',
-                      flush=True)
-                f6, x6 = f6c, x6c
+    if f4 < f6 - TOL and x4 is not None:
+        x6_seed = embed_frame_params(x4, 4, 6)
+        f6c, x6c = optimise_framability(gate_self, 6, n_restarts=args.n_restarts,
+                                        maxfev=args.fra_maxfev_6, seed=seed + 1,
+                                        extra_init_xs=[x6_seed], return_x=True)
+        if f6c < f6:
+            print(f'  cross-seed d4→d6: {f6:.6f} → {f6c:.6f}  (d4={f4:.6f})',
+                  flush=True)
+            f6, x6 = f6c, x6c
 
     # Refined frames: re-optimised frame where improved, else carry the base frame.
     base_S4 = np.asarray(d_base['opt_S_4']) if 'opt_S_4' in d_base else frame_from_params(None, 4)
