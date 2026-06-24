@@ -274,12 +274,13 @@ def plot_sphere_gamma(gate, rho1, r, theta_step, html_path=None, title=None):
 # ---------------------------------------------------------------------------
 # 3. Panel: grid over rho_1 operators (rows) x rho_2 sphere radii (rs2, cols)
 # ---------------------------------------------------------------------------
-def gamma_panel(gate, rho1_ops, rs2, id2, theta_step, out_dir='.', gate_name='gate'):
+def gamma_panel(gate, rho1_ops, rs2, id2s, theta_step, out_dir='.', gate_name='gate'):
     """Grid of gamma_{CH_1} spheres: rows = rho_1 operators, cols = rho_2 radii.
 
     rho1_ops is a list of (2, 2) single-qubit operators; each is one row's fixed
-    rho_1. Each column j renders gamma_{CH_1}(gate @ (rho1 (x) rho2)) over
-    rho2 = id2 * I + rs2[j] * (n . sigma) swept over the sphere |n| = 1.
+    rho_1. id2s is a per-column list (same length as rs2). Column j renders
+    gamma_{CH_1}(gate @ (rho1 (x) rho2)) over
+    rho2 = id2s[j] * I + rs2[j] * (n . sigma) swept over the sphere |n| = 1.
 
     Writes one standalone interactive HTML per cell plus a combined
     len(rho1_ops) x len(rs2) overview with a single shared colorbar.
@@ -293,11 +294,20 @@ def gamma_panel(gate, rho1_ops, rs2, id2, theta_step, out_dir='.', gate_name='ga
     rho1s = [np.asarray(op, dtype=complex) for op in rho1_ops]
     nrows, ncols = len(rho1s), len(rs2)
 
+    # id2s may be a scalar (one value for all columns) or a per-column list.
+    if np.isscalar(id2s):
+        id2s = [float(id2s)] * ncols
+    else:
+        id2s = [float(v) for v in id2s]
+    if len(id2s) != ncols:
+        raise ValueError(
+            f"id2s has length {len(id2s)} but rs2 has {ncols} columns")
+
     titles = []
     for rho1 in rho1s:
-        for r2 in rs2:
+        for j, r2 in enumerate(rs2):
             titles.append(f"rho1 = {op1q_expr(rho1)}"
-                          f"<br>rho2: id2={id2:.3f}, r2={float(r2):.3f}")
+                          f"<br>rho2: id2={id2s[j]:.3f}, r2={float(r2):.3f}")
 
     fig = make_subplots(
         rows=nrows, cols=ncols,
@@ -311,7 +321,7 @@ def gamma_panel(gate, rho1_ops, rs2, id2, theta_step, out_dir='.', gate_name='ga
         for j, r2 in enumerate(rs2):
             r2 = float(r2)
             _, _, (nx, ny, nz), gamma = sphere_gamma_grid(
-                gate, rho1, r2, theta_step, id2=id2)
+                gate, rho1, r2, theta_step, id2=id2s[j])
 
             # standalone interactive plot (with its own colorbar)
             ind = go.Figure(go.Surface(
