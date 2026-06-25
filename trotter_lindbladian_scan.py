@@ -23,21 +23,26 @@ it participates in: the one-qubit Hamiltonian/jump coefficients are divided by
                 +          sum_m   D(L2_m)(rho)
     U_bond = expm(L_bond * dt)         (16x16 real Pauli-transfer matrix)
 
-For this gate / Lindbladian the module computes (grouped by the figure line
-they share):
+The sign-problem and framability quantities are properties of this bond gate
+(d defaults to 2, a 2D lattice).  The steady-state quantities, by contrast, are
+evaluated on the *full* LATTICE_LX x LATTICE_LY open-boundary lattice: the per-
+site terms (H1, jumps1) are placed on every site and the per-bond terms
+(H2, jumps2) on every nearest-neighbour bond, at full coupling strength (no
+1/2d bond share).  The module computes (grouped by the figure line they share):
 
   a1  minimal sign problem (s maximised over translation-invariant local
-      rotations; s = 1 means no sign problem)
-  a2  two-qubit NESS LPDO bond entropy
-  a3  two-qubit Lindbladian rate (Liouvillian gap = slowest non-zero decay)
-  b1  Z- and X-magnetisation of the bond steady state
-  b2  von Neumann entropy of the bond steady state
-  b3  entanglement negativity of the bond steady state
-  c1  dyadic stabilizer-frame framability
-  c2  Pauli-frame framability
-  d1  optimised framability, d_ext_single = 4
-  d2  optimised framability, d_ext_single = 6
-  d3  gamma_{CH_1} maximised over the single-qubit product frame
+      rotations; s = 1 means no sign problem)            -- bond gate
+  a2  NESS LPDO bond entropy (single-site cut)           -- full lattice
+  a4  NESS LPDO bond entropy maximised over bipartitions -- full lattice
+  a3  Lindbladian rate (Liouvillian gap = slowest non-zero decay) -- full lattice
+  b1  site-averaged Z- and X-magnetisation of the NESS   -- full lattice
+  b2  von Neumann entropy of the NESS                    -- full lattice
+  b3  half-half entanglement negativity of the NESS      -- full lattice
+  c1  dyadic stabilizer-frame framability                -- bond gate
+  c2  Pauli-frame framability                            -- bond gate
+  d1  optimised framability, d_ext_single = 4            -- bond gate
+  d2  optimised framability, d_ext_single = 6            -- bond gate
+  d3  gamma_{CH_1} maximised over the single-qubit product frame -- bond gate
 
 All heavy primitives are reused from dissipative_PT / framability /
 gamma_ch1_sphere so this stays a thin model-and-orchestration layer.
@@ -54,9 +59,10 @@ from scipy.optimize import minimize
 
 # Reuse the validated primitives from the dissipative-PT pipeline.
 from dissipative_PT import (
-    _I2, _SX, _SY, _SZ, S_MINUS, _build_lindbladian,
+    _I2, _SX, _SY, _SZ, _PAULI, S_MINUS, _build_lindbladian, _site_op, bonds_2d,
     pauli_to_rho, steady_state_and_decay, vn_entropy, negativity,
-    lpdo_bond_entropy, pauli_framability, optimise_framability,
+    site_magnetization, lpdo_bond_entropy, max_lpdo_bond_entropy,
+    pauli_framability, optimise_framability,
     frame_from_params, params_from_frame, embed_frame_params,
     sign_problem_results, spectral_floor,
 )
@@ -65,10 +71,25 @@ from gamma_ch1_sphere import gamma_CH1, frame_op_1q, pauli_coeffs
 
 # Version stamp for cached results.  Bump when the set of stored quantities or
 # the computation of any of them changes, so workers re-run stale points.
-TLS_VERSION = '1.0'
+# 2.0: NESS quantities now come from the full LATTICE_LX x LATTICE_LY lattice
+#      (not the single bond), the framability/sign gate defaults to dim=2, and
+#      the maximal LPDO bond entropy (lpdo_max) is added.
+TLS_VERSION = '2.0'
 
 DT_DEFAULT = 0.1
-DIM_DEFAULT = 1
+DIM_DEFAULT = 2          # framability/sign Trotter gate defaults to a 2D lattice
+
+# Steady-state quantities (Liouvillian gap, magnetisations, entropies, LPDO,
+# negativity) are evaluated on the full open-boundary lattice of this size.
+LATTICE_LX = 2
+LATTICE_LY = 2
+
+# model4's dephasing jump sqrt(gamma)(ZI+IZ) and H=J(XX+YY+Delta ZZ) both commute
+# with total S_z, a strong U(1) symmetry that leaves the NESS non-unique (the
+# Liouvillian null space is 4-dimensional), so every steady-state quantity comes
+# out NaN.  A small on-site decay sqrt(MODEL4_DECAY) S^- breaks that symmetry and
+# restores a unique NESS; keep it small so the dephasing physics is barely shifted.
+MODEL4_DECAY = 0.05
 
 
 # ---------------------------------------------------------------------------
@@ -113,13 +134,69 @@ def bond_trotter_gate(H1, H2, jumps1, jumps2, dim: int, dt: float) -> np.ndarray
 
 
 # ---------------------------------------------------------------------------
+#  Full lattice Lindbladian (for the NESS / steady-state quantities)
+# ---------------------------------------------------------------------------
+def _embed_two_site(O4: np.ndarray, i: int, j: int, N: int) -> np.ndarray:
+    """Embed a 4x4 two-qubit operator (qubit a (x) qubit b) onto sites (i, j) of
+    an N-qubit register, via its 2-qubit Pauli decomposition."""
+    O4 = np.asarray(O4, dtype=complex)
+    d = 2 ** N
+    out = np.zeros((d, d), dtype=complex)
+    for sp in _PAULI:
+        for sq in _PAULI:
+            c = np.trace(np.kron(sp, sq).conj().T @ O4) / 4.0
+            if abs(c) < 1e-14:
+                continue
+            out += c * (_site_op(sp, i, N) @ _site_op(sq, j, N))
+    return out
+
+
+def build_full_lindbladian_model(H1, H2, jumps1, jumps2,
+                                 Lx: int = LATTICE_LX, Ly: int = LATTICE_LY) -> np.ndarray:
+    """(4^N x 4^N) full Lindbladian for the Lx x Ly open-boundary lattice.
+
+    The model's per-site terms (H1, jumps1) are placed on every site and its
+    per-bond terms (H2, jumps2) on every nearest-neighbour bond, all at full
+    coupling strength -- the 1/(2d) bond share in build_bond_lindbladian is a
+    Trotter-gate convention, not part of the physical lattice generator.
+    """
+    N = Lx * Ly
+    d = 2 ** N
+    bonds = bonds_2d(Lx, Ly)
+
+    H = np.zeros((d, d), dtype=complex)
+    if H1 is not None:
+        H1 = np.asarray(H1, dtype=complex)
+        for s in range(N):
+            H = H + _site_op(H1, s, N)
+    if H2 is not None:
+        H2 = np.asarray(H2, dtype=complex)
+        for (i, j) in bonds:
+            H = H + _embed_two_site(H2, i, j, N)
+
+    jumps = []
+    for L1 in (jumps1 or []):
+        L1 = np.asarray(L1, dtype=complex)
+        for s in range(N):
+            Lf = _site_op(L1, s, N)
+            Ld = Lf.conj().T
+            jumps.append((1.0, Lf, Ld, Ld @ Lf))
+    for L2 in (jumps2 or []):
+        L2 = np.asarray(L2, dtype=complex)
+        for (i, j) in bonds:
+            Lf = _embed_two_site(L2, i, j, N)
+            Ld = Lf.conj().T
+            jumps.append((1.0, Lf, Ld, Ld @ Lf))
+
+    return _build_lindbladian(H, jumps, n=N)
+
+
+# ---------------------------------------------------------------------------
 #  Steady-state observables
 # ---------------------------------------------------------------------------
-def _mean_pauli(rho: np.ndarray, op: np.ndarray) -> float:
-    """Mean single-qubit expectation (op on site 0 + op on site 1) / 2."""
-    o0 = np.kron(op, _I2)
-    o1 = np.kron(_I2, op)
-    return float(0.5 * (np.trace(o0 @ rho) + np.trace(o1 @ rho)).real)
+def _site_mean(rho: np.ndarray, op: np.ndarray, N: int) -> float:
+    """Site-averaged single-qubit expectation (1/N) sum_i <op_i>."""
+    return float(np.mean([np.trace(_site_op(op, i, N) @ rho).real for i in range(N)]))
 
 
 # ---------------------------------------------------------------------------
@@ -185,31 +262,45 @@ def compute_point(model: 'ModelSpec', p1: float, p2: float, *,
                   fra_maxfev_6: int = 500, sign_restarts: int = 10,
                   ch1_restarts: int = 15, seed: int = 0,
                   verbose: bool = False) -> dict:
-    """All twelve scan quantities for one (p1, p2) point of `model`."""
+    """All scan quantities for one (p1, p2) point of `model`.
+
+    The framability / sign-problem quantities use the two-qubit bond Trotter
+    gate (dim-dependent).  The steady-state quantities (Liouvillian gap,
+    magnetisations, entropies, LPDO, negativity) use the full LATTICE_LX x
+    LATTICE_LY lattice Lindbladian.
+    """
     H1, H2, jumps1, jumps2 = model.build(p1, p2)
-    L = build_bond_lindbladian(H1, H2, jumps1, jumps2, dim)
-    gate = expm(L * dt).real
+    gate = bond_trotter_gate(H1, H2, jumps1, jumps2, dim, dt)
 
     out: dict = dict(p1=p1, p2=p2, dim=dim, dt=dt)
 
     # ── group a: gate / Lindbladian ──────────────────────────────────────────
     out['sign_init'], out['sign_opt'] = sign_problem_results(gate, sign_restarts, seed)
-    c_ss, decay = steady_state_and_decay(L, N=2)
-    out['lind_rate'] = decay                              # a3 Liouvillian gap
     out['floor'] = spectral_floor(gate)
 
+    # ── full LATTICE_LX x LATTICE_LY lattice NESS (groups a/b) ────────────────
+    N = LATTICE_LX * LATTICE_LY
+    L_full = build_full_lindbladian_model(H1, H2, jumps1, jumps2)
+    c_ss, decay = steady_state_and_decay(L_full, N=N)
+    out['lind_rate'] = decay                              # a3 Liouvillian gap
+
     if c_ss is not None:
-        rho = pauli_to_rho(c_ss, N=2)
+        rho = pauli_to_rho(c_ss, N=N)
         try:
             out['lpdo'] = lpdo_bond_entropy(rho, d_A=2)   # a2 NESS LPDO entropy
         except Exception:
             out['lpdo'] = float('nan')
+        try:
+            out['lpdo_max'] = max_lpdo_bond_entropy(rho, N)  # a4 max over cuts
+        except Exception:
+            out['lpdo_max'] = float('nan')
         out['ss_vn'] = vn_entropy(rho)                    # b2
-        out['mag_z'] = _mean_pauli(rho, _SZ)              # b1
-        out['mag_x'] = _mean_pauli(rho, _SX)              # b1
-        out['neg'] = negativity(rho, d_A=2)               # b3
+        out['mag_z'] = _site_mean(rho, _SZ, N)            # b1
+        out['mag_x'] = _site_mean(rho, _SX, N)            # b1
+        out['neg'] = negativity(rho, d_A=2 ** (N // 2))   # b3 half-half cut
     else:
-        out['lpdo'] = out['ss_vn'] = out['mag_z'] = out['mag_x'] = out['neg'] = float('nan')
+        out['lpdo'] = out['lpdo_max'] = out['ss_vn'] = out['mag_z'] = \
+            out['mag_x'] = out['neg'] = float('nan')
 
     if verbose:
         print(f'  sign_opt={out["sign_opt"]:.4f}  rate={out["lind_rate"]:.4e}  '
@@ -313,12 +404,15 @@ def _build_model3(J_y: float, gamma: float):
 
 def _build_model4(Delta: float, gamma: float):
     # H2: J(XX + YY + Delta ZZ) ; jumps: sqrt(gamma)(Z(x)I + I(x)Z) (two-qubit)
+    # plus a small on-site decay sqrt(MODEL4_DECAY) S^- (one-qubit) to break the
+    # strong S_z symmetry and make the NESS unique (see MODEL4_DECAY).
     J = 1.0
     H2 = (J * np.kron(_SX, _SX)
           + J * np.kron(_SY, _SY)
           + J * Delta * np.kron(_SZ, _SZ))
     L2 = np.sqrt(gamma) * (np.kron(_SZ, _I2) + np.kron(_I2, _SZ))
-    return None, H2, [], [L2]
+    jumps1 = [np.sqrt(MODEL4_DECAY) * S_MINUS]
+    return None, H2, jumps1, [L2]
 
 
 MODELS: dict[str, ModelSpec] = {
@@ -343,7 +437,8 @@ MODELS: dict[str, ModelSpec] = {
         build=_build_model3),
     'model4': ModelSpec(
         name='model4',
-        title=r'$H=J(XX+YY+\Delta\,ZZ)$,  jump $\sqrt{\gamma}(ZI+IZ)$  (J=1)',
+        title=r'$H=J(XX+YY+\Delta\,ZZ)$,  jumps $\sqrt{\gamma}(ZI+IZ),\ '
+              r'\sqrt{\epsilon}\,S^-$  ($J=1,\ \epsilon=%.2g$)' % MODEL4_DECAY,
         p1_name='Delta', p1_label=r'$\Delta$',  p1_vals=_arange(-3, 3, 0.2),
         p2_name='gamma', p2_label=r'$\gamma$',  p2_vals=_arange(0, 3, 0.2),
         build=_build_model4),
@@ -355,10 +450,11 @@ MODELS: dict[str, ModelSpec] = {
 # ---------------------------------------------------------------------------
 # (key, label, group letter, is_framability)
 QUANTITIES = [
-    ('sign_opt',  'Sign problem (min)',        'a', False),
-    ('lpdo',      'NESS LPDO bond entropy',     'a', False),
-    ('lind_rate', 'Liouvillian gap',            'a', False),
-    ('mag_z',     r'$\langle Z\rangle$',        'b', False),
+    ('sign_opt',  'Sign problem (min)',         'a', False),
+    ('lpdo',      'NESS LPDO bond entropy',      'a', False),
+    ('lpdo_max',  'NESS LPDO bond entropy (max)','a', False),
+    ('lind_rate', 'Liouvillian gap',             'a', False),
+    ('mag_z',     r'$\langle Z\rangle$',         'b', False),
     ('mag_x',     r'$\langle X\rangle$',        'b', False),
     ('ss_vn',     'NESS VN entropy',            'b', False),
     ('neg',       'NESS negativity',            'b', False),

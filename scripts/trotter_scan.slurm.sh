@@ -14,8 +14,10 @@
 #    mkdir -p logs results_trotter
 #    MODEL=model1 sbatch scripts/trotter_scan.slurm.sh
 #
-#  Override the time step / dimension / budgets via env vars, e.g.:
-#    MODEL=model4 DT=0.1 DIM=1 FRA_MAXFEV_4=2000 sbatch scripts/trotter_scan.slurm.sh
+#  The framability/sign Trotter gate uses DIM (default 2, a 2D lattice); the
+#  steady-state quantities always use the full 2x2 lattice.  Override the time
+#  step / gate dimension / budgets via env vars, e.g.:
+#    MODEL=model4 DT=0.1 DIM=2 FRA_MAXFEV_4=2000 sbatch scripts/trotter_scan.slurm.sh
 # ============================================================
 
 #SBATCH --job-name=trot_scan
@@ -30,7 +32,7 @@
 MODEL=${MODEL:-model1}
 OUT_DIR=${OUT_DIR:-results_trotter}
 N_CHUNKS=${N_CHUNKS:-200}
-DIM=${DIM:-1}
+DIM=${DIM:-2}
 DT=${DT:-0.1}
 FRA_RESTARTS=${FRA_RESTARTS:-5}
 FRA_MAXFEV_4=${FRA_MAXFEV_4:-1000}
