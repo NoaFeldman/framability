@@ -74,7 +74,8 @@ from gamma_ch1_sphere import gamma_CH1, frame_op_1q, pauli_coeffs
 # 2.0: NESS quantities now come from the full LATTICE_LX x LATTICE_LY lattice
 #      (not the single bond), the framability/sign gate defaults to dim=2, and
 #      the maximal LPDO bond entropy (lpdo_max) is added.
-TLS_VERSION = '2.0'
+# 2.1: model1's decay jump changed from S^- = |0><1| to |-><+|.
+TLS_VERSION = '2.1'
 
 DT_DEFAULT = 0.1
 DIM_DEFAULT = 2          # framability/sign Trotter gate defaults to a 2D lattice
@@ -370,16 +371,22 @@ def _arange(lo: float, hi: float, step: float) -> np.ndarray:
 
 
 # Single-qubit S^- = |0><1| (decay toward the ground state |0>), as in
-# dissipative_PT (S_MINUS).  Two-qubit Pauli helpers for the builders:
+# dissipative_PT (S_MINUS).  |-><+| is the X-basis analogue: lowering toward
+# |-> = (|0> - |1>)/sqrt(2).  Two-qubit Pauli helpers for the builders:
+_KET_MINUS = np.array([1.0, -1.0]) / np.sqrt(2.0)
+_KET_PLUS  = np.array([1.0,  1.0]) / np.sqrt(2.0)
+MINUS_PLUS = np.outer(_KET_MINUS, _KET_PLUS).astype(complex)   # |-><+|
+
+
 def _ZZ():
     return np.kron(_SZ, _SZ)
 
 
 def _build_model1(gamma: float, gamma_p: float):
-    # H: J ZZ ; jumps: sqrt(gamma) S^-, sqrt(gamma') Z (one-qubit)
+    # H: J ZZ ; jumps: sqrt(gamma) |-><+|, sqrt(gamma') Z (one-qubit)
     J = 1.0
     H2 = J * _ZZ()
-    jumps1 = [np.sqrt(gamma) * S_MINUS, np.sqrt(gamma_p) * _SZ]
+    jumps1 = [np.sqrt(gamma) * MINUS_PLUS, np.sqrt(gamma_p) * _SZ]
     return None, H2, jumps1, []
 
 
@@ -418,7 +425,8 @@ def _build_model4(Delta: float, gamma: float):
 MODELS: dict[str, ModelSpec] = {
     'model1': ModelSpec(
         name='model1',
-        title="$H=J\\,ZZ$,  jumps $\\sqrt{\\gamma}\\,S^-,\\ \\sqrt{\\gamma'}\\,Z$  (J=1)",
+        title=r"$H=J\,ZZ$,  jumps $\sqrt{\gamma}\,|{-}\rangle\langle{+}|,\ "
+              r"\sqrt{\gamma'}\,Z$  (J=1)",
         p1_name='gamma',   p1_label=r'$\gamma$',   p1_vals=_arange(0, 8, 0.2),
         p2_name='gamma_p', p2_label=r"$\gamma'$",  p2_vals=_arange(0, 8, 0.2),
         build=_build_model1),
@@ -462,7 +470,7 @@ QUANTITIES = [
     ('pauli_fra', 'Pauli framability',          'c', True),
     ('opt_fra_4', 'Opt framability (d=4)',      'd', True),
     ('opt_fra_6', 'Opt framability (d=6)',      'd', True),
-    ('gamma_ch1', r'$\gamma_{CH_1}$ (product)', 'd', True),
+    ('gamma_ch1', 'max Janek',                  'd', True),
 ]
 
 # opt_fra_4 / opt_fra_6 are the only quantities refined (neighbour-seeded).
