@@ -33,7 +33,7 @@ site terms (H1, jumps1) are placed on every site and the per-bond terms
   a1  minimal sign problem (s maximised over translation-invariant local
       rotations; s = 1 means no sign problem)            -- bond gate
   a2  NESS LPDO bond entropy (single-site cut)           -- full lattice
-  a4  NESS LPDO bond entropy maximised over bipartitions -- full lattice
+  a4  max LPDO bond entropy along the |0>^N -> NESS path  -- full lattice
   a3  Lindbladian rate (Liouvillian gap = slowest non-zero decay) -- full lattice
   b1  site-averaged Z- and X-magnetisation of the NESS   -- full lattice
   b2  von Neumann entropy of the NESS                    -- full lattice
@@ -61,11 +61,12 @@ from scipy.optimize import minimize
 from dissipative_PT import (
     _I2, _SX, _SY, _SZ, _PAULI, S_MINUS, _build_lindbladian, _site_op, bonds_2d,
     pauli_to_rho, steady_state_and_decay, vn_entropy, negativity,
-    site_magnetization, lpdo_bond_entropy, max_lpdo_bond_entropy,
+    site_magnetization, lpdo_bond_entropy,
     pauli_framability, optimise_framability,
     frame_from_params, params_from_frame, embed_frame_params,
     sign_problem_results, spectral_floor,
 )
+from analysis import compute_max_bond_dim, _initial_iz_vector
 from framability import dyadic_stabilizer_framability
 from gamma_ch1_sphere import gamma_CH1, frame_op_1q, pauli_coeffs
 
@@ -75,7 +76,9 @@ from gamma_ch1_sphere import gamma_CH1, frame_op_1q, pauli_coeffs
 #      (not the single bond), the framability/sign gate defaults to dim=2, and
 #      the maximal LPDO bond entropy (lpdo_max) is added.
 # 2.1: model1's decay jump changed from S^- = |0><1| to |-><+|.
-TLS_VERSION = '2.1'
+# 2.2: lpdo_max is now the maximum bond entropy *along the |0>^N -> NESS
+#      relaxation path* (analysis.compute_max_bond_dim), not the steady state.
+TLS_VERSION = '2.2'
 
 DT_DEFAULT = 0.1
 DIM_DEFAULT = 2          # framability/sign Trotter gate defaults to a 2D lattice
@@ -84,6 +87,11 @@ DIM_DEFAULT = 2          # framability/sign Trotter gate defaults to a 2D lattic
 # negativity) are evaluated on the full open-boundary lattice of this size.
 LATTICE_LX = 2
 LATTICE_LY = 2
+
+# lpdo_max: maximum LPDO bond entropy along the relaxation path from |0>^N to the
+# NESS under the full-lattice Lindbladian (analysis.compute_max_bond_dim).
+LPDO_PATH_DT = 0.002          # integration step (dt-converged for these models)
+LPDO_PATH_FIDELITY = 0.9      # stop once Bures fidelity with the NESS reaches this
 
 # model4's dephasing jump sqrt(gamma)(ZI+IZ) and H=J(XX+YY+Delta ZZ) both commute
 # with total S_z, a strong U(1) symmetry that leaves the NESS non-unique (the
@@ -292,7 +300,10 @@ def compute_point(model: 'ModelSpec', p1: float, p2: float, *,
         except Exception:
             out['lpdo'] = float('nan')
         try:
-            out['lpdo_max'] = max_lpdo_bond_entropy(rho, N)  # a4 max over cuts
+            # a4: max LPDO bond entropy along the |0>^N -> NESS relaxation path
+            _, out['lpdo_max'] = compute_max_bond_dim(
+                L_full, rho, None, N=N, init=_initial_iz_vector(N),
+                dt=LPDO_PATH_DT, fidelity_threshold=LPDO_PATH_FIDELITY)
         except Exception:
             out['lpdo_max'] = float('nan')
         out['ss_vn'] = vn_entropy(rho)                    # b2
@@ -460,7 +471,7 @@ MODELS: dict[str, ModelSpec] = {
 QUANTITIES = [
     ('sign_opt',  'Sign problem (min)',         'a', False),
     ('lpdo',      'NESS LPDO bond entropy',      'a', False),
-    ('lpdo_max',  'NESS LPDO bond entropy (max)','a', False),
+    ('lpdo_max',  'max LPDO bond entropy (path)','a', False),
     ('lind_rate', 'Liouvillian gap',             'a', False),
     ('mag_z',     r'$\langle Z\rangle$',         'b', False),
     ('mag_x',     r'$\langle X\rangle$',        'b', False),

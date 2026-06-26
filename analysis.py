@@ -259,13 +259,17 @@ def compute_reduced_pauli_framability(rho_ss, L, gamma_step, N=2, tol=1e-10):
 
 
 def compute_max_bond_dim(L, rho_ss, gamma_step, N=2, max_steps=200_000,
-                         fidelity_threshold=0.9):
+                         fidelity_threshold=0.9, init=None, dt=None):
     """
     Maximum LPDO bond dimension during Lindbladian time evolution
-    from the all-|0> state to the steady state.
+    from a product initial state to the steady state.
 
     Evolution: v(t+dt) = expm(dt*L) @ v(t) in the Pauli-string basis.
     Stops when Bures fidelity with rho_ss reaches `fidelity_threshold`.
+
+    The initial state defaults to (|+Y><+Y|)^{⊗N} (`_initial_yy_state_vector`);
+    pass `init` (a Pauli-coefficient vector, e.g. `_initial_iz_vector(N)` for
+    |0..0>) to override it.  `dt` overrides the default 0.01*gamma_step step.
 
     Uses the direct SVD truncation pipeline (purification -> tensorize ->
     truncate) without the expensive disentangle step, yielding an upper
@@ -299,14 +303,14 @@ def compute_max_bond_dim(L, rho_ss, gamma_step, N=2, max_steps=200_000,
     assert N % 2 == 0, "LPDO bipartition requires even N"
     dim = 4 ** N
     d_site = int(round(2 ** (N / 2)))
-    dt = 0.01 * gamma_step
+    dt = (0.01 * gamma_step) if dt is None else dt
     M = expm(dt * L)
     if np.max(np.abs(M.imag)) < 1e-12:
         M = M.real
 
     basis = _nqubit_pauli_basis(N)
     basis_arr = np.array(basis)          # (dim, 2^N, 2^N)
-    v = _initial_yy_state_vector(N)
+    v = _initial_yy_state_vector(N) if init is None else np.asarray(init, dtype=float)
     max_chi = 0
     max_entropy = 0.0
 
