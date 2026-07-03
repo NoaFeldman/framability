@@ -65,8 +65,9 @@ from dissipative_PT import (
     pauli_framability, optimise_framability,
     frame_from_params, params_from_frame, embed_frame_params,
     sign_problem_results, spectral_floor,
+    H_LIST as _PT_H_LIST, GAMMA_LIST as _PT_GAMMA_LIST,
 )
-from analysis import compute_max_bond_dim, _initial_iz_vector
+from analysis import compute_max_bond_dim, _initial_iz_vector, _initial_ix_vector
 from framability import dyadic_stabilizer_framability
 from gamma_ch1_sphere import gamma_CH1, frame_op_1q, pauli_coeffs
 
@@ -78,7 +79,13 @@ from gamma_ch1_sphere import gamma_CH1, frame_op_1q, pauli_coeffs
 # 2.1: model1's decay jump changed from S^- = |0><1| to |-><+|.
 # 2.2: lpdo_max is now the maximum bond entropy *along the |0>^N -> NESS
 #      relaxation path* (analysis.compute_max_bond_dim), not the steady state.
-TLS_VERSION = '2.2'
+# 2.3: the lpdo_max relaxation path start state is now per-model
+#      (ModelSpec.lpdo_init): model2 and model4 relax from |+>^N instead of
+#      |0>^N (all other quantities are unchanged -- 2.2 files are upgraded in
+#      place by scripts/trotter_scan_patch_worker.py without re-running the
+#      framability optimisation).  model3's gamma grid extends to 10 and
+#      model5 (the dissipative-PT model, imported from results_dpt) is added.
+TLS_VERSION = '2.3'
 
 DT_DEFAULT = 0.1
 DIM_DEFAULT = 2          # framability/sign Trotter gate defaults to a 2D lattice
@@ -265,6 +272,13 @@ def gamma_ch1_framability(gate: np.ndarray, n_restarts: int = 15,
 # ---------------------------------------------------------------------------
 #  Per-point computation
 # ---------------------------------------------------------------------------
+def lpdo_init_vector(model: 'ModelSpec', N: int) -> np.ndarray:
+    """Pauli-coefficient vector of the model's lpdo_max path start state."""
+    if model.lpdo_init == 'plus':
+        return _initial_ix_vector(N)
+    return _initial_iz_vector(N)
+
+
 def compute_point(model: 'ModelSpec', p1: float, p2: float, *,
                   dim: int = DIM_DEFAULT, dt: float = DT_DEFAULT,
                   fra_restarts: int = 5, fra_maxfev_4: int = 1000,
@@ -300,9 +314,10 @@ def compute_point(model: 'ModelSpec', p1: float, p2: float, *,
         except Exception:
             out['lpdo'] = float('nan')
         try:
-            # a4: max LPDO bond entropy along the |0>^N -> NESS relaxation path
+            # a4: max LPDO bond entropy along the relaxation path to the NESS,
+            # starting from the model's lpdo_init state (|0>^N or |+>^N)
             _, out['lpdo_max'] = compute_max_bond_dim(
-                L_full, rho, None, N=N, init=_initial_iz_vector(N),
+                L_full, rho, None, N=N, init=lpdo_init_vector(model, N),
                 dt=LPDO_PATH_DT, fidelity_threshold=LPDO_PATH_FIDELITY)
         except Exception:
             out['lpdo_max'] = float('nan')
@@ -361,6 +376,8 @@ class ModelSpec:
     build: Callable[[float, float], tuple]
     dim: int = DIM_DEFAULT
     dt: float = DT_DEFAULT
+    # start state of the lpdo_max relaxation path: 'zero' -> |0>^N, 'plus' -> |+>^N
+    lpdo_init: str = 'zero'
 
     @property
     def N_X(self) -> int:
@@ -420,6 +437,21 @@ def _build_model3(J_y: float, gamma: float):
     return None, H2, jumps1, []
 
 
+def _build_model5(h: float, gamma: float):
+    # Dissipative-PT model (see dissipative_PT.py): transverse-field Ising with the
+    # field along Z and the XX coupling on the bond,
+    #   H = J XX (bond) + h Z (on-site),  jump sqrt(gamma) S^-  (one-qubit).
+    # With this model's dim=1, dt=0.05 the bond Trotter gate reproduces
+    # dissipative_PT.bond_trotter_gate exactly: dim=1 gives the h/2 field share and
+    # gamma/2 dissipator rate hard-coded there, and the full-lattice NESS matches
+    # dissipative_PT.build_full_lindbladian (J XX + h Z, site S^-).
+    J = 1.0
+    H1 = h * _SZ
+    H2 = J * np.kron(_SX, _SX)
+    jumps1 = [np.sqrt(gamma) * S_MINUS]
+    return H1, H2, jumps1, []
+
+
 def _build_model4(Delta: float, gamma: float):
     # H2: J(XX + YY + Delta ZZ) ; jumps: sqrt(gamma)(Z(x)I + I(x)Z) (two-qubit)
     # plus a small on-site decay sqrt(MODEL4_DECAY) S^- (one-qubit) to break the
@@ -446,13 +478,15 @@ MODELS: dict[str, ModelSpec] = {
         title=r'$H=h\,X + J\,ZZ$,  jump $\sqrt{\gamma}\,S^-$  (J=1)',
         p1_name='h',     p1_label=r'$h$',       p1_vals=_arange(-2, 2, 0.2),
         p2_name='gamma', p2_label=r'$\gamma$',  p2_vals=_arange(0, 10, 0.2),
-        build=_build_model2),
+        build=_build_model2, lpdo_init='plus'),
+    # model3's gamma grid was extended from 2 to 10 (same step), appending new
+    # iy indices, so pt files computed on the old [0, 2] grid stay valid.
     'model3': ModelSpec(
         name='model3',
         title=r'$H=J_x XX + J_y YY + J_z ZZ$,  jump $\sqrt{\gamma}\,S^-$  '
               r'($J_z=1,\ J_x=0.9$)',
         p1_name='J_y',   p1_label=r'$J_y$',     p1_vals=_arange(0, 4, 0.2),
-        p2_name='gamma', p2_label=r'$\gamma$',  p2_vals=_arange(0, 2, 0.2),
+        p2_name='gamma', p2_label=r'$\gamma$',  p2_vals=_arange(0, 10, 0.2),
         build=_build_model3),
     'model4': ModelSpec(
         name='model4',
@@ -460,7 +494,17 @@ MODELS: dict[str, ModelSpec] = {
               r'\sqrt{\epsilon}\,S^-$  ($J=1,\ \epsilon=%.2g$)' % MODEL4_DECAY,
         p1_name='Delta', p1_label=r'$\Delta$',  p1_vals=_arange(-3, 3, 0.2),
         p2_name='gamma', p2_label=r'$\gamma$',  p2_vals=_arange(0, 3, 0.2),
-        build=_build_model4),
+        build=_build_model4, lpdo_init='plus'),
+    # model5 is the dissipative-PT model (dissipative_PT.py); its (h, gamma) grid,
+    # dim=1 and dt=0.05 are taken from there so the bond gate and NESS match
+    # exactly and the results_dpt scan/refine data can be imported as is
+    # (scripts/trotter_model5_import_worker.py).
+    'model5': ModelSpec(
+        name='model5',
+        title=r'dissipative-PT:  $H=J\,XX + h\,Z$,  jump $\sqrt{\gamma}\,S^-$  (J=1)',
+        p1_name='h',     p1_label=r'$h$',       p1_vals=np.asarray(_PT_H_LIST),
+        p2_name='gamma', p2_label=r'$\gamma$',  p2_vals=np.asarray(_PT_GAMMA_LIST),
+        build=_build_model5, dim=1, dt=0.05),
 }
 
 

@@ -169,6 +169,25 @@ def _initial_iz_vector(N):
     return vec
 
 
+def _initial_ix_vector(N):
+    """
+    Normalised Pauli-basis coefficient vector whose non-zero entries
+    correspond to all Pauli strings built from I and X only.
+
+    The resulting density matrix is (|+><+|)^{⊗N}, i.e. |+...+><+...+|.
+    """
+    dim = 4 ** N
+    vec = np.zeros(dim)
+    for bits in range(2 ** N):
+        idx = 0
+        for k in range(N):
+            pauli_idx = 1 if (bits >> (N - 1 - k)) & 1 else 0  # X=1, I=0
+            idx += pauli_idx * (4 ** (N - 1 - k))
+        vec[idx] = 1.0
+    vec /= 2 ** N
+    return vec
+
+
 def _initial_yy_state_vector(N):
     """
     Normalised Pauli-basis coefficient vector for the state
