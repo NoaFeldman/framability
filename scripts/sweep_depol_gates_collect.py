@@ -4,7 +4,7 @@ produce the composite figure and a single aggregate `.npz`.
 
 Output:
     <out_dir>/depol_sweep.npz
-    <out_dir>/depol_sweep.png
+    results_plots/depol_sweep.png
 """
 
 from __future__ import annotations
@@ -150,7 +150,8 @@ def main() -> None:
                  '(H, T lifted to 2 qubits as G$\\otimes$I)')
     fig.tight_layout(rect=(0, 0, 1, 0.97))
 
-    png_path = out_dir / 'depol_sweep.png'
+    png_path = Path('results_plots') / 'depol_sweep.png'
+    png_path.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(png_path, dpi=170)
     plt.close(fig)
     print(f'[saved] {png_path}')

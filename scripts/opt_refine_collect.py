@@ -127,7 +127,8 @@ def main():
                  f'(step={gamma_step}, neighbor-refined)')
     fig.tight_layout()
 
-    out_png = os.path.join(args.out_dir, 'two_qubit_scan_opt_bond_vs_fra.png')
+    os.makedirs('results_plots', exist_ok=True)
+    out_png = os.path.join('results_plots', 'two_qubit_scan_opt_bond_vs_fra.png')
     fig.savefig(out_png, dpi=170)
     plt.close(fig)
     print(f'Saved {out_png}')

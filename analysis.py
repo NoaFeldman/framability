@@ -596,9 +596,11 @@ def scan_and_plot(J=1.0, gamma_step=0.1, n_pts=20):
 
     fig.suptitle(f'Steady-state properties (J = {J})', fontsize=14)
     plt.tight_layout()
-    plt.savefig('two_qubit_scan.png', dpi=150)
+    import os
+    os.makedirs('results_plots', exist_ok=True)
+    plt.savefig('results_plots/two_qubit_scan.png', dpi=150)
     plt.show()
-    print('Saved figure to two_qubit_scan.png')
+    print('Saved figure to results_plots/two_qubit_scan.png')
 
 
 if __name__ == '__main__':

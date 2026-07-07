@@ -92,7 +92,7 @@ def main():
     ax.grid(True, alpha=0.3)
     fig.tight_layout()
 
-    fig_path = args.fig_path or os.path.join(args.out_dir, 'depol_fra.png')
+    fig_path = args.fig_path or os.path.join('results_plots', 'depol_fra.png')
     os.makedirs(os.path.dirname(os.path.abspath(fig_path)), exist_ok=True)
     plt.savefig(fig_path, dpi=150)
     print(f'\nSaved figure to {fig_path}')

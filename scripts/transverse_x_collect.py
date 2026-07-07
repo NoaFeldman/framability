@@ -73,7 +73,7 @@ def _colormap_panel(ax, data, gamma_vals, gp_vals, title, *,
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument('--in_dir',  default='results_transverse_x')
-    parser.add_argument('--out',     default='transverse_x.png')
+    parser.add_argument('--out',     default='results_plots/transverse_x.png')
     args = parser.parse_args()
 
     in_dir = Path(args.in_dir)

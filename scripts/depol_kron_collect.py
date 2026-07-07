@@ -46,7 +46,7 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument('--in_dir',  default='results_depol_kron')
     parser.add_argument('--out_dir', default='results_depol_kron')
-    parser.add_argument('--plot',    default='depol_kron.png')
+    parser.add_argument('--plot',    default='results_plots/depol_kron.png')
     args = parser.parse_args()
 
     in_dir  = Path(args.in_dir)

@@ -231,7 +231,8 @@ def main():
     fig.suptitle(f'Steady-state properties  (J = {args.J})', fontsize=14)
     plt.tight_layout()
 
-    out_fig = os.path.join(args.out_dir, 'two_qubit_scan.png')
+    os.makedirs('results_plots', exist_ok=True)
+    out_fig = os.path.join('results_plots', 'two_qubit_scan.png')
     plt.savefig(out_fig, dpi=150)
     print(f'Saved figure to {out_fig}')
 

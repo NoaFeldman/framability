@@ -18,6 +18,14 @@ Usage (strided across a 200-task array):
         --task_id $SLURM_ARRAY_TASK_ID --n_chunks 200
 """
 
+# Note: dt is chosen per point by trotter_lindbladian_scan.choose_dt,
+#       dt = DT_BASE / max(||H||_1, max_k gamma_k), unless the model pins a
+#       fixed dt (model5) or --dt overrides it; the resolved value is stored
+#       in the pt file.
+# Note: The steady state results are for a two-qubit system - we can get a 6-qubit system but not much more
+# Note: the two-qubit lindbladian divides the one-qubit terms by 2D, and this is the lindbladian for which we get the steady-state results, maybe this should be changed 
+
+
 from __future__ import annotations
 
 import argparse
@@ -29,7 +37,7 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from trotter_lindbladian_scan import (
-    MODELS, QUANTITIES, compute_point, TLS_VERSION, DT_DEFAULT, DIM_DEFAULT,
+    MODELS, QUANTITIES, compute_point, TLS_VERSION,
 )
 
 
@@ -62,7 +70,8 @@ def run_point(model, point_id: int, args) -> None:
     t0 = time.perf_counter()
     print(f'[point {point_id}/{model.N_TOTAL}] {model.name} '
           f'{model.p1_name}={p1:.3f} {model.p2_name}={p2:.3f} '
-          f'dim={args.dim} dt={args.dt}', flush=True)
+          f'dim={args.dim} dt={"auto" if args.dt is None else args.dt}',
+          flush=True)
 
     res = compute_point(
         model, p1, p2, dim=args.dim, dt=args.dt,
@@ -81,7 +90,7 @@ def run_point(model, point_id: int, args) -> None:
         opt_S_6=np.asarray(res['opt_S_6']),
         p1=np.array(p1), p2=np.array(p2),
         ix=np.array(ix), iy=np.array(iy),
-        dim=np.array(args.dim), dt=np.array(args.dt),
+        dim=np.array(args.dim), dt=np.array(res['dt']),
         model=np.array(model.name),
         code_version=np.array(TLS_VERSION),
     )
@@ -97,9 +106,12 @@ def main() -> None:
                    help='point id when --n_chunks=1, else chunk id 0..n_chunks-1')
     p.add_argument('--n_chunks',     type=int, default=1,
                    help='split the grid into this many strided array tasks')
-    p.add_argument('--out_dir',      type=str, default='results_trotter')
-    p.add_argument('--dim',          type=int, default=DIM_DEFAULT, choices=(1, 2, 3))
-    p.add_argument('--dt',           type=float, default=DT_DEFAULT)
+    p.add_argument('--out_dir',      type=str, default='results_trotter_v3')
+    p.add_argument('--dim',          type=int, default=None, choices=(1, 2, 3),
+                   help='default: the model\'s own dim (all models: 2)')
+    p.add_argument('--dt',           type=float, default=None,
+                   help='pin a fixed dt; default: per-point adaptive choose_dt '
+                        '(no model pins a fixed dt any more)')
     p.add_argument('--fra_restarts', type=int, default=5)
     p.add_argument('--fra_maxfev_4', type=int, default=1000)
     p.add_argument('--fra_maxfev_6', type=int, default=500)
@@ -110,6 +122,12 @@ def main() -> None:
 
     model = MODELS[args.model]
     N = model.N_TOTAL
+
+    # dim defaults to the model's own convention (all models: dim=2).  dt=None is
+    # passed through to compute_point, which resolves it to the per-point adaptive
+    # choose_dt (no model pins a fixed dt any more); the resolved value is saved.
+    if args.dim is None:
+        args.dim = model.dim
 
     if args.n_chunks <= 1:
         if not (0 <= args.task_id < N):

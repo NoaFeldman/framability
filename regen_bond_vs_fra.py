@@ -1,5 +1,5 @@
 """
-Regenerate results/two_qubit_scan_full_bond_vs_fra.png from the current
+Regenerate results_plots/two_qubit_scan_full_bond_vs_fra.png from the current
 scan_full.npy without recomputing any scan data.
 
 Usage

@@ -106,7 +106,8 @@ def main() -> None:
     fig.suptitle('Minimax frame optimisation across gates {H, T, CNOT} '
                  'under 2-qubit depolarisation')
     fig.tight_layout(rect=(0, 0, 1, 0.95))
-    png_path = out_dir / 'minimax_frame.png'
+    png_path = Path('results_plots') / 'minimax_frame.png'
+    png_path.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(png_path, dpi=170)
     plt.close(fig)
     print(f'[saved] {png_path}')

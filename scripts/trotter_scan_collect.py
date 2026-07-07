@@ -160,7 +160,7 @@ def plot_colormaps(arr: np.ndarray, model, out_png: Path) -> None:
 def main() -> None:
     p = argparse.ArgumentParser()
     p.add_argument('--model',   type=str, required=True, choices=list(MODELS))
-    p.add_argument('--in_dir',  type=str, default='results_trotter')
+    p.add_argument('--in_dir',  type=str, default='results_trotter_v3')
     p.add_argument('--out_png', type=str, default=None,
                    help='default results_plots/trotter_<model>.png')
     p.add_argument('--save_npz', action='store_true',

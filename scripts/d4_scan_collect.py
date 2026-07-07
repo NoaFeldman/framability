@@ -102,7 +102,8 @@ def main():
                  fontsize=13)
     fig.tight_layout(rect=(0, 0, 1, 0.94))
 
-    out_fig = os.path.join(args.d4_dir, 'd4_vs_d6.png')
+    os.makedirs('results_plots', exist_ok=True)
+    out_fig = os.path.join('results_plots', 'd4_vs_d6.png')
     fig.savefig(out_fig, dpi=170)
     plt.close(fig)
     print(f'[saved] {out_fig}')

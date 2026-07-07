@@ -36,7 +36,7 @@ def _aggregate(in_dir: Path) -> np.ndarray:
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument('--in_dir',  type=str, default='results_trotter')
-    parser.add_argument('--out_dir', type=str, default='results_trotter')
+    parser.add_argument('--out_dir', type=str, default='results_plots')
     parser.add_argument('--out_name', type=str, default='trotter_framability.png')
     args = parser.parse_args()
 

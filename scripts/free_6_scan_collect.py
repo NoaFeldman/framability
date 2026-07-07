@@ -122,7 +122,8 @@ def main():
     )
     fig.tight_layout(rect=(0, 0, 1, 0.95))
 
-    out_fig = os.path.join(args.free6_dir, 'free6_comparison.png')
+    os.makedirs('results_plots', exist_ok=True)
+    out_fig = os.path.join('results_plots', 'free6_comparison.png')
     fig.savefig(out_fig, dpi=170)
     plt.close(fig)
     print(f'[saved] {out_fig}')

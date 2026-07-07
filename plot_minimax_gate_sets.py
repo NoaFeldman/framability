@@ -87,7 +87,7 @@ def main() -> None:
     parser.add_argument('--toffoli_dir', type=str,
                         default='results_minimax_toffoli')
     parser.add_argument('--out',  type=str,
-                        default='minimax_gate_sets.png')
+                        default='results_plots/minimax_gate_sets.png')
     args = parser.parse_args()
 
     p_hct,  d_hct,  w_hct  = _load_hcnott( Path(args.hcnott_dir))
@@ -116,6 +116,7 @@ def main() -> None:
     ax.grid(alpha=0.3)
 
     fig.tight_layout()
+    Path(args.out).parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(args.out, dpi=170)
     plt.close(fig)
     print(f'[saved] {args.out}')

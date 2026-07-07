@@ -4,21 +4,21 @@
 #
 #  One MODEL (model1..model5) is scanned over its two varying parameters.
 #  Grid sizes (point counts):
-#    model1  41 x 41 = 1681      model2  21 x 51 = 1071
-#    model3  21 x 51 = 1071      model4  31 x 16 =  496
-#    model5  20 x 56 = 1120  (usually filled by trotter_model5_import instead)
+#    model1  21 x 51 = 1071      model2  21 x  51 = 1071
+#    model3  51 x 51 = 2601      model4  51 x  51 = 2601
+#    model5  21 x 101 = 2121
 #
 #  The grid is split across a 200-task array (N_CHUNKS=200); each task processes
 #  a strided subset and skips any npz already current on disk.
 #
 #  Submit one model (default model1):
-#    mkdir -p logs results_trotter
+#    mkdir -p logs results_trotter_v3
 #    MODEL=model1 sbatch scripts/trotter_scan.slurm.sh
 #
-#  The framability/sign Trotter gate uses the model's own dim/dt (model5:
-#  dim=1, dt=0.05; others: dim=2, dt=0.1) unless DIM / DT are set; the
-#  steady-state quantities always use the full 2x2 lattice.  Budgets are
-#  overridable via env vars, e.g.:
+#  Every model uses dim=2 and the per-point adaptive Trotter step (choose_dt)
+#  unless DIM / DT are set; the steady-state quantities always use the full 2x2
+#  lattice.  Output goes to results_trotter_v3 (the earlier results_trotter data
+#  is kept but ignored).  Budgets are overridable via env vars, e.g.:
 #    MODEL=model4 FRA_MAXFEV_4=2000 sbatch scripts/trotter_scan.slurm.sh
 # ============================================================
 
@@ -32,10 +32,10 @@
 #SBATCH --error=logs/trot_%x_%A_%a.err
 
 MODEL=${MODEL:-model1}
-OUT_DIR=${OUT_DIR:-results_trotter}
+OUT_DIR=${OUT_DIR:-results_trotter_v3}
 N_CHUNKS=${N_CHUNKS:-200}
-DIM=${DIM:-}      # empty -> the model's own dim (model5=1, others=2)
-DT=${DT:-}        # empty -> the model's own dt  (model5=0.05, others=0.1)
+DIM=${DIM:-}      # empty -> the model's own dim (all models: 2)
+DT=${DT:-}        # empty -> per-point adaptive choose_dt
 FRA_RESTARTS=${FRA_RESTARTS:-5}
 FRA_MAXFEV_4=${FRA_MAXFEV_4:-1000}
 FRA_MAXFEV_6=${FRA_MAXFEV_6:-500}

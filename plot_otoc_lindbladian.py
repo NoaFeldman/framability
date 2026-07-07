@@ -199,6 +199,8 @@ def plot_heatmap(data, gammas, gamma_step, title, out_file):
     cbar.set_label("OTOC")
 
     fig.tight_layout()
+    from pathlib import Path
+    Path(out_file).parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(out_file, dpi=180)
     plt.close(fig)
 
@@ -235,17 +237,18 @@ def main():
         gammas=gammas,
         gamma_step=args.gamma_step,
         title=r"OTOC at $t=0.1\,\min(\gamma,\gamma')$",
-        out_file="otoc_two_qubit_tmin.png",
+        out_file="results_plots/otoc_two_qubit_tmin.png",
     )
     plot_heatmap(
         data=otoc_tmax,
         gammas=gammas,
         gamma_step=args.gamma_step,
         title=r"OTOC at $t=10\,\max(\gamma,\gamma')$",
-        out_file="otoc_two_qubit_tmax.png",
+        out_file="results_plots/otoc_two_qubit_tmax.png",
     )
 
-    print("Saved otoc_two_qubit_tmin.png and otoc_two_qubit_tmax.png")
+    print("Saved results_plots/otoc_two_qubit_tmin.png and "
+          "results_plots/otoc_two_qubit_tmax.png")
     print(f"OTOC(t_min) range: [{otoc_tmin.min():.6f}, {otoc_tmin.max():.6f}]")
     print(f"OTOC(t_max) range: [{otoc_tmax.min():.6f}, {otoc_tmax.max():.6f}]")
 

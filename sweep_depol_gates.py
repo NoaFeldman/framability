@@ -15,7 +15,7 @@ the convention in depol_fra_worker.py.
 
 Output:
     results_depol_sweep/depol_sweep.npz       (raw arrays)
-    results_depol_sweep/depol_sweep.png       (composite figure)
+    results_plots/depol_sweep.png             (composite figure)
 """
 
 from __future__ import annotations
@@ -273,7 +273,8 @@ def main() -> None:
                  '(H, T lifted to 2 qubits as G(x)I)')
     fig.tight_layout(rect=(0, 0, 1, 0.97))
 
-    png_path = out_dir / 'depol_sweep.png'
+    png_path = Path('results_plots') / 'depol_sweep.png'
+    png_path.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(png_path, dpi=170)
     plt.close(fig)
     print(f'[saved] {png_path}')

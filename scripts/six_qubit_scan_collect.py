@@ -1,7 +1,7 @@
 """
 Aggregate per-point results from `six_qubit_scan_worker.py` and produce
-`<out_dir>/six_qubit_scan_bond_vs_fra.png` (the 2x3-lattice analogue of
-`results/two_qubit_scan_full_bond_vs_fra.png`).
+`results_plots/six_qubit_scan_bond_vs_fra.png` (the 2x3-lattice analogue of
+`results_plots/two_qubit_scan_full_bond_vs_fra.png`).
 
 Per-point file layout:
     <out_dir>/six_point_<ig:04d>_<igp:04d>.npy   shape (5,)
@@ -138,7 +138,8 @@ def main() -> None:
     )
     fig.tight_layout()
 
-    out_png = out_dir / args.out_name
+    out_png = Path("results_plots") / args.out_name
+    out_png.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(out_png, dpi=170)
     plt.close(fig)
     print(f"[saved] {out_png}")

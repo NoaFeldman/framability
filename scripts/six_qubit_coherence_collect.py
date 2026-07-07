@@ -6,7 +6,7 @@ Input per-point files:
 
 Output:
     <out_dir>/six_coherence_<n_g>x<n_gp>.npy
-    <out_dir>/six_coherence_<n_g>x<n_gp>.png
+    results_plots/six_coherence_<n_g>x<n_gp>.png
 """
 
 from __future__ import annotations
@@ -71,7 +71,8 @@ def main() -> None:
     fig.colorbar(im, ax=ax, label="Coherence")
     fig.tight_layout()
 
-    out_png = out_dir / f"six_coherence_{n_g}x{n_gp}.png"
+    out_png = Path("results_plots") / f"six_coherence_{n_g}x{n_gp}.png"
+    out_png.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(out_png, dpi=170)
     plt.close(fig)
     print(f"[saved] {out_png}")

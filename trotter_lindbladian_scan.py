@@ -10,7 +10,8 @@ Given, for a translationally-invariant lattice model,
   * a list of two-qubit jump operators         (each 4x4, amplitude includes
                                                 sqrt(rate), or empty)
   * the physical dimension d in {1, 2, 3}
-  * a Trotter time step dt
+  * a Trotter time step dt (chosen per point by choose_dt from the model
+    parameters unless the model pins a fixed value)
 
 this module builds the two-qubit *bond* Trotter-step gate.  Each qubit sits on
 2*d nearest-neighbour bonds, so every one-qubit term is split across the bonds
@@ -38,11 +39,16 @@ site terms (H1, jumps1) are placed on every site and the per-bond terms
   b1  site-averaged Z- and X-magnetisation of the NESS   -- full lattice
   b2  von Neumann entropy of the NESS                    -- full lattice
   b3  half-half entanglement negativity of the NESS      -- full lattice
-  c1  dyadic stabilizer-frame framability                -- bond gate
+  c1  stabilizer-3 framability (Schrodinger, 3-qubit stabilizer frame) -- bond gate
   c2  Pauli-frame framability                            -- bond gate
-  d1  optimised framability, d_ext_single = 4            -- bond gate
-  d2  optimised framability, d_ext_single = 6            -- bond gate
+  d1  optimised Heisenberg framability, d_ext_single = 4 -- bond gate
+  d2  optimised Heisenberg framability, d_ext_single = 6 -- bond gate
   d3  gamma_{CH_1} maximised over the single-qubit product frame -- bond gate
+  e   product-state framability, chi in {10, 20, 40}     -- bond gate
+  f   optimised Schrodinger state framability, d_ext_single in {4, 6, 8} -- bond gate
+  g   dephasing-augmented optimised framability (Heisenberg & Schrodinger,
+      d_ext_single = 4): only for models with no dephasing jump, a small
+      pure-dephasing channel sqrt(10 dt) Z is added to the gate       -- bond gate
 
 All heavy primitives are reused from dissipative_PT / framability /
 gamma_ch1_sphere so this stays a thin model-and-orchestration layer.
@@ -65,10 +71,10 @@ from dissipative_PT import (
     pauli_framability, optimise_framability,
     frame_from_params, params_from_frame, embed_frame_params,
     sign_problem_results, spectral_floor,
-    H_LIST as _PT_H_LIST, GAMMA_LIST as _PT_GAMMA_LIST,
 )
 from analysis import compute_max_bond_dim, _initial_iz_vector, _initial_ix_vector
-from framability import dyadic_stabilizer_framability
+from framability import stabilizer_3_framability, product_state_framability
+from optimize_framability import minimize_schroedinger_framability
 from gamma_ch1_sphere import gamma_CH1, frame_op_1q, pauli_coeffs
 
 # Version stamp for cached results.  Bump when the set of stored quantities or
@@ -85,9 +91,36 @@ from gamma_ch1_sphere import gamma_CH1, frame_op_1q, pauli_coeffs
 #      place by scripts/trotter_scan_patch_worker.py without re-running the
 #      framability optimisation).  model3's gamma grid extends to 10 and
 #      model5 (the dissipative-PT model, imported from results_dpt) is added.
-TLS_VERSION = '2.3'
+# 2.4: the bond Trotter gate's dt is now chosen per point (choose_dt):
+#      dt = DT_BASE / max(||H||_1, max_k gamma_k) -- DT_BASE times the fastest
+#      timescale, with ||H||_1 the Pauli 1-norm of the Hamiltonian terms and
+#      gamma_k the jump rates.  model5 keeps its fixed dt=0.05 so the
+#      dissipative-PT import stays exact.
+# 2.5: the fixed-frame framability (group c) is now the 3-qubit *stabilizer-3*
+#      framability (framability.stabilizer_3_framability) instead of the dyadic
+#      stabilizer framability.  New quantities: product-state framability at
+#      chi in {10, 20, 40} (group e), optimised Schrodinger state framability at
+#      d_ext_single in {4, 6, 8} (group f), and -- for models whose jumps do not
+#      already include a pure-dephasing operator -- the optimised Heisenberg and
+#      Schrodinger framabilities (d_ext_single=4) of the gate with a small added
+#      dephasing channel sqrt(DEPHASING_DT_FACTOR * dt) Z (group g).
+# 3.0: the whole model set is redefined (models 1-4 now share H = J ZZ + h X,
+#      J=1, no two-qubit jumps):
+#        model1  jump sqrt(gamma) S^-,          scan h in [-2,2], gamma in [0,10]
+#        model2  jump sqrt(gamma) |-><+|,       scan h in [-2,2], gamma in [0,10]
+#        model3  h=0,  jumps sqrt(gamma)|-><+|, sqrt(gamma')Z,  scan gamma, gamma' in [0,10]
+#        model4  h=1.5,jumps sqrt(gamma)|-><+|, sqrt(gamma')Z,  scan gamma, gamma' in [0,10]
+#        model5  = the old (2.x) model3 Heisenberg XX+YY+ZZ + sqrt(gamma)S^-,
+#                 gamma extended to [0,20] (no longer the dissipative-PT import;
+#                 dim=2 and adaptive choose_dt like the rest).
+#      Everything is re-run from scratch: the default output directory moved to
+#      results_trotter_v3 so the earlier results_trotter data is kept untouched
+#      but ignored by this code, and the version bump forces a recompute of any
+#      point that happens to already exist.
+TLS_VERSION = '3.0'
 
-DT_DEFAULT = 0.1
+DT_DEFAULT = 0.1         # fallback only (zero generator / legacy files)
+DT_BASE = 0.01           # choose_dt: dt = DT_BASE / max(||H||_1, {gamma_k})
 DIM_DEFAULT = 2          # framability/sign Trotter gate defaults to a 2D lattice
 
 # Steady-state quantities (Liouvillian gap, magnetisations, entropies, LPDO,
@@ -100,17 +133,77 @@ LATTICE_LY = 2
 LPDO_PATH_DT = 0.002          # integration step (dt-converged for these models)
 LPDO_PATH_FIDELITY = 0.9      # stop once Bures fidelity with the NESS reaches this
 
-# model4's dephasing jump sqrt(gamma)(ZI+IZ) and H=J(XX+YY+Delta ZZ) both commute
-# with total S_z, a strong U(1) symmetry that leaves the NESS non-unique (the
-# Liouvillian null space is 4-dimensional), so every steady-state quantity comes
-# out NaN.  A small on-site decay sqrt(MODEL4_DECAY) S^- breaks that symmetry and
-# restores a unique NESS; keep it small so the dephasing physics is barely shifted.
-MODEL4_DECAY = 0.05
+# group e: product-state framability uses a random two-qubit *product* frame of
+# chi^2 columns (chi single-qubit states per site).  The frame is rebuilt from
+# PROD_FRAME_SEED at every point so the identical set of random states is used
+# across the whole scan and the value varies smoothly over the grid.
+PROD_CHIS = (10, 20, 40)
+PROD_FRAME_SEED = 12345
+
+# group f: optimised Schrodinger state-frame framability, single-qubit frame
+# sizes d_ext_single (the full product frame has d_ext_single**2 columns).
+SCH_DEXTS = (4, 6, 8)
+
+# group g: for a model with no dephasing jump, a pure-dephasing channel
+# sqrt(gamma_deph) Z with gamma_deph = DEPHASING_DT_FACTOR * dt is added to the
+# bond gate before its optimised (Heisenberg & Schrodinger) framability is taken.
+DEPHASING_DT_FACTOR = 10.0
 
 
 # ---------------------------------------------------------------------------
 #  Bond Trotter gate
 # ---------------------------------------------------------------------------
+def _pauli_1norm(H) -> float:
+    """Sum of |Pauli coefficients| of a 2x2 or 4x4 operator, identity component
+    excluded (it only contributes a global phase to the dynamics)."""
+    H = np.asarray(H, dtype=complex)
+    n = H.shape[0]
+    basis = _PAULI if n == 2 else [np.kron(p, q) for p in _PAULI for q in _PAULI]
+    return float(sum(abs(np.trace(P.conj().T @ H)) / n for P in basis[1:]))
+
+
+def choose_dt(H1, H2, jumps1, jumps2, base: float = DT_BASE) -> float:
+    """Per-point Trotter step matched to the model's fastest rate:
+
+        dt = base / max(||H||_1, max_k gamma_k)
+
+    i.e. `base` times the shortest timescale of the generator.  ||H||_1 is the
+    Pauli 1-norm of the Hamiltonian terms (H1 and H2 combined, identity part
+    excluded) and gamma_k = ||L_k||^2 (largest singular value squared) is the
+    rate carried by each jump operator (amplitudes include sqrt(rate)).  The
+    raw model terms are used, before the 1/(2d) bond share, so dt depends on
+    the physical parameters only.  Falls back to DT_DEFAULT when every scale
+    vanishes (zero generator: the gate is the identity at any dt).
+    """
+    hnorm = sum(_pauli_1norm(H) for H in (H1, H2) if H is not None)
+    rates = [float(np.linalg.norm(np.asarray(L, dtype=complex), 2) ** 2)
+             for L in list([x for x in jumps1 if x != 0] or []) + \
+                      list([x for x in jumps2 if x != 0] or [])]
+    scale = max([hnorm] + rates)
+    if scale <= 1e-12:
+        return DT_DEFAULT
+    return base / scale
+
+
+def _has_dephasing(jumps1, jumps2) -> bool:
+    """True if any jump operator is a pure-dephasing operator, i.e. Hermitian and
+    diagonal in the computational (Z) basis with a non-constant diagonal (e.g. Z,
+    ZI+IZ, ZZ).  Off-diagonal or non-Hermitian jumps such as S^- = |0><1| are not
+    dephasing.  Zero operators (padding) are ignored."""
+    for L in list(jumps1 or []) + list(jumps2 or []):
+        L = np.asarray(L, dtype=complex)
+        if np.linalg.norm(L) < 1e-12:
+            continue
+        if np.max(np.abs(L - L.conj().T)) > 1e-9:                 # not Hermitian
+            continue
+        if np.max(np.abs(L - np.diag(np.diag(L)))) > 1e-9:        # not Z-diagonal
+            continue
+        diag = np.diag(L).real
+        if np.max(np.abs(diag - diag.mean())) > 1e-9:             # non-constant
+            return True
+    return False
+
+
 def build_bond_lindbladian(H1, H2, jumps1, jumps2, dim: int) -> np.ndarray:
     """16x16 real bond Lindbladian in the two-qubit Pauli basis.
 
@@ -280,19 +373,24 @@ def lpdo_init_vector(model: 'ModelSpec', N: int) -> np.ndarray:
 
 
 def compute_point(model: 'ModelSpec', p1: float, p2: float, *,
-                  dim: int = DIM_DEFAULT, dt: float = DT_DEFAULT,
+                  dim: int = DIM_DEFAULT, dt: float | None = None,
                   fra_restarts: int = 5, fra_maxfev_4: int = 1000,
                   fra_maxfev_6: int = 500, sign_restarts: int = 10,
-                  ch1_restarts: int = 15, seed: int = 0,
+                  ch1_restarts: int = 15, sch_restarts: int = 5,
+                  sch_maxfev: int = 800, seed: int = 0,
                   verbose: bool = False) -> dict:
     """All scan quantities for one (p1, p2) point of `model`.
 
     The framability / sign-problem quantities use the two-qubit bond Trotter
-    gate (dim-dependent).  The steady-state quantities (Liouvillian gap,
-    magnetisations, entropies, LPDO, negativity) use the full LATTICE_LX x
-    LATTICE_LY lattice Lindbladian.
+    gate (dim-dependent).  dt=None resolves to the model's own dt if it pins
+    one (model5), else to the per-point adaptive step choose_dt.  The resolved
+    value is returned in the 'dt' entry.  The steady-state quantities
+    (Liouvillian gap, magnetisations, entropies, LPDO, negativity) use the
+    full LATTICE_LX x LATTICE_LY lattice Lindbladian.
     """
     H1, H2, jumps1, jumps2 = model.build(p1, p2)
+    if dt is None:
+        dt = model.dt if model.dt is not None else choose_dt(H1, H2, jumps1, jumps2)
     gate = bond_trotter_gate(H1, H2, jumps1, jumps2, dim, dt)
 
     out: dict = dict(p1=p1, p2=p2, dim=dim, dt=dt)
@@ -334,10 +432,10 @@ def compute_point(model: 'ModelSpec', p1: float, p2: float, *,
               f'vn={out["ss_vn"]:.4f}', flush=True)
 
     # ── group c: fixed-frame framabilities ───────────────────────────────────
-    out['stab_fra'] = dyadic_stabilizer_framability(gate)   # c1
+    out['stab_fra'] = stabilizer_3_framability(gate)        # c1 stabilizer-3
     out['pauli_fra'] = pauli_framability(gate)              # c2
 
-    # ── group d: optimised framabilities + gamma_CH1 ─────────────────────────
+    # ── group d: optimised (Heisenberg) framabilities + gamma_CH1 ────────────
     out['opt_fra_4'], x4 = optimise_framability(
         gate, 4, fra_restarts, fra_maxfev_4, seed, return_x=True)
     out['opt_fra_6'], x6 = optimise_framability(
@@ -346,10 +444,42 @@ def compute_point(model: 'ModelSpec', p1: float, p2: float, *,
     out['opt_S_6'] = frame_from_params(x6, 6)
     out['gamma_ch1'] = gamma_ch1_framability(gate, ch1_restarts, seed)   # d3
 
+    # ── group e: product-state framability (fixed random product frame) ──────
+    # Reseed the global RNG (haar_measure draws off it) so the same product
+    # states are used at every scan point, giving a smooth grid.
+    np.random.seed(PROD_FRAME_SEED)
+    for chi in PROD_CHIS:
+        out[f'prod_fra_{chi}'] = product_state_framability(chi, gate)
+
+    # ── group f: optimised Schrodinger state framability ─────────────────────
+    for de in SCH_DEXTS:
+        _, out[f'sch_fra_{de}'] = minimize_schroedinger_framability(
+            gate, de, n_restarts=sch_restarts, maxfev=sch_maxfev,
+            seed=seed, verbose=False)
+
+    # ── group g: dephasing-augmented optimised framability (d_ext_single=4) ──
+    # Only for models with no dephasing jump: add a small pure-dephasing channel
+    # sqrt(10 dt) Z on each site and report the optimised framability of the
+    # resulting gate in the Heisenberg and Schrodinger pictures.
+    if _has_dephasing(jumps1, jumps2):
+        out['deph_heis_fra_4'] = out['deph_schro_fra_4'] = float('nan')
+    else:
+        jumps1_deph = list(jumps1 or []) + [np.sqrt(DEPHASING_DT_FACTOR * dt) * _SZ]
+        gate_deph = bond_trotter_gate(H1, H2, jumps1_deph, jumps2, dim, dt)
+        out['deph_heis_fra_4'] = optimise_framability(
+            gate_deph, 4, fra_restarts, fra_maxfev_4, seed)
+        _, out['deph_schro_fra_4'] = minimize_schroedinger_framability(
+            gate_deph, 4, n_restarts=sch_restarts, maxfev=sch_maxfev,
+            seed=seed, verbose=False)
+
     if verbose:
-        print(f'  stab={out["stab_fra"]:.4f}  pauli={out["pauli_fra"]:.4f}  '
+        print(f'  stab3={out["stab_fra"]:.4f}  pauli={out["pauli_fra"]:.4f}  '
               f'd4={out["opt_fra_4"]:.4f}  d6={out["opt_fra_6"]:.4f}  '
               f'ch1={out["gamma_ch1"]:.4f}', flush=True)
+        print(f'  prod10={out["prod_fra_10"]:.4f}  prod40={out["prod_fra_40"]:.4f}  '
+              f'sch4={out["sch_fra_4"]:.4f}  sch8={out["sch_fra_8"]:.4f}  '
+              f'deph_H={out["deph_heis_fra_4"]:.4f}  '
+              f'deph_S={out["deph_schro_fra_4"]:.4f}', flush=True)
 
     return out
 
@@ -375,7 +505,10 @@ class ModelSpec:
     p2_vals: np.ndarray
     build: Callable[[float, float], tuple]
     dim: int = DIM_DEFAULT
-    dt: float = DT_DEFAULT
+    # Trotter step of the bond gate.  None (the default, used by every current
+    # model) -> chosen per point by choose_dt from the point's own parameters;
+    # a float would pin dt for the whole scan.
+    dt: float | None = None
     # start state of the lpdo_max relaxation path: 'zero' -> |0>^N, 'plus' -> |+>^N
     lpdo_init: str = 'zero'
 
@@ -410,16 +543,14 @@ def _ZZ():
     return np.kron(_SZ, _SZ)
 
 
-def _build_model1(gamma: float, gamma_p: float):
-    # H: J ZZ ; jumps: sqrt(gamma) |-><+|, sqrt(gamma') Z (one-qubit)
-    J = 1.0
-    H2 = J * _ZZ()
-    jumps1 = [np.sqrt(gamma) * MINUS_PLUS, np.sqrt(gamma_p) * _SZ]
-    return None, H2, jumps1, []
+# Models 1-4 share the Hamiltonian H = J ZZ + h X (J = 1) with only one-qubit
+# jump operators (no two-qubit jumps).  h is a scan axis for models 1-2 and a
+# fixed constant for models 3-4.
+MODEL4_H = 1.5
 
 
-def _build_model2(h: float, gamma: float):
-    # H1: h X ; H2: J ZZ ; jumps: sqrt(gamma) S^- (one-qubit)
+def _build_model1(h: float, gamma: float):
+    # H = J ZZ + h X ; jump sqrt(gamma) S^- (one-qubit)
     J = 1.0
     H1 = h * _SX
     H2 = J * _ZZ()
@@ -427,8 +558,37 @@ def _build_model2(h: float, gamma: float):
     return H1, H2, jumps1, []
 
 
-def _build_model3(J_y: float, gamma: float):
-    # H2: J_x XX + J_y YY + J_z ZZ ; jumps: sqrt(gamma) S^- (one-qubit)
+def _build_model2(h: float, gamma: float):
+    # H = J ZZ + h X ; jump sqrt(gamma) |-><+| (one-qubit)
+    J = 1.0
+    H1 = h * _SX
+    H2 = J * _ZZ()
+    jumps1 = [np.sqrt(gamma) * MINUS_PLUS]
+    return H1, H2, jumps1, []
+
+
+def _build_model3(gamma: float, gamma_p: float):
+    # H = J ZZ (h = 0) ; jumps sqrt(gamma) |-><+|, sqrt(gamma') Z (one-qubit)
+    J = 1.0
+    H2 = J * _ZZ()
+    jumps1 = [np.sqrt(gamma) * MINUS_PLUS, np.sqrt(gamma_p) * _SZ]
+    return None, H2, jumps1, []
+
+
+def _build_model4(gamma: float, gamma_p: float):
+    # H = J ZZ + h X (h = MODEL4_H = 1.5) ; jumps sqrt(gamma) |-><+|,
+    # sqrt(gamma') Z (one-qubit)
+    J = 1.0
+    H1 = MODEL4_H * _SX
+    H2 = J * _ZZ()
+    jumps1 = [np.sqrt(gamma) * MINUS_PLUS, np.sqrt(gamma_p) * _SZ]
+    return H1, H2, jumps1, []
+
+
+def _build_model5(J_y: float, gamma: float):
+    # (was the 2.x model3.)  Heisenberg bond H2 = J_x XX + J_y YY + J_z ZZ with
+    # J_x = 0.9, J_z = 1 ; jump sqrt(gamma) S^- (one-qubit).  Same model and grid
+    # as the old model3 except gamma now runs to 20.
     J_x, J_z = 0.9, 1.0
     H2 = (J_x * np.kron(_SX, _SX)
           + J_y * np.kron(_SY, _SY)
@@ -437,74 +597,47 @@ def _build_model3(J_y: float, gamma: float):
     return None, H2, jumps1, []
 
 
-def _build_model5(h: float, gamma: float):
-    # Dissipative-PT model (see dissipative_PT.py): transverse-field Ising with the
-    # field along Z and the XX coupling on the bond,
-    #   H = J XX (bond) + h Z (on-site),  jump sqrt(gamma) S^-  (one-qubit).
-    # With this model's dim=1, dt=0.05 the bond Trotter gate reproduces
-    # dissipative_PT.bond_trotter_gate exactly: dim=1 gives the h/2 field share and
-    # gamma/2 dissipator rate hard-coded there, and the full-lattice NESS matches
-    # dissipative_PT.build_full_lindbladian (J XX + h Z, site S^-).
-    J = 1.0
-    H1 = h * _SZ
-    H2 = J * np.kron(_SX, _SX)
-    jumps1 = [np.sqrt(gamma) * S_MINUS]
-    return H1, H2, jumps1, []
-
-
-def _build_model4(Delta: float, gamma: float):
-    # H2: J(XX + YY + Delta ZZ) ; jumps: sqrt(gamma)(Z(x)I + I(x)Z) (two-qubit)
-    # plus a small on-site decay sqrt(MODEL4_DECAY) S^- (one-qubit) to break the
-    # strong S_z symmetry and make the NESS unique (see MODEL4_DECAY).
-    J = 1.0
-    H2 = (J * np.kron(_SX, _SX)
-          + J * np.kron(_SY, _SY)
-          + J * Delta * np.kron(_SZ, _SZ))
-    L2 = np.sqrt(gamma) * (np.kron(_SZ, _I2) + np.kron(_I2, _SZ))
-    jumps1 = [np.sqrt(MODEL4_DECAY) * S_MINUS]
-    return None, H2, jumps1, [L2]
-
-
+# All models use dim=2 and the per-point adaptive Trotter step (dt=None ->
+# choose_dt).  Models 1-4 share H = J ZZ + h X; models 1-2 relax the lpdo_max
+# path from |+>^N (the transverse-field / X-basis dynamics sit far from a |0>^N
+# start), as do the |-><+| models 3-4.  model5 keeps the |0>^N start of the old
+# Heisenberg model3.
 MODELS: dict[str, ModelSpec] = {
     'model1': ModelSpec(
         name='model1',
-        title=r"$H=J\,ZZ$,  jumps $\sqrt{\gamma}\,|{-}\rangle\langle{+}|,\ "
-              r"\sqrt{\gamma'}\,Z$  (J=1)",
-        p1_name='gamma',   p1_label=r'$\gamma$',   p1_vals=_arange(0, 8, 0.2),
-        p2_name='gamma_p', p2_label=r"$\gamma'$",  p2_vals=_arange(0, 8, 0.2),
-        build=_build_model1),
+        title=r'$H=J\,ZZ + h\,X$,  jump $\sqrt{\gamma}\,S^-$  (J=1)',
+        p1_name='h',     p1_label=r'$h$',       p1_vals=_arange(-2, 2, 0.2),
+        p2_name='gamma', p2_label=r'$\gamma$',  p2_vals=_arange(0, 10, 0.2),
+        build=_build_model1, lpdo_init='plus'),
     'model2': ModelSpec(
         name='model2',
-        title=r'$H=h\,X + J\,ZZ$,  jump $\sqrt{\gamma}\,S^-$  (J=1)',
+        title=r'$H=J\,ZZ + h\,X$,  jump $\sqrt{\gamma}\,|{-}\rangle\langle{+}|$'
+              r'  (J=1)',
         p1_name='h',     p1_label=r'$h$',       p1_vals=_arange(-2, 2, 0.2),
         p2_name='gamma', p2_label=r'$\gamma$',  p2_vals=_arange(0, 10, 0.2),
         build=_build_model2, lpdo_init='plus'),
-    # model3's gamma grid was extended from 2 to 10 (same step), appending new
-    # iy indices, so pt files computed on the old [0, 2] grid stay valid.
     'model3': ModelSpec(
         name='model3',
+        title=r"$H=J\,ZZ$,  jumps $\sqrt{\gamma}\,|{-}\rangle\langle{+}|,\ "
+              r"\sqrt{\gamma'}\,Z$  (J=1, h=0)",
+        p1_name='gamma',   p1_label=r'$\gamma$',   p1_vals=_arange(0, 10, 0.2),
+        p2_name='gamma_p', p2_label=r"$\gamma'$",  p2_vals=_arange(0, 10, 0.2),
+        build=_build_model3, lpdo_init='plus'),
+    'model4': ModelSpec(
+        name='model4',
+        title=r"$H=J\,ZZ + 1.5\,X$,  jumps $\sqrt{\gamma}\,|{-}\rangle\langle{+}|,\ "
+              r"\sqrt{\gamma'}\,Z$  (J=1, h=1.5)",
+        p1_name='gamma',   p1_label=r'$\gamma$',   p1_vals=_arange(0, 10, 0.2),
+        p2_name='gamma_p', p2_label=r"$\gamma'$",  p2_vals=_arange(0, 10, 0.2),
+        build=_build_model4, lpdo_init='plus'),
+    # model5 is the old (2.x) model3 Heisenberg model with gamma extended to 20.
+    'model5': ModelSpec(
+        name='model5',
         title=r'$H=J_x XX + J_y YY + J_z ZZ$,  jump $\sqrt{\gamma}\,S^-$  '
               r'($J_z=1,\ J_x=0.9$)',
         p1_name='J_y',   p1_label=r'$J_y$',     p1_vals=_arange(0, 4, 0.2),
-        p2_name='gamma', p2_label=r'$\gamma$',  p2_vals=_arange(0, 10, 0.2),
-        build=_build_model3),
-    'model4': ModelSpec(
-        name='model4',
-        title=r'$H=J(XX+YY+\Delta\,ZZ)$,  jumps $\sqrt{\gamma}(ZI+IZ),\ '
-              r'\sqrt{\epsilon}\,S^-$  ($J=1,\ \epsilon=%.2g$)' % MODEL4_DECAY,
-        p1_name='Delta', p1_label=r'$\Delta$',  p1_vals=_arange(-3, 3, 0.2),
-        p2_name='gamma', p2_label=r'$\gamma$',  p2_vals=_arange(0, 3, 0.2),
-        build=_build_model4, lpdo_init='plus'),
-    # model5 is the dissipative-PT model (dissipative_PT.py); its (h, gamma) grid,
-    # dim=1 and dt=0.05 are taken from there so the bond gate and NESS match
-    # exactly and the results_dpt scan/refine data can be imported as is
-    # (scripts/trotter_model5_import_worker.py).
-    'model5': ModelSpec(
-        name='model5',
-        title=r'dissipative-PT:  $H=J\,XX + h\,Z$,  jump $\sqrt{\gamma}\,S^-$  (J=1)',
-        p1_name='h',     p1_label=r'$h$',       p1_vals=np.asarray(_PT_H_LIST),
-        p2_name='gamma', p2_label=r'$\gamma$',  p2_vals=np.asarray(_PT_GAMMA_LIST),
-        build=_build_model5, dim=1, dt=0.05),
+        p2_name='gamma', p2_label=r'$\gamma$',  p2_vals=_arange(0, 20, 0.2),
+        build=_build_model5),
 }
 
 
@@ -521,11 +654,19 @@ QUANTITIES = [
     ('mag_x',     r'$\langle X\rangle$',        'b', False),
     ('ss_vn',     'NESS VN entropy',            'b', False),
     ('neg',       'NESS negativity',            'b', False),
-    ('stab_fra',  'Stabilizer framability',     'c', True),
+    ('stab_fra',  'Stabilizer-3 framability',   'c', True),
     ('pauli_fra', 'Pauli framability',          'c', True),
-    ('opt_fra_4', 'Opt framability (d=4)',      'd', True),
-    ('opt_fra_6', 'Opt framability (d=6)',      'd', True),
+    ('opt_fra_4', 'Opt framability H (d=4)',    'd', True),
+    ('opt_fra_6', 'Opt framability H (d=6)',    'd', True),
     ('gamma_ch1', 'max Janek',                  'd', True),
+    ('prod_fra_10', r'Product-state fra ($\chi$=10)', 'e', True),
+    ('prod_fra_20', r'Product-state fra ($\chi$=20)', 'e', True),
+    ('prod_fra_40', r'Product-state fra ($\chi$=40)', 'e', True),
+    ('sch_fra_4', 'Opt Schrod fra (d=4)',       'f', True),
+    ('sch_fra_6', 'Opt Schrod fra (d=6)',       'f', True),
+    ('sch_fra_8', 'Opt Schrod fra (d=8)',       'f', True),
+    ('deph_heis_fra_4',  'Deph opt fra H (d=4)', 'g', True),
+    ('deph_schro_fra_4', 'Deph opt fra S (d=4)', 'g', True),
 ]
 
 # opt_fra_4 / opt_fra_6 are the only quantities refined (neighbour-seeded).
@@ -541,7 +682,7 @@ if __name__ == '__main__':
     t0 = time.perf_counter()
     res = compute_point(m, p1, p2, fra_restarts=3, fra_maxfev_4=300,
                         fra_maxfev_6=150, sign_restarts=5, ch1_restarts=8,
-                        verbose=True)
+                        sch_restarts=2, sch_maxfev=200, verbose=True)
     print(f'{"-"*50}')
     for k, _, _, _ in QUANTITIES:
         print(f'  {k:12s} = {res[k]:.6f}')

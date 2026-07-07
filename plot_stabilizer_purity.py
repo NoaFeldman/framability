@@ -20,7 +20,7 @@ so
 Usage
 -----
     python plot_stabilizer_purity.py --n_pts 41 --J 1.0 --gamma_step 0.2 \\
-                                      --dt 0.002 --out two_qubit_scan.png
+                                      --dt 0.002 --out results_plots/stabilizer_purity.png
 """
 
 import argparse
@@ -68,7 +68,8 @@ def main():
     parser.add_argument('--gamma_step', type=float, default=0.2)
     parser.add_argument('--dt',         type=float, default=0.002,
                         help='Time step for expm(L * dt). Default: 0.002')
-    parser.add_argument('--out',        type=str,   default='two_qubit_scan.png')
+    parser.add_argument('--out',        type=str,
+                        default='results_plots/stabilizer_purity.png')
     args = parser.parse_args()
 
     n = args.n_pts

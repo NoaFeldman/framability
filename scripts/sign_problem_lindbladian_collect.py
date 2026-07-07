@@ -76,7 +76,8 @@ def main() -> None:
     parser.add_argument('--transverse_dir', default='results_sign_problem_transverse')
     parser.add_argument('--nofield_tag',    default='nofield')
     parser.add_argument('--transverse_tag', default='transverse')
-    parser.add_argument('--out',            default='sign_problem_lindbladian.png')
+    parser.add_argument('--out',
+                        default='results_plots/sign_problem_lindbladian.png')
     args = parser.parse_args()
 
     nf_init, nf_opt, nf_n = _load(Path(args.nofield_dir),    args.nofield_tag)

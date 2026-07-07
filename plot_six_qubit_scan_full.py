@@ -31,6 +31,8 @@ from pathlib import Path
 import numpy as np
 import matplotlib.pyplot as plt
 
+import unified_framability
+
 
 N_QUANTITIES = 13
 PATTERN = re.compile(r"^six_full_(\d{4})_(\d{4})\.npy$")
@@ -76,7 +78,7 @@ def _assemble_from_points(in_dir: Path, n_g: int, n_gp: int):
 def main():
     p = argparse.ArgumentParser()
     p.add_argument("--in_dir",     type=str, default="results_six")
-    p.add_argument("--out_dir",    type=str, default="results_six")
+    p.add_argument("--out_dir",    type=str, default="results_plots")
     p.add_argument("--out_name",   type=str, default="six_qubit_scan_full.png")
     p.add_argument("--n_pts_g",    type=int, default=None)
     p.add_argument("--n_pts_gp",   type=int, default=None)
@@ -122,6 +124,27 @@ def main():
 
     ss_vn         = arr[:, :, 0]
     ss_neg        = arr[:, :, 1]
+    # Prefer the larger standalone negativity scan when available
+    # (six_qubit_negativity_collect.py output).  Falls back to col 1 of
+    # six_full_scan otherwise.
+    ss_neg_extent = None  # use global extent unless overridden
+    for cand in [Path("results/six_negativity_101x7.npy"),
+                 Path("results_six/six_negativity_101x7.npy")]:
+        if cand.is_file():
+            try:
+                ss_neg_alt = np.load(cand)
+                if ss_neg_alt.ndim == 2:
+                    ss_neg = ss_neg_alt
+                    ng_n, ngp_n = ss_neg.shape
+                    half_n = args.gamma_step / 2.0
+                    ss_neg_extent = [
+                        -half_n, (ngp_n - 1) * args.gamma_step + half_n,
+                        -half_n, (ng_n - 1) * args.gamma_step + half_n,
+                    ]
+                    print(f"[negativity] using {cand}  shape={ss_neg.shape}")
+                    break
+            except Exception as e:
+                print(f"[warn] could not load {cand}: {e}")
     max_bond_S    = arr[:, :, 2]
     operator_bond = arr[:, :, 3]
     mag_x         = arr[:, :, 4]
@@ -130,9 +153,51 @@ def main():
     otoc_large    = arr[:, :, 7]
     chan_stab     = arr[:, :, 8]
     pauli_fra     = arr[:, :, 9]
-    min_fra       = arr[:, :, 10]
+    # Optimized framability sourced from unified dataset (single source of
+    # truth across all scan sizes).  Falls back to the per-scan column 10 if
+    # the unified file has not been built yet.
+    try:
+        fra_unified, _ = unified_framability.load()
+        min_fra = unified_framability.crop(fra_unified, n_g, n_gp)
+        print(f"[unified] optimized framability sourced from "
+              f"{unified_framability.DEFAULT_PATH}")
+    except (FileNotFoundError, ValueError) as e:
+        print(f"[warn] {e}\n[fallback] using six_full_scan column 10")
+        min_fra = arr[:, :, 10]
     dyadic_stab   = arr[:, :, 11]
     chi30         = arr[:, :, 12]
+
+    # l1-coherence panel (optional). Use the standalone scan if available;
+    # otherwise no coherence panel is added.
+    coherence = None
+    coherence_extent = None
+    coh_candidates = [
+        Path("results_six") / f"six_coherence_{n_g}x{n_gp}.npy",
+        Path("results_six_coh") / f"six_coherence_{n_g}x{n_gp}.npy",
+        Path("results") / f"six_coherence_{n_g}x{n_gp}.npy",
+    ]
+    # Also accept any size and crop / use its own extent.
+    extra = [p for p in Path("results_six_coh").glob("six_coherence_*x*.npy")] \
+        if Path("results_six_coh").is_dir() else []
+    extra += [p for p in Path("results_six").glob("six_coherence_*x*.npy")] \
+        if Path("results_six").is_dir() else []
+    for cand in coh_candidates + extra:
+        if cand.is_file():
+            try:
+                ca = np.load(cand)
+                if ca.ndim != 2:
+                    continue
+                coherence = ca
+                ng_c, ngp_c = ca.shape
+                half_c = args.gamma_step / 2.0
+                coherence_extent = [
+                    -half_c, (ngp_c - 1) * args.gamma_step + half_c,
+                    -half_c, (ng_c - 1) * args.gamma_step + half_c,
+                ]
+                print(f"[coherence] using {cand}  shape={ca.shape}")
+                break
+            except Exception as e:
+                print(f"[warn] could not load {cand}: {e}")
 
     fra_arrays = [pauli_fra, min_fra, dyadic_stab, chi30]
     finite_vals = [a[np.isfinite(a)] for a in fra_arrays]
@@ -145,26 +210,36 @@ def main():
 
     entropy_panel_ids = {id(ss_vn), id(ss_neg), id(max_bond_S),
                          id(operator_bond)}
+    if coherence is not None:
+        entropy_panel_ids.add(id(coherence))
+
+    top_row = [
+        (ss_vn,         "Von Neumann entropy", None),
+        (ss_neg,        "Negativity (3|3 row)", ss_neg_extent),
+        (max_bond_S,    "Max LPDO bond entropy (trajectory)", None),
+        (operator_bond, "Operator bond entropy", None),
+    ]
+    if coherence is not None:
+        top_row.append(
+            (coherence,
+             r"$\ell_1$-coherence $\sum_{i\neq j}|\rho_{ij}|$",
+             coherence_extent),
+        )
 
     rows = [
+        top_row,
         [
-            (ss_vn,         "Von Neumann entropy"),
-            (ss_neg,        "Negativity (3|3 row)"),
-            (max_bond_S,    "Max LPDO bond entropy (trajectory)"),
-            (operator_bond, "Operator bond entropy"),
+            (mag_x,      r"$X$ magnetization", None),
+            (decay,      "Decay rate (2q)", None),
+            (otoc_small, r"Small $t$ OTOC: $t=0.1\,\min(\gamma,\gamma')$", None),
+            (otoc_large, r"Large $t$ OTOC: $t=10\,\max(\gamma,\gamma')$", None),
+            (chan_stab,  r"Channel stabilizer purity $M(e^{L\,dt})$", None),
         ],
         [
-            (mag_x,      r"$X$ magnetization"),
-            (decay,      "Decay rate (2q)"),
-            (otoc_small, r"Small $t$ OTOC: $t=0.1\,\min(\gamma,\gamma')$"),
-            (otoc_large, r"Large $t$ OTOC: $t=10\,\max(\gamma,\gamma')$"),
-            (chan_stab,  r"Channel stabilizer purity $M(e^{L\,dt})$"),
-        ],
-        [
-            (pauli_fra,   "Pauli state framability"),
-            (min_fra,     "Optimized framability"),
-            (dyadic_stab, "Dyadic stabilizer framability"),
-            (chi30,       r"Product-state framability ($\chi=30$)"),
+            (pauli_fra,   "Pauli state framability", None),
+            (min_fra,     "Optimized framability", None),
+            (dyadic_stab, "Dyadic stabilizer framability", None),
+            (chi30,       r"Product-state framability ($\chi=30$)", None),
         ],
     ]
 
@@ -191,30 +266,31 @@ def main():
                 ax.set_visible(False)
                 continue
 
-            data, title = row[c]
+            data, title, ext_override = row[c]
+            ext_use = ext_override if ext_override is not None else extent
             is_fra = any(data is a for a in fra_arrays)
 
             if is_fra:
-                im = ax.imshow(data, origin="lower", extent=extent,
+                im = ax.imshow(data, origin="lower", extent=ext_use,
                                aspect="auto", cmap="viridis",
                                vmin=fra_vmin, vmax=fra_vmax)
                 lo, hi = _safe_minmax(data)
                 if lo is not None and lo < 1.0 < hi:
                     try:
                         ax.contour(data, levels=[1.0], colors="white",
-                                   linewidths=0.8, extent=extent,
+                                   linewidths=0.8, extent=ext_use,
                                    origin="lower")
                     except Exception:
                         pass
             else:
-                im = ax.imshow(data, origin="lower", extent=extent,
+                im = ax.imshow(data, origin="lower", extent=ext_use,
                                aspect="auto", cmap="viridis")
                 if id(data) in entropy_panel_ids:
                     lo, hi = _safe_minmax(data)
                     if lo is not None and (lo < 0.0 < hi or hi > 1e-10):
                         try:
                             ax.contour(data, levels=[1e-10], colors="white",
-                                       linewidths=0.8, extent=extent,
+                                       linewidths=0.8, extent=ext_use,
                                        origin="lower")
                         except Exception:
                             pass

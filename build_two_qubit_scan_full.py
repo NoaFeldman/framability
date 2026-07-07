@@ -44,7 +44,7 @@ from scipy.linalg import expm
 
 import unified_framability
 from two_qubit_lindbladian import numeric_two_qubit_lindbladian
-from optimize_framability import OPT_VERSION, spectral_floor
+from optimize_framability import spectral_floor
 from analysis import compute_steady_state
 
 
@@ -74,73 +74,28 @@ def all_row_files_exist(out_dir, n_pts):
     return True
 
 
-def _row_version(out_dir, ig):
-    """Version stamp of row ig, or None if the row or its sidecar is absent."""
-    ver = Path(out_dir) / f"row_{ig:04d}.ver"
-    if not ver.exists():
-        return None
-    try:
-        return ver.read_text().strip()
-    except Exception:
-        return None
-
-
-def stale_or_missing_rows(out_dir, n_pts):
-    """Row indices that are missing, or were produced by an older OPT_VERSION.
-
-    A row counts as stale when its .npy is absent, or its .ver sidecar is
-    absent / does not match the current OPT_VERSION (e.g. the optimised
-    framability column was generated before the optimiser changed).
-    """
-    stale = []
-    for ig in range(n_pts):
-        npy = Path(out_dir) / f"row_{ig:04d}.npy"
-        if not npy.exists() or _row_version(out_dir, ig) != OPT_VERSION:
-            stale.append(ig)
-    return stale
-
-
-def _invalidate_downstream(out_dir):
-    """Remove caches derived from the row files so they are rebuilt.
-
-    Called when stale rows are re-optimised: scan_full.npy and the unified
-    optimized-framability dataset must not be reused, or the plot would show
-    the old optimisation.
-    """
-    for name in ("scan_full.npy",):
-        f = Path(out_dir) / name
-        if f.exists():
-            print(f"[invalidate] {f} (stale optimisation)")
-            f.unlink()
-    for f in (unified_framability.DEFAULT_PATH, unified_framability.DEFAULT_META):
-        if Path(f).exists():
-            print(f"[invalidate] {f} (stale optimisation)")
-            Path(f).unlink()
-
-
 def ensure_scan_full(args):
     """Ensure out_dir/scan_full.npy exists by reusing or generating prerequisites.
 
-    Rows whose optimised framability was produced by an older OPT_VERSION are
-    re-optimised, and the derived scan_full.npy / unified dataset are
-    invalidated so the rebuilt optimisation is what gets plotted.
+    Only genuinely missing rows are generated.  Rows from an older OPT_VERSION
+    are NOT re-optimised: the framability optimiser is unchanged in this code
+    version (only the floor was added, computed separately by
+    ensure_floor_grid), and the optimised-framability values here may have been
+    improved by neighbour refinement (stored in the unified dataset) — so
+    re-running would discard that refinement for no gain.
     """
     scan_full = Path(args.out_dir) / "scan_full.npy"
-    stale = stale_or_missing_rows(args.out_dir, args.n_pts)
-
-    if scan_full.exists() and not stale:
+    if scan_full.exists():
         print(f"[reuse] {scan_full}")
         return
 
-    if stale:
-        present_stale = [ig for ig in stale
-                         if (Path(args.out_dir) / f"row_{ig:04d}.npy").exists()]
-        if present_stale:
-            print(f"[rerun] {len(present_stale)} row(s) predate OPT_VERSION "
-                  f"{OPT_VERSION} -> re-optimising: {present_stale}")
-        # Regenerate every stale/missing row (one row per task_id).
-        print("[gen] Generating row_XXXX.npy files -> running scan_worker.py locally.")
-        for ig in stale:
+    if not all_row_files_exist(args.out_dir, args.n_pts):
+        # Generate missing base rows locally (one row per task_id).
+        print("[gen] Missing row_XXXX.npy files -> running scan_worker.py locally.")
+        for ig in range(args.n_pts):
+            row_file = Path(args.out_dir) / f"row_{ig:04d}.npy"
+            if row_file.exists():
+                continue
             run_cmd([
                 sys.executable,
                 "scan_worker.py",
@@ -150,8 +105,6 @@ def ensure_scan_full(args):
                 "--gamma_step", str(args.gamma_step),
                 "--out_dir", args.out_dir,
             ])
-        # Derived caches must not reflect the old optimisation.
-        _invalidate_downstream(args.out_dir)
 
     if not all_point_extra_exist(args.out_dir, args.n_pts):
         # Generate missing per-point extras locally.
@@ -521,7 +474,8 @@ def plot_full_scan(args, scan_full, operator_bond, otoc_small, otoc_large, stabi
     fig.suptitle(f"Two-qubit scan summary (J={args.J}, n_pts={args.n_pts}, step={args.gamma_step})")
     fig.tight_layout()
 
-    out_png = Path(args.out_dir) / args.out_name
+    out_png = Path("results_plots") / args.out_name
+    out_png.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(out_png, dpi=170)
     plt.close(fig)
     print(f"[saved] {out_png}")
@@ -586,7 +540,8 @@ def plot_bond_entropy_vs_framability(args, scan_full):
     fig.tight_layout()
 
     stem = Path(args.out_name).stem
-    out_png = Path(args.out_dir) / f"{stem}_bond_vs_fra.png"
+    out_png = Path("results_plots") / f"{stem}_bond_vs_fra.png"
+    out_png.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(out_png, dpi=170)
     plt.close(fig)
     print(f"[saved] {out_png}")
