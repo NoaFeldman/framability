@@ -21,7 +21,8 @@ from pathlib import Path
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from dissipative_PT import (compute_point, DPT_VERSION,
+from dissipative_PT import (compute_point, bond_trotter_gate, spectral_floor,
+                             DPT_VERSION,
                              H_LIST, GAMMA_LIST, N_H, N_G, N_TOTAL,
                              J_DEFAULT, DT_DEFAULT)
 
@@ -30,11 +31,7 @@ DT = DT_DEFAULT
 
 
 def _is_current(out: Path) -> bool:
-    """True iff `out` exists and was produced by the current DPT_VERSION.
-
-    Results from an older code version (or missing the version stamp / floor)
-    are treated as stale so the point is recomputed.
-    """
+    """True iff `out` exists and already carries the floor + current version."""
     if not out.exists():
         return False
     try:
@@ -46,6 +43,42 @@ def _is_current(out: Path) -> bool:
         return False
 
 
+def _try_backfill_floor(out: Path) -> bool:
+    """Non-destructively add the floor + version stamp to a valid old result.
+
+    The dissipative-PT *optimiser* is unchanged in this code version — only the
+    floor was added — and the base npz may already hold values improved by the
+    neighbour-refinement rounds (merged back in by dissipative_PT_refine_collect).
+    Re-running compute_point would overwrite those refined opt_fra values with
+    plain base-scan ones, so for an existing file that already has a valid
+    optimisation we only backfill the floor (rebuilt from the stored gate
+    parameters) and re-stamp the version, preserving every other field.
+
+    Returns True if the file was backfilled (caller should skip recomputation),
+    False if the file is missing/incomplete and a full compute is required.
+    """
+    if not out.exists():
+        return False
+    try:
+        d = dict(np.load(out, allow_pickle=True))
+    except Exception:
+        return False
+    if 'opt_fra_4' not in d or 'opt_fra_6' not in d:
+        return False   # incomplete -> let the caller recompute from scratch
+    if not (np.isfinite(float(d['opt_fra_4'])) and np.isfinite(float(d['opt_fra_6']))):
+        return False
+    h_  = float(d['h'])     if 'h'  in d else None
+    g_  = float(d['gamma']) if 'gamma' in d else None
+    J_  = float(d['J'])     if 'J'  in d else J_DEFAULT
+    dt_ = float(d['dt'])    if 'dt' in d else DT_DEFAULT
+    if h_ is None or g_ is None:
+        return False
+    d['floor'] = np.array(spectral_floor(bond_trotter_gate(J_, h_, g_, dt_)))
+    d['code_version'] = np.array(DPT_VERSION)
+    np.savez(out, **d)
+    return True
+
+
 def run_point(point_id: int, args) -> None:
     """Compute and save one grid point (skips if its npz already exists)."""
     ih    = point_id // N_G
@@ -55,12 +88,19 @@ def run_point(point_id: int, args) -> None:
     out   = Path(args.out_dir) / f'dpt_{ih:02d}_{ig:02d}.npz'
 
     if _is_current(out):
-        print(f'[skip] {out.name} already exists (version {DPT_VERSION})',
+        print(f'[skip] {out.name} already has floor + version {DPT_VERSION}',
               flush=True)
         return
     elif out.exists():
-        print(f'[rerun] {out.name} predates current code (need {DPT_VERSION})'
-              f' -> recomputing', flush=True)
+        # Old file: the optimiser is unchanged, and this file may hold
+        # refinement-improved opt_fra — backfill the floor instead of
+        # recomputing (which would clobber the refined values).
+        if _try_backfill_floor(out):
+            print(f'[backfill] {out.name}: added floor, preserved opt_fra '
+                  f'(version {DPT_VERSION})', flush=True)
+            return
+        print(f'[recompute] {out.name} exists but is incomplete -> recomputing',
+              flush=True)
 
     Path(args.out_dir).mkdir(parents=True, exist_ok=True)
     t_start = time.perf_counter()

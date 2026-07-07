@@ -31,7 +31,7 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from trotter_lindbladian_scan import (
-    MODELS, FRA_REFINE_KEYS, bond_trotter_gate, DT_DEFAULT, DIM_DEFAULT,
+    MODELS, FRA_REFINE_KEYS, bond_trotter_gate, choose_dt, DIM_DEFAULT,
 )
 from dissipative_PT import (
     optimise_framability, embed_frame_params, frame_from_params, params_from_frame,
@@ -126,7 +126,7 @@ def run_point(model, point_id: int, args) -> None:
     m4 = float(d_base['opt_fra_4'])
     m6 = float(d_base['opt_fra_6'])
     dim = int(d_base['dim']) if 'dim' in d_base else DIM_DEFAULT
-    dt  = float(d_base['dt']) if 'dt' in d_base else DT_DEFAULT
+    dt  = float(d_base['dt']) if 'dt' in d_base else None
     p1 = float(model.p1_vals[ix])
     p2 = float(model.p2_vals[iy])
     seed = args.seed + point_id
@@ -137,6 +137,8 @@ def run_point(model, point_id: int, args) -> None:
           f'base d4={m4:.6f} d6={m6:.6f}', flush=True)
 
     H1, H2, jumps1, jumps2 = model.build(p1, p2)
+    if dt is None:   # legacy pt file without a stored dt: re-derive it
+        dt = model.dt if model.dt is not None else choose_dt(H1, H2, jumps1, jumps2)
     gate = bond_trotter_gate(H1, H2, jumps1, jumps2, dim, dt)
 
     f4, x4 = _refine_dext(out_dir, model, ix, iy, 4, 'opt_fra_4', 'opt_S_4',

@@ -140,6 +140,34 @@ def _is_current(out_path: str) -> bool:
         return False
 
 
+def _try_backfill_floor(out_path: str) -> bool:
+    """Non-destructively add floor + version stamp to a valid old result.
+
+    The depol_kron optimiser is unchanged in this code version (only the floor
+    was added), and the optimisation is deterministic, so re-running just
+    reproduces the same framability at full cost.  For an existing file with a
+    valid framability we instead rebuild the channel from the stored angles/p
+    and backfill the floor, preserving the optimised frame.  Returns True if
+    backfilled (skip recompute), False if the file is missing/incomplete.
+    """
+    if not os.path.exists(out_path):
+        return False
+    try:
+        d = dict(np.load(out_path, allow_pickle=True))
+    except Exception:
+        return False
+    if 'framability' not in d or not np.isfinite(float(d['framability'])):
+        return False
+    if not all(k in d for k in ('alpha', 'beta', 'gamma', 'p')):
+        return False
+    channel = build_channel(float(d['alpha']), float(d['beta']),
+                            float(d['gamma']), float(d['p']))
+    d['floor'] = np.array(spectral_floor(channel))
+    d['code_version'] = np.array(OPT_VERSION)
+    np.savez(out_path, **d)
+    return True
+
+
 def make_objective(channel: np.ndarray, d_ext_single: int):
     def obj(params: np.ndarray) -> float:
         S = _build_S(params, d_ext_single)
@@ -189,12 +217,18 @@ def main() -> None:
         f'depol_kron_{d_ext_single}_{sample_idx:02d}_{p_idx:02d}.npz',
     )
     if _is_current(out_path):
-        print(f'Skip: {out_path} already exists (version {OPT_VERSION})',
+        print(f'Skip: {out_path} already has floor + version {OPT_VERSION}',
               flush=True)
         return
     elif os.path.exists(out_path):
-        print(f'Rerun: {out_path} exists but was made with an older code '
-              f'version (need {OPT_VERSION}) -> re-optimising', flush=True)
+        # Optimiser unchanged + deterministic: backfill the floor rather than
+        # re-optimising (same result at full cost).
+        if _try_backfill_floor(out_path):
+            print(f'Backfill: {out_path} added floor, preserved framability '
+                  f'(version {OPT_VERSION})', flush=True)
+            return
+        print(f'Recompute: {out_path} exists but is incomplete -> re-optimising',
+              flush=True)
 
     print(f'[task {args.task_id}] d={d_ext_single}  sample={sample_idx}  '
           f'p={p:.3f}  alpha={alpha:.4f}  beta={beta:.4f}  gamma={gamma:.4f}',

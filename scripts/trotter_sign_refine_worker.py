@@ -41,7 +41,7 @@ from scipy.linalg import expm
 from scipy.optimize import minimize
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from trotter_lindbladian_scan import MODELS, bond_trotter_gate
+from trotter_lindbladian_scan import MODELS, bond_trotter_gate, choose_dt
 from dissipative_PT import _sq_superop, _apply_local_rot, _SX, _SY, _SZ
 from sign_problem import sign_problem as _sp
 
@@ -134,7 +134,7 @@ def run_point(model, point_id: int, args) -> None:
 
     d_base = np.load(base)
     dim = int(d_base['dim']) if 'dim' in d_base else model.dim
-    dt  = float(d_base['dt']) if 'dt' in d_base else model.dt
+    dt  = float(d_base['dt']) if 'dt' in d_base else None
     p1 = float(model.p1_vals[ix])
     p2 = float(model.p2_vals[iy])
 
@@ -155,6 +155,8 @@ def run_point(model, point_id: int, args) -> None:
                 seed_ns.append(nb_n)
 
     H1, H2, jumps1, jumps2 = model.build(p1, p2)
+    if dt is None:   # legacy pt file without a stored dt: re-derive it
+        dt = model.dt if model.dt is not None else choose_dt(H1, H2, jumps1, jumps2)
     gate = bond_trotter_gate(H1, H2, jumps1, jumps2, dim, dt)
 
     val, n_best = _optimise_sign(gate, seed_ns, args.n_restarts,

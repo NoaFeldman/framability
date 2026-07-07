@@ -2,6 +2,8 @@
 Framability measures: L1-norm minimisation and extended Pauli basis.
 """
 
+from functools import lru_cache
+
 import numpy as np
 import scipy.linalg
 from scipy.optimize import linprog
@@ -479,28 +481,252 @@ def projector_stabilizer_framability(gate, n_qubits=2):
     return np.max(one_norms)
 
 
-def make_product_state_D(chi):
+@lru_cache(maxsize=None)
+def _all_stabilizer_D_general(n_qubits):
+    """
+    (4**n_qubits) x N real matrix whose j-th column is the Pauli-basis
+    representation of the j-th pure n-qubit stabilizer state:
+
+        D[i, j] = Tr(P_i  |stab_j><stab_j|),   P_i in {I, X, Y, Z}^{n}
+
+    (same convention and normalisation as _all_stabilizer_D, generalised to
+    arbitrary n).  The number of columns is
+
+        N = 2**n * prod_{k=1}^{n} (2**k + 1)  =  6, 60, 1080, ...  (n = 1, 2, 3)
+
+    so n_qubits=3 gives shape (64, 1080).
+
+    Enumeration = (maximal isotropic subspace of F_2^{2n}) x (2**n signs)
+    ------------------------------------------------------------------------
+    Each nonzero symplectic vector v = (x_1..x_n | z_1..z_n) in F_2^{2n}
+    labels an unsigned n-qubit Pauli string.  Two Paulis commute iff their
+    symplectic inner product  <a,b> = sum_q (x^a_q z^b_q + z^a_q x^b_q)  is 0
+    (mod 2); the unsigned product is the XOR of the vectors.  A stabilizer
+    group is an n-dimensional isotropic subspace (all pairs commute); these
+    are enumerated by taking every n-tuple of independent, pairwise-commuting
+    generators and de-duplicating by their span.  Each of the 2**n sign
+    assignments s_i in {+1, -1} on the n generators P_i selects one stabilizer
+    state with rank-1 projector
+
+        rho = prod_i (I + s_i P_i) / 2.
+
+    The combinations enumeration is O(C(4**n - 1, n)) and is intended for small
+    n (practical through n = 3, where it inspects C(63, 3) = 39711 triples).
+
+    The result is cached (lru_cache) so repeated data points reuse one D build.
+    """
+    from itertools import product as iproduct, combinations
+    from functools import reduce
+
+    n = n_qubits
+    I2 = np.eye(2, dtype=complex)
+    sx = np.array([[0,  1 ], [1,  0 ]], dtype=complex)
+    sy = np.array([[0, -1j], [1j, 0 ]], dtype=complex)
+    sz = np.array([[1,  0 ], [0, -1 ]], dtype=complex)
+    paulis_1q = [I2, sx, sy, sz]
+    # single-qubit (x, z) symplectic bits -> matrix
+    sq = {(0, 0): I2, (1, 0): sx, (1, 1): sy, (0, 1): sz}
+
+    dim = 2 ** n
+    pauli_dim = 4 ** n
+    eye_d = np.eye(dim, dtype=complex)
+
+    def vec_to_mat(v):
+        return reduce(np.kron, [sq[(v[q], v[n + q])] for q in range(n)])
+
+    def symp(a, b):
+        s = 0
+        for q in range(n):
+            s ^= (a[q] & b[n + q]) ^ (a[n + q] & b[q])
+        return s
+
+    def xor(a, b):
+        return tuple(x ^ y for x, y in zip(a, b))
+
+    def gf2_rank(rows):
+        rows = [list(r) for r in rows]
+        rank = 0
+        for col in range(2 * n):
+            piv = next((i for i in range(rank, len(rows)) if rows[i][col]), None)
+            if piv is None:
+                continue
+            rows[rank], rows[piv] = rows[piv], rows[rank]
+            for i in range(len(rows)):
+                if i != rank and rows[i][col]:
+                    rows[i] = [a ^ b for a, b in zip(rows[i], rows[rank])]
+            rank += 1
+        return rank
+
+    zero = (0,) * (2 * n)
+
+    def span_nonzero(gens):
+        elems = set()
+        for mask in range(1, 2 ** len(gens)):
+            acc = zero
+            for b in range(len(gens)):
+                if mask & (1 << b):
+                    acc = xor(acc, gens[b])
+            elems.add(acc)
+        return frozenset(elems)
+
+    nonzero = [v for v in iproduct((0, 1), repeat=2 * n) if v != zero]
+
+    # Enumerate maximal isotropic (Lagrangian) subspaces, de-duplicated by span.
+    subspaces = {}
+    for gens in combinations(nonzero, n):
+        if any(symp(gens[a], gens[b])
+               for a in range(n) for b in range(a + 1, n)):
+            continue
+        if gf2_rank(gens) != n:
+            continue
+        key = span_nonzero(gens)
+        if key not in subspaces:
+            subspaces[key] = gens
+
+    # Row Pauli strings in the same order as the two_qubit_lindbladian basis
+    # (qubit-major iproduct over [I, X, Y, Z]); no normalisation, matching
+    # _all_stabilizer_D so projector_stabilizer_framability stays consistent.
+    paulis_nq = [reduce(np.kron, combo)
+                 for combo in iproduct(paulis_1q, repeat=n)]
+
+    columns = []
+    for gens in subspaces.values():
+        gmats = [vec_to_mat(g) for g in gens]
+        for signs in iproduct((1, -1), repeat=n):
+            rho = eye_d
+            for s, P in zip(signs, gmats):
+                rho = rho @ ((eye_d + s * P) / 2)   # commuting factors
+            columns.append([np.trace(P @ rho).real for P in paulis_nq])
+
+    return np.array(columns, dtype=float).T   # (pauli_dim, N)
+
+
+def stabilizer_3_framability(gate):
+    """
+    Schrödinger framability of a two-qubit `gate` w.r.t. the full three-qubit
+    stabilizer-state frame.
+
+    The frame D = _all_stabilizer_D_general(3) has one column per pure
+    three-qubit stabilizer state (shape (64, 1080)).  The two-qubit gate is
+    lifted to three qubits as identity ⊗ gate — in the Pauli-string
+    coefficient basis this is kron(I_4, gate), shape (64, 64), applying the
+    identity channel to the first qubit and `gate` to qubits 2 and 3.  The
+    Schrödinger framability of this three-qubit gate is then
+
+        max_j  min_v  ||v||_1   s.t.   D v = (I_4 ⊗ gate) D[:, j].
+
+    The 1080 per-column LPs use the same equality-only split-variable primal
+    (v = s⁺ − s⁻, both ≥ 0) as projector_stabilizer_framability.
+
+    Parameters
+    ----------
+    gate : np.ndarray, shape (16, 16)
+        Real two-qubit propagator in the Pauli-string basis (I,X,Y,Z ordering,
+        as produced by numeric_two_qubit_lindbladian).
+
+    Returns
+    -------
+    float
+        Maximum optimal 1-norm over all 1080 frame columns.
+    """
+    gate = np.asarray(gate)
+    if gate.shape != (16, 16):
+        raise ValueError(f'gate must have shape (16, 16), got {gate.shape}.')
+    if np.max(np.abs(gate.imag)) > 1e-12:
+        raise ValueError(
+            'The gate has a non-negligible imaginary part. '
+            'The L1-norm minimisation requires the gate to be real.'
+        )
+    gate = gate.real
+
+    gate3 = np.kron(np.eye(4), gate)          # identity ⊗ gate, (64, 64)
+    D = _all_stabilizer_D_general(3)          # (64, 1080)
+
+    d_ext = D.shape[1]
+    B = gate3 @ D                              # b_j = gate3 @ D[:, j]
+
+    c_primal = np.ones(2 * d_ext)
+    A_eq_csc = csc_matrix(np.hstack([D, -D]))  # (64, 2*d_ext)
+    bounds   = [(0, None)] * (2 * d_ext)
+
+    lp_template = _LPProblem(
+        c_primal, None, None, A_eq_csc, B[:, 0].copy(), bounds, None
+    )
+    lp_clean = _clean_inputs(lp_template)
+
+    one_norms = np.empty(d_ext, dtype=float)
+    for j in range(d_ext):
+        lp_j = lp_clean._replace(b_eq=B[:, j])
+        res  = _linprog_highs(lp_j, solver=None, presolve=False)
+        one_norms[j] = res['fun'] if res['status'] == 0 else np.inf
+
+    return float(np.max(one_norms))
+
+
+def _random_single_qubit_frame(chi, mixed, rng):
+    """(4 × chi) real Pauli-basis frame of `chi` random single-qubit states.
+
+    Column i is (c_I, c_X, c_Y, c_Z) with c_a = Tr(σ_a ρ_i)/2, so the identity
+    coefficient is fixed to 1/2 and the Bloch part (c_X, c_Y, c_Z) obeys the
+    legal-state bound ||(c_X, c_Y, c_Z)||_2 <= 1/2.
+
+        mixed=False : Haar-random *pure* states, Bloch norm exactly 1/2
+                      (uniform on the Bloch sphere).
+        mixed=True  : random *mixed* states, Bloch vector uniform in the
+                      Bloch ball of radius 1/2 (norm <= 1/2).
+
+    `rng` is a numpy Generator used for every draw (reproducible).
+    """
+    dirs = rng.standard_normal((3, chi))                    # isotropic direction
+    dirs /= np.linalg.norm(dirs, axis=0, keepdims=True)
+    if mixed:
+        # r = (1/2) U^{1/3} makes the Bloch vectors uniform over the ball volume.
+        radii = 0.5 * rng.random(chi) ** (1.0 / 3.0)
+    else:
+        radii = np.full(chi, 0.5)                           # Bloch sphere (pure)
+    bloch = dirs * radii                                    # (3, chi)
+    return np.vstack([np.full((1, chi), 0.5), bloch])       # (4, chi)
+
+
+def make_product_state_D(chi, mixed=False, rng=None):
     """
     Build a two-qubit product-state frame matrix (shape 16 × chi²) from `chi`
-    independent Haar-random single-qubit pure states.
+    independent random single-qubit states.
 
     The single-qubit frame matrix D_1 (shape 4 × chi) has columns equal to
     the Pauli-basis representation of each state:
 
         D_1[a, i] = Tr(σ_a  rho_i) / 2,   σ_a ∈ {I, X, Y, Z}
 
-    consistent with the convention used by _single_qubit_dyadic_D.
-    The two-qubit frame matrix is D = kron(D_1, D_1), shape (16, chi²).
+    consistent with the convention used by _single_qubit_dyadic_D.  Every
+    column therefore has identity coefficient 1/2 and Bloch part of 2-norm
+    <= 1/2.  The two-qubit frame matrix is D = kron(D_1, D_1), shape (16, chi²).
 
     Parameters
     ----------
     chi : int
         Number of random single-qubit states to draw.
+    mixed : bool
+        False (default): Haar-random *pure* states (Bloch norm 1/2), matching
+        the original behaviour.  True: random *mixed* states uniform in the
+        Bloch ball (norm <= 1/2), i.e. the option requested for
+        product-state framability of general single-qubit density matrices.
+    rng : np.random.Generator | int | None
+        Randomness source used only when ``mixed=True`` (an int is promoted to
+        a seeded Generator).  Ignored for the pure branch, which keeps its
+        original haar_measure draw off the legacy global RNG so existing
+        seed-based pipelines reproduce bit-for-bit.
 
     Returns
     -------
     D : np.ndarray, shape (16, chi²), dtype float
     """
+    if mixed:
+        if not isinstance(rng, np.random.Generator):
+            rng = np.random.default_rng(rng)
+        D_1 = _random_single_qubit_frame(chi, mixed=True, rng=rng)
+        return np.kron(D_1, D_1)
+
     paulis = [
         np.eye(2, dtype=complex),
         np.array([[0,  1 ], [1,  0 ]], dtype=complex),
@@ -519,7 +745,50 @@ def make_product_state_D(chi):
     return np.kron(D_1, D_1)
 
 
-def product_state_framability(chi, gate, D=None):
+def _schroedinger_framability_fast(D, gate):
+    """Schrödinger framability of `gate` for frame `D`, memory-light per-column LP.
+
+    Identical value to schroedinger_framability(D, gate) for real D, but scales
+    to large frames: it uses the equality-only split-variable primal
+    (v = s⁺ − s⁻, both ≥ 0) solved column-by-column via a pre-cleaned
+    _linprog_highs template — the same formulation as
+    dyadic_stabilizer_framability.  Each LP has only pauli_string_dim (16)
+    equality rows and 2*d_ext non-negative variables and *no* dense inequality
+    block, so peak memory is O(d_ext) rather than the O(d_ext²) dense A_ub the
+    generic schroedinger_framability builds.
+
+    D must be real (product-state frames are real Hermitian-operator frames).
+    """
+    D = np.asarray(D, dtype=float)
+    if D.ndim != 2 or D.shape[0] != pauli_string_dim:
+        raise ValueError(f'D must have shape ({pauli_string_dim}, D_ext), got {D.shape}.')
+    if np.max(np.abs(gate.imag)) > 1e-12:
+        raise ValueError(
+            'The gate has a non-negligible imaginary part; the L1-norm '
+            'minimisation requires a real gate.')
+    gate = np.asarray(gate).real
+
+    d_ext = D.shape[1]
+    B = gate @ D                                    # b_j = gate @ D[:, j]
+
+    c_primal = np.ones(2 * d_ext)
+    A_eq_csc = csc_matrix(np.hstack([D, -D]))       # (16, 2*d_ext)
+    bounds   = [(0, None)] * (2 * d_ext)
+    lp_template = _LPProblem(
+        c_primal, None, None, A_eq_csc, B[:, 0].copy(), bounds, None
+    )
+    lp_clean = _clean_inputs(lp_template)
+
+    one_norms = np.empty(d_ext, dtype=float)
+    for j in range(d_ext):
+        lp_j = lp_clean._replace(b_eq=B[:, j])
+        res  = _linprog_highs(lp_j, solver=None, presolve=False)
+        one_norms[j] = res['fun'] if res['status'] == 0 else np.inf
+
+    return float(np.max(one_norms))
+
+
+def product_state_framability(chi, gate, D=None, mixed=False, rng=None):
     """
     Schrödinger framability of `gate` w.r.t. a product-state frame.
 
@@ -535,8 +804,14 @@ def product_state_framability(chi, gate, D=None):
         Real Lindbladian propagator in the two-qubit Pauli-string basis.
     D : np.ndarray, shape (16, chi²), optional
         Pre-built frame matrix.  If None, a fresh random D is generated via
-        make_product_state_D(chi).  Pass a fixed D to reuse the same random
-        states across all data points.
+        make_product_state_D(chi, mixed=mixed, rng=rng).  Pass a fixed D to
+        reuse the same random states across all data points.
+    mixed : bool
+        Forwarded to make_product_state_D when D is None.  False (default)
+        draws Haar-random pure single-qubit states; True draws mixed states
+        with Bloch norm <= 1/2.
+    rng : np.random.Generator | int | None
+        Randomness source for the ``mixed=True`` draw (see make_product_state_D).
 
     Returns
     -------
@@ -544,8 +819,8 @@ def product_state_framability(chi, gate, D=None):
         Schrödinger framability of `gate` w.r.t. the product-state frame.
     """
     if D is None:
-        D = make_product_state_D(chi)
-    return schroedinger_framability(D, gate)
+        D = make_product_state_D(chi, mixed=mixed, rng=rng)
+    return _schroedinger_framability_fast(D, gate)
 
 
 """A Random matrix distributed with Haar measure"""
