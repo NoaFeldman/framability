@@ -176,9 +176,12 @@ def choose_dt(H1, H2, jumps1, jumps2, base: float = DT_BASE) -> float:
     vanishes (zero generator: the gate is the identity at any dt).
     """
     hnorm = sum(_pauli_1norm(H) for H in (H1, H2) if H is not None)
-    rates = [float(np.linalg.norm(np.asarray(L, dtype=complex), 2) ** 2)
-             for L in list([x for x in jumps1 if x != 0] or []) + \
-                      list([x for x in jumps2 if x != 0] or [])]
+    rates = []
+    for L in list(jumps1 or []) + list(jumps2 or []):
+        L = np.asarray(L, dtype=complex)
+        if np.linalg.norm(L) < 1e-12:          # zero operator (e.g. gamma=0): skip
+            continue
+        rates.append(float(np.linalg.norm(L, 2) ** 2))
     scale = max([hnorm] + rates)
     if scale <= 1e-12:
         return DT_DEFAULT
