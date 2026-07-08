@@ -2,20 +2,23 @@
 Collect one model's Trotter-scan worker results into a summary npz and a
 colormap figure.
 
-The figure has one row per group letter (a, b, c, d), so quantities that share
-a letter sit on the same line:
-    a : sign problem (min) | NESS LPDO bond entropy | Liouvillian gap
+The figure has one row per group letter (derived from QUANTITIES), so quantities
+that share a letter sit on the same line:
+    a : sign problem (min) | NESS LPDO | max LPDO (path) | Liouvillian gap
     b : <Z> | <X> | NESS VN entropy | NESS negativity
-    c : stabilizer framability | Pauli framability
+    c : stabilizer-3 framability | Pauli framability
     d : opt framability d=4 | opt framability d=6 | gamma_CH1 (product)
+    e : product-state framability chi=10 | chi=20 | chi=40
+    f : opt Schrodinger framability d=4 | d=6 | d=8
+    g : dephasing opt framability H (d=4) | S (d=4)
 
-Framability panels (c1, c2, d1, d2, d3) share one colour scale that always
-includes 1.0, and each draws a thin white contour at framability = 1 separating
-the framable (=1) region from >1.
+All framability panels share one colour scale that always includes 1.0, and each
+draws a thin white contour at framability = 1 separating the framable (=1) region
+from >1.
 
 Usage:
     python scripts/trotter_scan_collect.py --model model1 \
-        --in_dir results_trotter --out_png results_plots/trotter_model1.png
+        --in_dir results_trotter_v3 --out_png results_plots/trotter_model1.png
 """
 
 from __future__ import annotations
@@ -32,7 +35,9 @@ import matplotlib.pyplot as plt
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from trotter_lindbladian_scan import MODELS, QUANTITIES
 
-GROUPS = ['a', 'b', 'c', 'd']
+# One figure row per group letter, in order; derived from QUANTITIES so new
+# groups (e, f, g, ...) can't drift out of sync with the stored quantities.
+GROUPS = sorted({group for _, _, group, _ in QUANTITIES})
 N_Q = len(QUANTITIES)
 
 
