@@ -3,9 +3,10 @@ Merge Trotter-scan refinement rounds back into the base scan and regenerate the
 figure.
 
 For each point and each refined framability key (opt_fra_4 / opt_fra_6), the
-elementwise minimum over the base value and every refine round 1..max_round is
-written back into the base npz (carrying the matching optimal frame), then
-trotter_scan_collect.py is re-run to rebuild the summary and the colormap.
+elementwise minimum over the base value and every refine file (full rounds
+pt_refine_r* and quick rounds pt_qrefine_r*) is written back into the base
+npz (carrying the matching optimal frame), then trotter_scan_collect.py is
+re-run to rebuild the summary and the colormap.
 
 Usage (after all refine rounds finished):
     python scripts/trotter_scan_refine_collect.py --model model1 \
@@ -32,7 +33,8 @@ def main() -> None:
     p.add_argument('--model',     type=str, required=True, choices=list(MODELS))
     p.add_argument('--in_dir',    type=str, default='results_trotter_v3')
     p.add_argument('--out_png',   type=str, default=None)
-    p.add_argument('--max_round', type=int, default=6)
+    p.add_argument('--max_round', type=int, default=None,
+                   help='unused (kept for compatibility; all rounds are globbed)')
     args = p.parse_args()
 
     model = MODELS[args.model]
@@ -46,11 +48,14 @@ def main() -> None:
                 continue
             b = dict(np.load(base))
             changed = False
-            for rnd in range(1, args.max_round + 1):
-                ref = mdir / f'pt_refine_r{rnd:02d}_{ix:03d}_{iy:03d}.npz'
-                if not ref.exists():
+            refs = sorted(mdir.glob(f'pt_refine_r*_{ix:03d}_{iy:03d}.npz'))
+            refs += sorted(mdir.glob(f'pt_qrefine_r*_{ix:03d}_{iy:03d}.npz'))
+            for ref in refs:
+                try:
+                    r = np.load(ref)
+                except Exception:
+                    print(f'  WARNING: unreadable {ref.name} — skipped', flush=True)
                     continue
-                r = np.load(ref)
                 for key, s_key in FRA_REFINE_KEYS.items():
                     if key not in r or key not in b:
                         continue
@@ -62,7 +67,7 @@ def main() -> None:
                             b[s_key] = np.asarray(r[s_key])
                         changed = True
                         n_improved += 1
-                        print(f'  ({ix:3d},{iy:3d}) r{rnd} {key}: '
+                        print(f'  ({ix:3d},{iy:3d}) {ref.name} {key}: '
                               f'{old:.6f} -> {rv:.6f}', flush=True)
             if changed:
                 np.savez(base, **b)

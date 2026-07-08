@@ -50,6 +50,7 @@ def _refine_paths(out_dir: Path, model, ix: int, iy: int):
     d = out_dir / model.name
     paths = [_base_path(out_dir, model, ix, iy)]
     paths += sorted(d.glob(f'pt_refine_r*_{ix:03d}_{iy:03d}.npz'))
+    paths += sorted(d.glob(f'pt_qrefine_r*_{ix:03d}_{iy:03d}.npz'))
     return [p for p in paths if p.exists()]
 
 
