@@ -10,8 +10,8 @@ For each grid point and each frame size d_ext_single in {4, 6}:
 Then a cross-d_ext step: if opt_fra_4 < opt_fra_6, embed the optimal d=4 frame
 into d=6 and re-optimise d=6 from it (guarantees opt_fra_6 <= opt_fra_4).
 
-Run 5 sequential rounds (--round 1 .. 5), each reading every earlier round so
-information propagates across the grid.
+Run several sequential rounds (--round 1, 2, ...; the scan driver uses 6), each
+reading every earlier round so information propagates across the grid.
 
 Grid (matches the model's p1_vals / p2_vals):
     ix in 0 .. N_X-1 ; iy in 0 .. N_Y-1 ; point_id = ix * N_Y + iy
@@ -177,8 +177,8 @@ def main() -> None:
     p.add_argument('--task_id',      type=int, required=True)
     p.add_argument('--n_chunks',     type=int, default=1)
     p.add_argument('--round',        type=int, required=True,
-                   help='refinement round (1..5)')
-    p.add_argument('--out_dir',      type=str, default='results_trotter')
+                   help='refinement round (1, 2, ...)')
+    p.add_argument('--out_dir',      type=str, default='results_trotter_v3')
     p.add_argument('--n_restarts',   type=int, default=5)
     p.add_argument('--fra_maxfev_4', type=int, default=1000)
     p.add_argument('--fra_maxfev_6', type=int, default=500)

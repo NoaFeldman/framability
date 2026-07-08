@@ -7,9 +7,9 @@ elementwise minimum over the base value and every refine round 1..max_round is
 written back into the base npz (carrying the matching optimal frame), then
 trotter_scan_collect.py is re-run to rebuild the summary and the colormap.
 
-Usage (after all 5 refine rounds finished):
+Usage (after all refine rounds finished):
     python scripts/trotter_scan_refine_collect.py --model model1 \
-        --in_dir results_trotter --max_round 5
+        --in_dir results_trotter_v3 --max_round 6
 """
 
 from __future__ import annotations
@@ -30,9 +30,9 @@ TOL = 1e-9
 def main() -> None:
     p = argparse.ArgumentParser()
     p.add_argument('--model',     type=str, required=True, choices=list(MODELS))
-    p.add_argument('--in_dir',    type=str, default='results_trotter')
+    p.add_argument('--in_dir',    type=str, default='results_trotter_v3')
     p.add_argument('--out_png',   type=str, default=None)
-    p.add_argument('--max_round', type=int, default=5)
+    p.add_argument('--max_round', type=int, default=6)
     args = p.parse_args()
 
     model = MODELS[args.model]

@@ -19,8 +19,8 @@ shift || true
 for kv in "$@"; do export "$kv"; done
 export MODEL
 
-OUT_DIR=${OUT_DIR:-results_trotter}
-N_ROUNDS=${N_ROUNDS:-5}
+OUT_DIR=${OUT_DIR:-results_trotter_v3}
+N_ROUNDS=${N_ROUNDS:-6}
 mkdir -p logs "${OUT_DIR}/${MODEL}" results_plots
 
 # ── base scan ────────────────────────────────────────────────────────────────

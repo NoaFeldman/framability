@@ -3,9 +3,9 @@
 #  SLURM job-array: neighbour-seeded refinement of the Trotter-scan
 #  optimised framabilities (opt_fra_4 / opt_fra_6).
 #
-#  Run 5 sequential rounds (ROUND=1..5); each round reads every earlier round
-#  so the best frames propagate across the grid.  Requires the base scan
-#  (trotter_scan.slurm.sh) for this MODEL to have finished.
+#  Run several sequential rounds (ROUND=1, 2, ...; the drivers use 6); each round
+#  reads every earlier round so the best frames propagate across the grid.
+#  Requires the base scan (trotter_scan.slurm.sh) for this MODEL to have finished.
 #
 #  Submit round 1 (chained after the scan), then chain 2..5:
 #    MODEL=model1 ROUND=1 sbatch --dependency=afterok:<SCAN_JOBID> \
@@ -27,7 +27,7 @@
 
 MODEL=${MODEL:-model1}
 ROUND=${ROUND:-1}
-OUT_DIR=${OUT_DIR:-results_trotter}
+OUT_DIR=${OUT_DIR:-results_trotter_v3}
 N_CHUNKS=${N_CHUNKS:-200}
 N_RESTARTS=${N_RESTARTS:-5}
 FRA_MAXFEV_4=${FRA_MAXFEV_4:-1000}

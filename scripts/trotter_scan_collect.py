@@ -40,6 +40,10 @@ from trotter_lindbladian_scan import MODELS, QUANTITIES
 GROUPS = sorted({group for _, _, group, _ in QUANTITIES})
 N_Q = len(QUANTITIES)
 
+# A framability panel counts as having a framable point if its minimum reaches 1
+# to within this tolerance (optimised values sit at 1 +/- ~1e-9 when framable).
+FRA_ONE_TOL = 1e-6
+
 
 def load_results(in_dir: Path, model) -> np.ndarray:
     """Return (N_X, N_Y, N_Q) array; NaN where data is missing."""
@@ -135,7 +139,16 @@ def plot_colormaps(arr: np.ndarray, model, out_png: Path) -> None:
                                vmin=vmin, vmax=vmax, shading='flat')
             ax.set_xlabel(model.p1_label)
             ax.set_ylabel(model.p2_label)
-            ax.set_title(f'({g}) {label}', fontsize=10)
+
+            title = f'({g}) {label}'
+            if is_fra:
+                # A framability panel that never reaches 1 has no framable point;
+                # annotate the title with how far the best point is from framable,
+                # i.e. (min framability) - 1.
+                finite = data[np.isfinite(data)]
+                if finite.size and float(finite.min()) > 1.0 + FRA_ONE_TOL:
+                    title += f'\nmin$-1$ = {float(finite.min()) - 1.0:.3g}'
+            ax.set_title(title, fontsize=10)
 
             if is_fra:
                 fra_im = im
