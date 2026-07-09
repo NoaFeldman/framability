@@ -349,6 +349,75 @@ def _check_subgradient_against_fd(seed=0, eps=1e-6):
     return err
 
 
+def polyak_floor_polish(S, gate, *, target=None, n_iter=300, tol=1e-9,
+                        stall_patience=20, verbose=False):
+    """Floor-targeted Polyak subgradient polish of a real two-qubit frame.
+
+    Projected subgradient descent on Phi(S) = framability(S kron S, gate)
+    with the Polyak step size  alpha = beta (f - target) / ||g||^2, using the
+    analytic LP-dual subgradient (framability_value_and_grad).  For a
+    trace-preserving gate the spectral-radius floor is exactly 1, so target
+    is KNOWN — the regime where the Polyak rule excels; this closes the
+    'last-mile' gap (values 1 + eps) that smooth local methods (Powell /
+    Nelder-Mead) leave at the floor, where the optimum generically has tied
+    binding columns (a kink).
+
+    If the target is unattainable at this gate the raw Polyak step
+    overshoots, so the relaxation factor beta is halved after every
+    `stall_patience` consecutive non-improving steps and the best iterate is
+    tracked throughout (subgradient descent is non-monotone).
+
+    Parameters
+    ----------
+    S : ndarray, shape (4, d_ext_single)
+        Real single-qubit frame (column 0 the fixed identity) to polish.
+    gate : ndarray, shape (16, 16)
+        Real two-qubit gate.
+    target : float | None
+        Known lower bound to descend toward; None -> spectral_floor(gate).
+    n_iter : int
+        Max subgradient steps (each costs ~3 LP solves).
+    tol : float
+        Stop once f <= target + tol.
+
+    Returns
+    -------
+    (f_best, S_best) : the best framability found and its frame.
+    """
+    gate = np.asarray(gate).real
+    if target is None:
+        target = spectral_floor(gate)
+    S = np.asarray(S, dtype=float).copy()
+
+    f_best, S_best = np.inf, S.copy()
+    beta, stall = 1.0, 0
+
+    for k in range(n_iter):
+        val, dS = framability_value_and_grad(S, gate, n_qubits=2)
+        if np.isfinite(val) and val < f_best - 1e-15:
+            f_best, S_best, stall = val, S.copy(), 0
+        else:
+            stall += 1
+            if stall >= stall_patience:
+                beta, stall = 0.5 * beta, 0
+                if beta < 1e-3:
+                    break
+        if val <= target + tol:
+            break
+        g = dS[:, N_FIXED_COLS:]
+        gnorm_sq = float(np.sum(g * g))
+        if gnorm_sq < 1e-20:
+            break                     # stationary (or no valid witness)
+        alpha = beta * (val - target) / gnorm_sq
+        free = S[:, N_FIXED_COLS:] - alpha * g
+        S = np.hstack([_FIXED_COLS, _project_columns_bloch(free)])
+        if verbose and (k + 1) % 25 == 0:
+            print(f'    polish step {k+1}: f={val:.8f}  best={f_best:.8f}  '
+                  f'beta={beta:.3f}', flush=True)
+
+    return float(f_best), S_best
+
+
 # ---------------------------------------------------------------------------
 #  Helpers
 # ---------------------------------------------------------------------------

@@ -4,9 +4,10 @@ figure.
 
 For each point and each refined framability key (opt_fra_4 / opt_fra_6), the
 elementwise minimum over the base value and every refine file (full rounds
-pt_refine_r* and quick rounds pt_qrefine_r*) is written back into the base
-npz (carrying the matching optimal frame), then trotter_scan_collect.py is
-re-run to rebuild the summary and the colormap.
+pt_refine_r*, quick rounds pt_qrefine_r*, cross-eval sweeps pt_xeval_r*,
+island polishes pt_polish_r* and floor hunts pt_fhunt_r*) is written back
+into the base npz (carrying the matching optimal frame), then
+trotter_scan_collect.py is re-run to rebuild the summary and the colormap.
 
 Usage (after all refine rounds finished):
     python scripts/trotter_scan_refine_collect.py --model model1 \
@@ -50,6 +51,9 @@ def main() -> None:
             changed = False
             refs = sorted(mdir.glob(f'pt_refine_r*_{ix:03d}_{iy:03d}.npz'))
             refs += sorted(mdir.glob(f'pt_qrefine_r*_{ix:03d}_{iy:03d}.npz'))
+            refs += sorted(mdir.glob(f'pt_xeval_r*_{ix:03d}_{iy:03d}.npz'))
+            refs += sorted(mdir.glob(f'pt_polish_r*_{ix:03d}_{iy:03d}.npz'))
+            refs += sorted(mdir.glob(f'pt_fhunt_r*_{ix:03d}_{iy:03d}.npz'))
             for ref in refs:
                 try:
                     r = np.load(ref)

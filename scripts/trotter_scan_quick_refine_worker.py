@@ -53,11 +53,13 @@ def _base_path(out_dir: Path, model, ix: int, iy: int) -> Path:
 
 
 def _all_paths(out_dir: Path, model, ix: int, iy: int):
-    """Base scan file + every refine / quick-refine file for this point."""
+    """Base scan file + every refinement file for this point (all flavours:
+    full refine, quick refine, cross-eval sweep, island polish, floor hunt)."""
     d = out_dir / model.name
     paths = [_base_path(out_dir, model, ix, iy)]
-    paths += sorted(d.glob(f'pt_refine_r*_{ix:03d}_{iy:03d}.npz'))
-    paths += sorted(d.glob(f'pt_qrefine_r*_{ix:03d}_{iy:03d}.npz'))
+    for pat in ('pt_refine_r*', 'pt_qrefine_r*', 'pt_xeval_r*',
+                'pt_polish_r*', 'pt_fhunt_r*'):
+        paths += sorted(d.glob(f'{pat}_{ix:03d}_{iy:03d}.npz'))
     return [p for p in paths if p.exists()]
 
 
@@ -79,15 +81,21 @@ def _best_known(out_dir: Path, model, ix: int, iy: int, key: str, s_key: str):
     return best_val, best_S
 
 
-def _best_neighbor(out_dir: Path, model, ix: int, iy: int, key: str, s_key: str):
-    best_val, best_S = np.inf, None
+def _neighbor_frames(out_dir: Path, model, ix: int, iy: int, key: str, s_key: str):
+    """(value, frame) of the best-known result of EVERY 4-connected neighbour,
+    ordered by ascending value.  All of them are used as seeds: optimal frames
+    come in distinct symmetry branches and the branch can switch across the
+    grid, so the single best neighbour may be the wrong one to copy while
+    another neighbour's frame transfers cleanly."""
+    out = []
     for dx, dy in NEIGHBORS:
         nx, ny = ix + dx, iy + dy
         if 0 <= nx < model.N_X and 0 <= ny < model.N_Y:
             v, S = _best_known(out_dir, model, nx, ny, key, s_key)
-            if S is not None and v < best_val:
-                best_val, best_S = v, S
-    return best_val, best_S
+            if S is not None:
+                out.append((v, S))
+    out.sort(key=lambda t: t[0])
+    return out
 
 
 def run_point(model, point_id: int, args) -> None:
@@ -111,8 +119,9 @@ def run_point(model, point_id: int, args) -> None:
     todo = []
     for key, (s_key, _) in KEYS.items():
         self_val, self_S = _best_known(out_dir, model, ix, iy, key, s_key)
-        nb_val,   nb_S   = _best_neighbor(out_dir, model, ix, iy, key, s_key)
-        info[key] = (self_val, self_S, nb_val, nb_S)
+        nb_list = _neighbor_frames(out_dir, model, ix, iy, key, s_key)
+        nb_val = nb_list[0][0] if nb_list else np.inf
+        info[key] = (self_val, self_S, nb_val, nb_list)
         if self_val > 1.0 + args.fra_tol and nb_val <= 1.0 + args.fra_tol:
             todo.append(key)
 
@@ -146,11 +155,14 @@ def run_point(model, point_id: int, args) -> None:
     maxfev = {'opt_fra_4': args.fra_maxfev_4, 'opt_fra_6': args.fra_maxfev_6}
     results = {}
     for off, (key, (s_key, d_ext)) in enumerate(KEYS.items()):
-        self_val, self_S, nb_val, nb_S = info[key]
+        self_val, self_S, nb_val, nb_list = info[key]
         if key not in todo:
             results[key] = (self_val, self_S)
             continue
-        seeds = [params_from_frame(S) for S in (self_S, nb_S) if S is not None]
+        # seed with the point's own frame plus EVERY neighbour's frame
+        seed_frames = ([self_S] if self_S is not None else [])
+        seed_frames += [S for _, S in nb_list]
+        seeds = [params_from_frame(S) for S in seed_frames]
         f, x = optimise_framability(gate, d_ext, n_restarts=args.n_restarts,
                                     maxfev=maxfev[key], seed=seed + off,
                                     extra_init_xs=seeds if seeds else None,
