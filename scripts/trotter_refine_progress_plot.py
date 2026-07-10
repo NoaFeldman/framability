@@ -170,9 +170,9 @@ def _draw_map(ax, vals, model, x_edges, y_edges, vmin, vmax, isl, fra_tol):
                        vmin=vmin, vmax=vmax, shading='flat')
     # thin white separator between framability = 1 and > 1 (as in collect)
     finite = vals[np.isfinite(vals)]
-    if finite.size and finite.min() <= 1.0 + fra_tol < finite.max():
+    if finite.size and finite.min() <= 1.0 < finite.max():
         ax.contour(model.p1_vals, model.p2_vals, vals.T,
-                   levels=[1.0 + fra_tol], colors='w', linewidths=0.7)
+                   levels=[1.0], colors='w', linewidths=0.7)
     if isl:
         xs = [model.p1_vals[ix] for ix, _ in isl]
         ys = [model.p2_vals[iy] for _, iy in isl]
