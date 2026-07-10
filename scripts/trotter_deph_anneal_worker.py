@@ -49,7 +49,14 @@ from dissipative_PT import (
 )
 from trotter_lindbladian_scan import MODELS, MODEL4_H, bond_trotter_gate, choose_dt
 
-DEPH_ANNEAL_VERSION = '1.0'
+# 1.1: point selection now merges every pt_*.npz variant of a grid point
+#      (canonical scan files plus refine-stage files such as pt_fhunt_*, which
+#      carry only ix/iy/opt_fra_6/opt_S_6) and takes the best value per point,
+#      with the metadata (p1/p2/dt/dim) always from the canonical file / model
+#      grid; the ramp-up stop tolerance default dropped from 1e-3 to 1e-5 --
+#      the scan minima sit at ~1 + 5e-4, so 1e-3 was already satisfied at
+#      kappa = 0 and every 1.0 chain terminated immediately.
+DEPH_ANNEAL_VERSION = '1.1'
 D_EXT = 6                      # d_ext_single of the optimised Heisenberg frame
 
 
@@ -77,49 +84,64 @@ def model_coefficients(model_name: str, p1: float, p2: float) -> list[tuple[str,
 # ---------------------------------------------------------------------------
 #  Point selection: minimal stored opt_fra_6 over the scan grid
 # ---------------------------------------------------------------------------
-def select_point(scan_dir: Path, model, ix: int | None, iy: int | None) -> dict:
-    """The scan point with minimal opt_fra_6 (deterministic: sorted file order,
-    strict '<' tie-break), or the explicit (--ix, --iy) point if given.
+def _grid_meta(scan_dir: Path, model, ix: int, iy: int) -> dict:
+    """p1/p2/dt/dim of a grid point: from the canonical pt file when it is on
+    disk (it stores the resolved adaptive dt), else rebuilt from the model."""
+    f = scan_dir / model.name / f'pt_{ix:03d}_{iy:03d}.npz'
+    if f.exists():
+        try:
+            d = np.load(f)
+            return dict(p1=float(d['p1']), p2=float(d['p2']),
+                        dt=float(d['dt']), dim=int(d['dim']))
+        except Exception:
+            pass
+    p1 = float(model.p1_vals[ix])
+    p2 = float(model.p2_vals[iy])
+    H1, H2, j1, j2 = model.build(p1, p2)
+    dt = model.dt if model.dt is not None else choose_dt(H1, H2, j1, j2)
+    return dict(p1=p1, p2=p2, dt=dt, dim=model.dim)
 
-    Returns dict(ix, iy, p1, p2, dt, dim, fra_orig, S6) where S6 is the stored
-    optimal frame (or None) used to warm-start the kappa = 0 optimisation.
+
+def select_point(scan_dir: Path, model, ix: int | None, iy: int | None) -> dict:
+    """The scan point with minimal known opt_fra_6, or the explicit
+    (--ix, --iy) point if given.
+
+    Every pt_*.npz variant of a grid point is considered -- the canonical scan
+    file pt_<ix>_<iy>.npz *and* refine-stage files such as pt_fhunt_r*_..., which
+    carry only ix/iy/opt_fra_6/opt_S_6 -- and the best (minimal) value per
+    point wins, together with its frame.  The metadata (p1/p2/dt/dim) always
+    comes from the canonical file / model grid.  Deterministic across seeds:
+    sorted file order, strict '<', ties between points broken by (ix, iy).
+
+    Returns dict(ix, iy, p1, p2, dt, dim, fra_orig, S6) where S6 is the frame
+    of the best value (or None) used to warm-start the kappa = 0 optimisation.
     """
     mdir = scan_dir / model.name
-
-    def _unpack(f: Path) -> dict:
-        d = np.load(f)
-        S6 = np.asarray(d['opt_S_6'], dtype=float) if 'opt_S_6' in d else None
-        if S6 is not None and not np.all(np.isfinite(S6)):
-            S6 = None
-        return dict(ix=int(d['ix']), iy=int(d['iy']),
-                    p1=float(d['p1']), p2=float(d['p2']),
-                    dt=float(d['dt']), dim=int(d['dim']),
-                    fra_orig=float(d['opt_fra_6']), S6=S6)
-
-    if ix is not None and iy is not None:
-        f = mdir / f'pt_{ix:03d}_{iy:03d}.npz'
-        if f.exists():
-            return _unpack(f)
-        # point not on disk: rebuild its parameters from the model grid
-        p1 = float(model.p1_vals[ix])
-        p2 = float(model.p2_vals[iy])
-        H1, H2, j1, j2 = model.build(p1, p2)
-        dt = model.dt if model.dt is not None else choose_dt(H1, H2, j1, j2)
-        return dict(ix=ix, iy=iy, p1=p1, p2=p2, dt=dt, dim=model.dim,
-                    fra_orig=float('nan'), S6=None)
-
-    best_val, best_file = float('inf'), None
+    best: dict[tuple[int, int], list] = {}       # (ix, iy) -> [fra, S6]
     for f in sorted(mdir.glob('pt_*.npz')):
         try:
             d = np.load(f)
             v = float(d['opt_fra_6'])
+            kx, ky = int(d['ix']), int(d['iy'])
         except Exception:
             continue
-        if np.isfinite(v) and v < best_val:
-            best_val, best_file = v, f
-    if best_file is None:
-        raise FileNotFoundError(f'no usable pt_*.npz with opt_fra_6 in {mdir}')
-    return _unpack(best_file)
+        if not np.isfinite(v):
+            continue
+        S6 = np.asarray(d['opt_S_6'], dtype=float) if 'opt_S_6' in d else None
+        if S6 is not None and not np.all(np.isfinite(S6)):
+            S6 = None
+        if (kx, ky) not in best or v < best[(kx, ky)][0]:
+            best[(kx, ky)] = [v, S6]
+
+    if ix is not None and iy is not None:
+        fra, S6 = best.get((ix, iy), [float('nan'), None])
+    else:
+        if not best:
+            raise FileNotFoundError(f'no usable pt_*.npz with opt_fra_6 in {mdir}')
+        ix, iy = min(best, key=lambda k: (best[k][0], k))
+        fra, S6 = best[(ix, iy)]
+    return dict(ix=ix, iy=iy, fra_orig=fra, S6=S6,
+                **_grid_meta(scan_dir, model, ix, iy))
 
 
 # ---------------------------------------------------------------------------
@@ -265,8 +287,10 @@ def main() -> None:
                    help='hard cap when extending the grid past kappa_max')
     p.add_argument('--per_decade', type=int, default=5,
                    help='geometric grid density (points per decade of kappa)')
-    p.add_argument('--tol',      type=float, default=1e-3,
-                   help='stop the ramp-up once fra <= 1 + tol')
+    p.add_argument('--tol',      type=float, default=1e-5,
+                   help='stop the ramp-up once fra <= 1 + tol; must be well '
+                        'below the point\'s own fra - 1 (framable optima sit '
+                        'at 1 +/- ~1e-9, the scan minima at ~1 + 5e-4)')
     p.add_argument('--maxfev',   type=int, default=400,
                    help='Powell budget of every optimise_framability start')
     p.add_argument('--n_jitter', type=int, default=1,
@@ -293,7 +317,11 @@ def main() -> None:
 
     print(f"[{model.name} seed {args.seed}] point ix={sel['ix']} iy={sel['iy']} "
           f"({model.p1_name}={sel['p1']:.3f}, {model.p2_name}={sel['p2']:.3f})  "
-          f"dt={sel['dt']:.6g}  scan opt_fra_6={sel['fra_orig']:.6f}", flush=True)
+          f"dt={sel['dt']:.6g}  scan opt_fra_6={sel['fra_orig']:.8f}", flush=True)
+    if np.isfinite(sel['fra_orig']) and sel['fra_orig'] <= 1.0 + args.tol:
+        print(f'WARNING: the point is already at/below the stop threshold '
+              f'1 + {args.tol:g}; the ramp-up will terminate at kappa = 0 and '
+              f'the chain will be trivial -- lower --tol', flush=True)
 
     t0 = time.perf_counter()
     res = run_chain(model, sel, args)

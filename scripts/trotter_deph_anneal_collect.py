@@ -40,6 +40,7 @@ import matplotlib.pyplot as plt
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from trotter_lindbladian_scan import MODELS
+from trotter_deph_anneal_worker import DEPH_ANNEAL_VERSION   # sibling script
 
 # Series colors: first two steps of the validated default categorical palette
 # (dataviz reference palette); reference lines stay in recessive grays.
@@ -56,11 +57,20 @@ def load_model(in_dir: Path, model_name: str) -> dict | None:
     and reduce the seeds to per-kappa min envelopes on the union kappa grid."""
     mdir = in_dir / model_name
     chains = []
+    n_stale = 0
     for f in sorted(mdir.glob('chain_*_seed*.npz')):
         try:
-            chains.append(dict(np.load(f, allow_pickle=True)))
+            c = dict(np.load(f, allow_pickle=True))
         except Exception as e:
             print(f'  warning: {f.name}: {e}', flush=True)
+            continue
+        if str(c.get('code_version', '')) != DEPH_ANNEAL_VERSION:
+            n_stale += 1
+            continue
+        chains.append(c)
+    if n_stale:
+        print(f'{model_name}: ignored {n_stale} stale chains (version != '
+              f'{DEPH_ANNEAL_VERSION})', flush=True)
     if not chains:
         print(f'{model_name}: no chains found in {mdir}', flush=True)
         return None
@@ -122,8 +132,10 @@ def plot_panel(ax, d: dict, show_legend: bool = True) -> None:
         if not np.isfinite(val) or val <= 0:
             continue          # a zero coefficient has no scale to mark
         ax.axvline(val, color=C_REF, lw=1.0, ls='--', alpha=0.7, zorder=2)
-        ax.annotate(name, xy=(val, 0.985), xycoords=('data', 'axes fraction'),
-                    ha='right', va='top', rotation=90, fontsize=8, color=C_REF)
+        ax.annotate(name, xy=(val, 0.96), xycoords=('data', 'axes fraction'),
+                    ha='right', va='top', rotation=90, fontsize=9, color=C_REF,
+                    bbox=dict(fc='white', ec='none', alpha=0.75, pad=1.2),
+                    zorder=5)
 
     m_up = np.isfinite(env_up)
     m_dn = np.isfinite(env_down)
@@ -134,11 +146,15 @@ def plot_panel(ax, d: dict, show_legend: bool = True) -> None:
 
     # direct label: the headline kappa = 0 continuation value
     if m_dn[0]:
-        ax.annotate(f'{env_down[0]:.4f}', xy=(kappas[0], env_down[0]),
+        ax.annotate(f'{env_down[0]:.6f}', xy=(kappas[0], env_down[0]),
                     xytext=(6, 8), textcoords='offset points', fontsize=8,
                     color=C_DOWN)
 
     ax.set_xlim(left=-0.5 * linthresh)
+    # the framability range is ~1e-4 above 1: plain fixed-point tick labels
+    # instead of matplotlib's "+1" offset notation
+    ax.yaxis.set_major_formatter(
+        matplotlib.ticker.FuncFormatter(lambda v, _: f'{v:.5f}'))
     ax.set_xlabel(r'dephasing rate $\kappa$  (added jump $\sqrt{\kappa}\,Z$)')
     ax.set_title(f"{d['model']}:  {d['p1_name']}={d['p1']:.2f}, "
                  f"{d['p2_name']}={d['p2']:.2f}  "
