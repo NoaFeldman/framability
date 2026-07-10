@@ -87,11 +87,16 @@ def main() -> None:
                     print(f'  WARNING: unreadable {ref.name} — skipped', flush=True)
                     continue
                 for key, s_key in FRA_REFINE_KEYS.items():
-                    if key not in r or key not in b:
+                    if key not in r:
                         continue
                     rv = float(r[key])
-                    if np.isfinite(rv) and rv < float(b[key]) - TOL:
-                        old = float(b[key])
+                    if not np.isfinite(rv):
+                        continue
+                    old = float(b[key]) if key in b else float('nan')
+                    # Missing/NaN base value (failed base-scan point): any
+                    # finite refinement wins, matching the progress plot.
+                    bv = old if np.isfinite(old) else np.inf
+                    if rv < bv - TOL:
                         b[key] = np.array(rv)
                         if s_key in r:
                             b[s_key] = np.asarray(r[s_key])
