@@ -17,6 +17,7 @@ Usage (after all refine rounds finished):
 from __future__ import annotations
 
 import argparse
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -25,8 +26,30 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from trotter_lindbladian_scan import MODELS, FRA_REFINE_KEYS
+from trotter_refine_common import REFINE_PATTERNS
 
 TOL = 1e-9
+
+# 'pt_<kind>_r*' -> '<kind>', in registry (= merge) order
+_KINDS = [p[len('pt_'):-len('_r*')] for p in REFINE_PATTERNS]
+_FILE_RE = re.compile(
+    r'^pt_(' + '|'.join(_KINDS) + r')_r.*_(\d{3})_(\d{3})\.npz$')
+
+
+def _refine_files_by_point(mdir: Path) -> dict:
+    """One directory listing -> {(ix, iy): [refinement files]} in the same
+    order the old per-point globs produced (REFINE_PATTERNS order, each
+    flavour sorted by name).  A single scan replaces
+    n_points * len(REFINE_PATTERNS) whole-directory globs, which dominate
+    the runtime on parallel filesystems."""
+    by_point: dict = {}
+    for p in mdir.iterdir():
+        m = _FILE_RE.match(p.name)
+        if m:
+            key = (int(m.group(2)), int(m.group(3)))
+            by_point.setdefault(key, []).append(
+                (_KINDS.index(m.group(1)), p.name, p))
+    return {k: [p for _, _, p in sorted(v)] for k, v in by_point.items()}
 
 
 def main() -> None:
@@ -42,18 +65,21 @@ def main() -> None:
     mdir = Path(args.in_dir) / model.name
     n_improved = 0
 
+    print(f'Indexing refinement files in {mdir}/ ...', flush=True)
+    refine_map = _refine_files_by_point(mdir)
+    print(f'{sum(len(v) for v in refine_map.values())} refinement file(s) '
+          f'for {len(refine_map)} point(s).', flush=True)
+
     for ix in range(model.N_X):
         for iy in range(model.N_Y):
+            refs = refine_map.get((ix, iy), [])
+            if not refs:
+                continue
             base = mdir / f'pt_{ix:03d}_{iy:03d}.npz'
             if not base.exists():
                 continue
             b = dict(np.load(base))
             changed = False
-            refs = sorted(mdir.glob(f'pt_refine_r*_{ix:03d}_{iy:03d}.npz'))
-            refs += sorted(mdir.glob(f'pt_qrefine_r*_{ix:03d}_{iy:03d}.npz'))
-            refs += sorted(mdir.glob(f'pt_xeval_r*_{ix:03d}_{iy:03d}.npz'))
-            refs += sorted(mdir.glob(f'pt_polish_r*_{ix:03d}_{iy:03d}.npz'))
-            refs += sorted(mdir.glob(f'pt_fhunt_r*_{ix:03d}_{iy:03d}.npz'))
             for ref in refs:
                 try:
                     r = np.load(ref)
