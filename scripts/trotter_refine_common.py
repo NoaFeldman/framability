@@ -42,7 +42,7 @@ KEYS = {'opt_fra_4': ('opt_S_4', 4), 'opt_fra_6': ('opt_S_6', 6)}
 # point.  New refinement stages MUST be added here so later stages (and the
 # final collect) see their frames.
 REFINE_PATTERNS = ('pt_refine_r*', 'pt_qrefine_r*', 'pt_xeval_r*',
-                   'pt_polish_r*', 'pt_fhunt_r*')
+                   'pt_polish_r*', 'pt_fhunt_r*', 'pt_verdict_r*')
 
 
 def base_path(out_dir: Path, model, ix: int, iy: int) -> Path:

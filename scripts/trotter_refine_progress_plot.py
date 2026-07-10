@@ -59,6 +59,7 @@ _STAGES = {
     'xeval':   (re.compile(r'^pt_xeval_r\d{2}_(\d{3})_(\d{3})\.npz$'),   False),
     'polish':  (re.compile(r'^pt_polish_r\d{2}_(\d{3})_(\d{3})\.npz$'),  False),
     'fhunt':   (re.compile(r'^pt_fhunt_r\d{2}_(\d{3})_(\d{3})\.npz$'),   False),
+    'verdict': (re.compile(r'^pt_verdict_r\d{2}_(\d{3})_(\d{3})\.npz$'), False),
 }
 
 
@@ -252,7 +253,7 @@ def plot_model(model, before, after, counts, fra_tol, out_png: Path) -> None:
 
     stage_str = '  '.join(f'{s}: {counts[s]}' for s in
                           ('base', 'refine', 'qrefine', 'xeval', 'polish',
-                           'fhunt'))
+                           'fhunt', 'verdict'))
     fig.suptitle(f'{model.name}  —  {model.title}\nfiles on disk:  {stage_str}',
                  fontsize=12)
 

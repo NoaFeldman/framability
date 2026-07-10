@@ -58,7 +58,7 @@ def _all_paths(out_dir: Path, model, ix: int, iy: int):
     d = out_dir / model.name
     paths = [_base_path(out_dir, model, ix, iy)]
     for pat in ('pt_refine_r*', 'pt_qrefine_r*', 'pt_xeval_r*',
-                'pt_polish_r*', 'pt_fhunt_r*'):
+                'pt_polish_r*', 'pt_fhunt_r*', 'pt_verdict_r*'):
         paths += sorted(d.glob(f'{pat}_{ix:03d}_{iy:03d}.npz'))
     return [p for p in paths if p.exists()]
 

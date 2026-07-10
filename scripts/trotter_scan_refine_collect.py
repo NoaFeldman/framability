@@ -9,9 +9,15 @@ island polishes pt_polish_r* and floor hunts pt_fhunt_r*) is written back
 into the base npz (carrying the matching optimal frame), then
 trotter_scan_collect.py is re-run to rebuild the summary and the colormap.
 
+With --snap_tol t > 0, merged framability values in (1, 1+t] are snapped to
+exactly 1.0 (framability >= 1 is a hard floor, so sub-tolerance excess is
+LP-solver noise): use 1e-9 after a floor-verdict pass
+(trotter_scan_floor_verdict.py), or 1e-6 to match the FRA_ONE_TOL framable
+classification.
+
 Usage (after all refine rounds finished):
     python scripts/trotter_scan_refine_collect.py --model model1 \
-        --in_dir results_trotter_v3 --max_round 6
+        --in_dir results_trotter_v3 --snap_tol 1e-9
 """
 
 from __future__ import annotations
@@ -59,11 +65,18 @@ def main() -> None:
     p.add_argument('--out_png',   type=str, default=None)
     p.add_argument('--max_round', type=int, default=None,
                    help='unused (kept for compatibility; all rounds are globbed)')
+    p.add_argument('--snap_tol', type=float, default=0.0,
+                   help='if > 0, snap merged framability values in '
+                        '(1, 1+snap_tol] to exactly 1.0 (framability >= 1 is '
+                        'a hard floor, so sub-tolerance excess is LP-solver '
+                        'noise; 1e-9 after a floor-verdict pass, 1e-6 to '
+                        'match the FRA_ONE_TOL framable classification)')
     args = p.parse_args()
 
     model = MODELS[args.model]
     mdir = Path(args.in_dir) / model.name
     n_improved = 0
+    n_snapped = 0
 
     print(f'Indexing refinement files in {mdir}/ ...', flush=True)
     refine_map = _refine_files_by_point(mdir)
@@ -73,7 +86,7 @@ def main() -> None:
     for ix in range(model.N_X):
         for iy in range(model.N_Y):
             refs = refine_map.get((ix, iy), [])
-            if not refs:
+            if not refs and args.snap_tol <= 0:
                 continue
             base = mdir / f'pt_{ix:03d}_{iy:03d}.npz'
             if not base.exists():
@@ -104,10 +117,25 @@ def main() -> None:
                         n_improved += 1
                         print(f'  ({ix:3d},{iy:3d}) {ref.name} {key}: '
                               f'{old:.6f} -> {rv:.6f}', flush=True)
+            # snap sub-tolerance excess over the floor to exactly 1.0:
+            # framability >= 1 is a hard bound, so a merged value in
+            # (1, 1+snap_tol] is solver noise, not a resolved gap.
+            if args.snap_tol > 0:
+                for key in FRA_REFINE_KEYS:
+                    if key not in b:
+                        continue
+                    v = float(b[key])
+                    if np.isfinite(v) and 1.0 < v <= 1.0 + args.snap_tol:
+                        b[key] = np.array(1.0)
+                        changed = True
+                        n_snapped += 1
+                        print(f'  ({ix:3d},{iy:3d}) {key}: '
+                              f'1+{v-1.0:.3e} snapped -> 1.0', flush=True)
             if changed:
                 np.savez(base, **b)
 
-    print(f'\nUpdated {n_improved} framability value(s).', flush=True)
+    print(f'\nUpdated {n_improved} framability value(s); '
+          f'snapped {n_snapped} to the floor.', flush=True)
 
     print('\nRegenerating summary npz and figure ...', flush=True)
     cmd = [sys.executable,
