@@ -62,17 +62,22 @@ def plot(model: str, p1: float, p2: float, data: dict, png: Path,
 
     m = MODELS[model]
     base = data['base_vals']
+    dt = data['dt_vals']
+    inv_dt = 1.0 / dt                          # exponent 1/dt, per base point
 
     fig, ax = plt.subplots(figsize=(9, 6), constrained_layout=True)
     for (key, label) in MEASURES:
-        ax.plot(base, data[key], marker='o', ms=3, lw=1.4, label=label)
+        # framability^(1/dt): per-point power (dt = base / max(||H||_1,{gamma_k}))
+        ax.plot(base, np.asarray(data[key]) ** inv_dt,
+                marker='o', ms=3, lw=1.4, label=label)
 
-    # framable threshold: framability = 1 (drawn at 1+tol, the numerical edge)
+    # framable threshold: framability = 1 -> 1^(1/dt) = 1 (drawn at the numerical
+    # edge 1+tol; the power leaves the =1 threshold at 1)
     ax.axhline(1.0 + fra_tol, color='0.4', ls='--', lw=1.0,
                label=f'framable ($=1{"+" if fra_tol else ""}{fra_tol:g})')
 
     ax.set_xlabel('DT_BASE')
-    ax.set_ylabel('framability')
+    ax.set_ylabel(r'framability$^{1/dt}$')
     ax.set_title(f'{m.title}\n{m.p1_name}={p1:g}, {m.p2_name}={p2:g}   '
                  r'($dt = \mathrm{DT\_BASE}\,/\,\max(\|H\|_1,\{\gamma_k\})$)',
                  fontsize=11)
