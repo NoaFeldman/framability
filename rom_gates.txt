@@ -1,0 +1,29 @@
+# Gate list for rom_of_gate.py / rom_gate.slurm.sh
+# One gate spec per line; '#' starts a comment; blank lines are ignored.
+# Line number (counting only spec lines) = Slurm array task id.
+# Feasibility: gates of 1-2 qubits are light (naive LP); 3 qubits need CG
+# (+ Gurobi recommended); 4 qubits (Choi = 8 qubits) are HEAVY.
+
+# --- sanity anchors (exact values known) --------------------------------------
+I                       #  1: Clifford, RoM = 1
+H                       #  2: Clifford, RoM = 1
+CX                      #  3: Clifford, RoM = 1
+T                       #  4: RoM = sqrt(2) = 1.414213562...
+RZ(pi/4)                #  5: = T up to global phase, must match line 4
+
+# --- 2-qubit gates (Choi = 4 qubits, naive LP, exact) -------------------------
+CS                      #  6
+CT                      #  7
+kron(T,T)               #  8: Choi RoM = RoM(|T>|T>)
+dot(CX,kron(T,T))       #  9: entangling Clifford dressed with T's
+R(ZZ,pi/4)              # 10: exp(-i pi/8 ZZ), Clifford-equivalent to a T-type gate
+
+# --- 3-qubit gates (Choi = 6 qubits, column generation) -----------------------
+CCZ                     # 11: Choi RoM = RoM of the CCZ magic state
+CCX                     # 12: Toffoli (Clifford-equivalent to CCZ)
+CSWAP                   # 13: Fredkin
+kron(T,T,T)             # 14
+
+# --- 4-qubit gates (Choi = 8 qubits, HEAVY: CG + Gurobi, hours) ----------------
+CCCZ                    # 15
+kron(CS,CS)             # 16
