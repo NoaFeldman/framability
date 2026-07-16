@@ -25,9 +25,14 @@
 #      mkdir -p logs results_depol_kron_opt
 #      sbatch --array=0-191%200 scripts/depol_kron_opt_array.sh
 #
+#  Every restart's converged frame is recorded (not only the best), so the
+#  collect step can pick a robustly reachable optimum (widest near-optimal
+#  basin), reporting a reachability score -- not just the framability value.
+#
 #  Collect (after the array finishes):
 #      python scripts/depol_kron_opt_collect.py \
-#          --in_dir results_depol_kron_opt --out_dir results_depol_kron_opt
+#          --in_dir results_depol_kron_opt --out_dir results_depol_kron_opt \
+#          --eps_tol 1e-4 --fp_tol 5e-3
 #
 #  Budgets are overridable via env vars, e.g.:
 #      N_RESTARTS=100 POLISH_ITER=8000 sbatch --array=0-191%200 \
@@ -47,7 +52,7 @@ N_RESTARTS=${N_RESTARTS:-60}
 MAX_ITER=${MAX_ITER:-2000}
 MAXFEV=${MAXFEV:-12000}
 POLISH_ITER=${POLISH_ITER:-4000}
-METHOD=${METHOD:-Nelder-Mead}
+N_POLISH=${N_POLISH:-3}
 TOL=${TOL:-1e-9}
 SEED=${SEED:-0}
 
@@ -55,7 +60,7 @@ source "${SLURM_SUBMIT_DIR}/.venv/bin/activate"
 cd "${SLURM_SUBMIT_DIR}"
 export MPLCONFIGDIR="/tmp/matplotlib-${SLURM_JOB_ID}"
 
-echo "[depol_kron_opt] task ${SLURM_ARRAY_TASK_ID}: starting  (method=${METHOD}, n_restarts=${N_RESTARTS}, polish_iter=${POLISH_ITER})"
+echo "[depol_kron_opt] task ${SLURM_ARRAY_TASK_ID}: starting  (n_restarts=${N_RESTARTS}, polish_iter=${POLISH_ITER}, n_polish=${N_POLISH})"
 
 python scripts/depol_kron_opt_worker.py \
     --task_id     "$SLURM_ARRAY_TASK_ID" \
@@ -64,7 +69,7 @@ python scripts/depol_kron_opt_worker.py \
     --max_iter    "$MAX_ITER" \
     --maxfev      "$MAXFEV" \
     --polish_iter "$POLISH_ITER" \
-    --method      "$METHOD" \
+    --n_polish    "$N_POLISH" \
     --tol         "$TOL" \
     --seed        "$SEED"
 
