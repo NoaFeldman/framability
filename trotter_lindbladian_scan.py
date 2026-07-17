@@ -600,6 +600,28 @@ def _build_model5(J_y: float, gamma: float):
     return None, H2, jumps1, []
 
 
+# model6: decay rate is fixed (gamma = 1); the scan axes are the two Bloch-ball
+# rotation angles of the jump operator.
+MODEL6_GAMMA = 1.0
+
+
+def rotated_s_minus(rho: float, sigma: float) -> np.ndarray:
+    """S^-(rho, sigma) = U S^- U^dag with U = Rz(sigma) Ry(rho): the lowering
+    operator rotated around the Bloch ball, i.e. decay toward the pure state at
+    Bloch direction n = (sin rho cos sigma, sin rho sin sigma, cos rho).
+    (rho, sigma) = (0, 0) recovers S^- = |0><1|."""
+    U = expm(-1j * sigma / 2 * _SZ) @ expm(-1j * rho / 2 * _SY)
+    return U @ S_MINUS @ U.conj().T
+
+
+def _build_model6(rho: float, sigma: float):
+    # H = J ZZ ; jump sqrt(gamma) S^-(rho, sigma) (one-qubit), J = 1, gamma = 1
+    J = 1.0
+    H2 = J * _ZZ()
+    jumps1 = [np.sqrt(MODEL6_GAMMA) * rotated_s_minus(rho, sigma)]
+    return None, H2, jumps1, []
+
+
 # All models use dim=2 and the per-point adaptive Trotter step (dt=None ->
 # choose_dt).  Models 1-4 share H = J ZZ + h X; models 1-2 relax the lpdo_max
 # path from |+>^N (the transverse-field / X-basis dynamics sit far from a |0>^N
@@ -641,6 +663,18 @@ MODELS: dict[str, ModelSpec] = {
         p1_name='J_y',   p1_label=r'$J_y$',     p1_vals=_arange(0, 4, 0.2),
         p2_name='gamma', p2_label=r'$\gamma$',  p2_vals=_arange(0, 20, 0.2),
         build=_build_model5),
+    # model6 (added 2026-07, no version bump: existing model data is unchanged):
+    # H = J ZZ with the S^- jump rotated around the Bloch ball; the scan axes
+    # are the rotation angles rho, sigma in [0, pi/2] step pi/100 (51 x 51).
+    'model6': ModelSpec(
+        name='model6',
+        title=r'$H=J\,ZZ$,  jump $\sqrt{\gamma}\,S^-(\rho,\sigma)$  '
+              r'(J=1, $\gamma$=1)',
+        p1_name='rho',   p1_label=r'$\rho$',
+        p1_vals=_arange(0, np.pi / 2, np.pi * 1e-2),
+        p2_name='sigma', p2_label=r'$\sigma$',
+        p2_vals=_arange(0, np.pi / 2, np.pi * 1e-2),
+        build=_build_model6),
 }
 
 
