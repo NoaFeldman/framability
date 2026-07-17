@@ -56,7 +56,13 @@ from framability import heisenberg_framability, extended_pauli_D
 #   2.0-dual-floor : dual certificate + spectral-radius floor, analytic
 #                    subgradient, smooth conditioning penalty (replaces the
 #                    hard 1e6 infeasibility cliff).
-OPT_VERSION = '2.0-dual-floor'
+#   3.0-alt-cert   : alternating-certificate ("gamma-iteration") default
+#                    method — lifts the framability into its bilinear
+#                    certificate gᵀ(S⊗S) = (S⊗S) U and alternates convex
+#                    steps (exact LP for U, level-set ℓ1-budget refinement,
+#                    per-factor linear least squares for S).  Requires a
+#                    real, qubit-swap-symmetric gate.
+OPT_VERSION = '3.0-alt-cert'
 
 
 def spectral_floor(gate) -> float:
@@ -75,12 +81,19 @@ def spectral_floor(gate) -> float:
     return float(np.max(np.abs(eig)))
 
 
-# Nelder-Mead is the default: the simplex method makes no smoothness assumption,
-# handling the nonsmooth max-of-LP objective well, and converges reliably within
-# the moderate evaluation budgets used in the depol sweep.
-# Use 'dual_annealing' when a large budget (maxfev >> 5000) is available for
-# true global search, or 'subgradient' when the problem is known to be convex.
-DEFAULT_METHOD = 'Nelder-Mead'
+# 'alternating' is the default: the certificate-based alternating scheme
+# (see _run_alternating) exploits the bilinear structure gᵀD = D U of the
+# framability certificate — every block step is a small convex problem —
+# instead of treating the objective as a black box.  It requires a *real*
+# gate that is *symmetric under qubit swap* (the production case) and
+# n_qubits == 2; for gates outside that class pass method='Nelder-Mead',
+# 'dual_annealing', etc. explicitly.
+DEFAULT_METHOD = 'alternating'
+
+# The Schrödinger state-frame optimiser keeps the derivative-free simplex
+# default: its objective carries the nonsmooth Pauli-support penalty and the
+# alternating certificate scheme is not implemented for state frames.
+SCHRO_DEFAULT_METHOD = 'Nelder-Mead'
 
 try:
     import scipy.optimize as _sopt
@@ -160,7 +173,7 @@ def _get_lp_cache(d_ext: int, n: int):
 #  Fast framability: single batched LP  (one linprog call instead of d_ext)
 # ---------------------------------------------------------------------------
 
-def _get_framability_fast(D, gate, return_norms=False):
+def _get_framability_fast(D, gate, return_norms=False, return_coeffs=False):
     """
     Compute framability in a *single* LP call.
 
@@ -177,6 +190,10 @@ def _get_framability_fast(D, gate, return_norms=False):
     The LP is solved via a direct _linprog_highs call, bypassing scipy's
     per-call input validation.  A_eq is updated in-place (only .data
     changes; sparsity pattern is fixed for any dense D).
+
+    With return_coeffs=True the signed coefficient matrix U (d_ext × d_ext,
+    U[k, j] = coefficient of atom k in the min-1-norm representation of
+    target column j, so D @ U ≈ gateᵀ @ D) is appended to the return value.
     """
     n, d_ext = D.shape
 
@@ -197,12 +214,15 @@ def _get_framability_fast(D, gate, return_norms=False):
 
     res = _linprog_highs(lp_upd, solver=None, presolve=False)
     if res['status'] != 0:
+        out = [np.inf]
         if return_norms:
-            return np.inf, None
-        return np.inf
+            out.append(None)
+        if return_coeffs:
+            out.append(None)
+        return out[0] if len(out) == 1 else tuple(out)
 
     val = res['x'][0]
-    if not return_norms:
+    if not (return_norms or return_coeffs):
         return val
 
     # Recover the per-target-column atomic norms s_j = Σ_k (u⁺+u⁻)_{jk}.
@@ -212,8 +232,14 @@ def _get_framability_fast(D, gate, return_norms=False):
     n_up = d_ext * d_ext
     u_plus  = res['x'][1:1 + n_up]
     u_minus = res['x'][1 + n_up:1 + 2 * n_up]
-    col_norms = (u_plus + u_minus).reshape(d_ext, d_ext).sum(axis=1)
-    return val, col_norms
+    out = [val]
+    if return_norms:
+        out.append((u_plus + u_minus).reshape(d_ext, d_ext).sum(axis=1))
+    if return_coeffs:
+        # Row j of the reshape holds the coefficients of target j; transpose
+        # so that column j of U represents target j (D @ U ≈ gateᵀ @ D).
+        out.append((u_plus - u_minus).reshape(d_ext, d_ext).T)
+    return tuple(out)
 
 
 def framability_certificate(D, gate):
@@ -450,6 +476,125 @@ def _kron_power(S, n):
     return result
 
 
+def _require_swap_symmetric(gate, atol=1e-10):
+    """Raise ValueError unless the two-qubit gate commutes with qubit swap.
+
+    The swap superoperator P permutes Pauli-string indices (a, b) -> (b, a);
+    since P is a symmetric involution, swap symmetry P gate P = gate is a
+    simultaneous row/column permutation check.  Swap symmetry guarantees
+    Φ(S₁, S₂) = Φ(S₂, S₁) for product frames S₁⊗S₂, which is what justifies
+    the symmetrisation step of the alternating certificate method.
+    """
+    gate = np.asarray(gate)
+    n_s = qubit_d ** 2
+    if gate.shape != (n_s * n_s, n_s * n_s):
+        raise ValueError(f'expected a two-qubit gate of shape '
+                         f'({n_s * n_s}, {n_s * n_s}), got {gate.shape}')
+    # perm[n_s*b + a] = n_s*a + b, i.e. v_swapped = v[perm].
+    perm = np.arange(n_s * n_s).reshape(n_s, n_s).T.ravel()
+    dev = float(np.max(np.abs(gate[np.ix_(perm, perm)] - gate)))
+    if dev > atol:
+        raise ValueError(
+            f'gate is not symmetric under qubit swap (max deviation '
+            f'{dev:.3e} > atol={atol:.0e}).  The alternating certificate '
+            f"method assumes swap symmetry; pass method='Nelder-Mead' (or "
+            f'another method) for asymmetric gates.')
+
+
+def _project_columns_l1(U, radius):
+    """Project each column of U onto the l1 ball ||u||_1 <= radius.
+
+    Vectorised simplex projection (Duchi et al.) applied per column; columns
+    already inside the ball are returned unchanged.
+    """
+    if radius <= 0.0:
+        return np.zeros_like(U)
+    A = np.abs(U)
+    over = A.sum(axis=0) > radius
+    if not np.any(over):
+        return U
+    V = A[:, over]
+    n = V.shape[0]
+    s = -np.sort(-V, axis=0)                        # descending per column
+    css = np.cumsum(s, axis=0)
+    k = np.arange(1, n + 1)[:, None]
+    # The active set {k : s_k > (css_k - radius)/k} is a prefix; its size rho
+    # determines the soft threshold tau.
+    rho = np.count_nonzero(s - (css - radius) / k > 0, axis=0)
+    tau = (css[rho - 1, np.arange(V.shape[1])] - radius) / rho
+    out = U.copy()
+    out[:, over] = np.maximum(V - tau, 0.0) * np.sign(U[:, over])
+    return out
+
+
+def _refine_coeffs_l1(D, Y, U0, radius, n_iter=150):
+    """min_U ||D U − Y||_F²  s.t.  ||u_j||_1 <= radius for every column j.
+
+    FISTA (accelerated projected gradient).  All columns share the
+    dictionary D, so the gradient runs on the whole coefficient matrix at
+    once; the only per-column operation is the l1-ball projection.  This is
+    the level-set U-step of the alternating certificate method: with the
+    budget fixed below the incumbent framability, minimising the residual
+    drives the pair (D, U) toward a certificate at that level.
+    """
+    L = 2.0 * np.linalg.norm(D, 2) ** 2             # Lipschitz const of grad
+    step = 1.0 / L
+    DtD = D.T @ D
+    DtY = D.T @ Y
+    U = _project_columns_l1(U0, radius)
+    Z = U.copy()
+    t_acc = 1.0
+    for _ in range(n_iter):
+        U_new = _project_columns_l1(Z - step * 2.0 * (DtD @ Z - DtY), radius)
+        t_new = 0.5 * (1.0 + np.sqrt(1.0 + 4.0 * t_acc * t_acc))
+        Z = U_new + ((t_acc - 1.0) / t_new) * (U_new - U)
+        U, t_acc = U_new, t_new
+    return U
+
+
+def _solve_kron_factor(gT, U, fixed, side, m):
+    """Least-squares update of one Kronecker factor of D = A⊗B.
+
+    Minimises ||gᵀ(A⊗B) − (A⊗B) U||_F over the free columns of the chosen
+    factor (side='right' updates B with A=fixed; side='left' updates A with
+    B=fixed); column 0 of the updated factor stays pinned to the identity
+    atom (_FIXED_COLS).  The residual is linear in the free factor, so the
+    operator matrix is built by probing with unit basis matrices — 4(m−1)
+    evaluations of a 16×m² bilinear map, negligible at m ≲ 10 — and solved
+    with a mildly ridge-regularised lstsq.  The Bloch-ball column constraint
+    is enforced by projection afterwards (projected least squares).
+    """
+    n_s = fixed.shape[0]
+
+    def resid(A, B):
+        D = np.kron(A, B)
+        return (gT @ D - D @ U).ravel()
+
+    def build(V):
+        return resid(fixed, V) if side == 'right' else resid(V, fixed)
+
+    base = np.zeros((n_s, m))
+    base[:, :N_FIXED_COLS] = _FIXED_COLS
+    r0 = build(base)
+    n_free = m - N_FIXED_COLS
+    M = np.empty((r0.size, n_s * n_free))
+    for q in range(n_free):
+        for p in range(n_s):
+            E = np.zeros((n_s, m))
+            E[p, N_FIXED_COLS + q] = 1.0
+            M[:, q * n_s + p] = build(E)
+
+    lam = 1e-8                                       # tame ill-conditioned M
+    M_aug = np.vstack([M, np.sqrt(lam) * np.eye(M.shape[1])])
+    r_aug = np.concatenate([-r0, np.zeros(M.shape[1])])
+    sol, *_ = np.linalg.lstsq(M_aug, r_aug, rcond=None)
+
+    V = base.copy()
+    V[:, N_FIXED_COLS:] = _project_columns_bloch(
+        sol.reshape(n_free, n_s).T)
+    return V
+
+
 # ---------------------------------------------------------------------------
 #  Main optimiser
 # ---------------------------------------------------------------------------
@@ -481,9 +626,23 @@ def minimize_framability(gate, d_ext_single, *, n_restarts=5,
         standard extended-Pauli S when d_ext_single == 6 (two qubits).
     method : str | None
         Optimisation algorithm.  None (default) falls back to DEFAULT_METHOD,
-        which is 'Nelder-Mead' (a local simplex method run with n_restarts
-        random restarts).
+        which is 'alternating'.
 
+        'alternating'         Certificate-based alternating minimisation
+                              ("gamma-iteration", the default).  Lifts the
+                              framability into its bilinear certificate
+                              gᵀ(S⊗S) = (S⊗S) U with per-column budgets
+                              ||u_j||_1 <= t and alternates convex block
+                              steps: the exact batched LP for U, a level-set
+                              ℓ1-budget FISTA refinement of U below the
+                              incumbent, and linear least-squares updates of
+                              each Kronecker factor of the frame followed by
+                              symmetrisation.  Requires a *real* gate that is
+                              *symmetric under qubit swap* (checked upfront;
+                              ValueError otherwise), n_qubits == 2 and a real
+                              frame.  Like every method here it is a local
+                              scheme on a nonconvex problem — restarts and
+                              the spectral-radius floor judge convergence.
         'dual_annealing'      Cauchy-Lorentz simulated annealing with Powell
                               polishing.  Handles the nonsmooth max-of-LP
                               objective without any smoothness assumption and
@@ -556,12 +715,32 @@ def minimize_framability(gate, d_ext_single, *, n_restarts=5,
     n_qubits = int(round(np.log(pauli_string_dim) / np.log(n_s)))  # inferred qubit count
     d_ext = d_ext_single ** n_qubits                          # total columns of D
 
+    # The alternating certificate method rests on identities that hold only
+    # for a real, qubit-swap-symmetric two-qubit gate and a real frame:
+    # check all of that *before* any optimisation starts.
+    if method == 'alternating':
+        if n_qubits != 2:
+            raise NotImplementedError(
+                'the alternating certificate method is implemented only for '
+                f'n_qubits == 2 (got n_qubits={n_qubits})')
+        if np.max(np.abs(gate.imag)) > 1e-12:
+            raise ValueError(
+                'the alternating certificate method requires a real gate '
+                '(Pauli-basis superoperator); the supplied gate has a '
+                'non-negligible imaginary part.')
+        _require_swap_symmetric(gate.real)
+        if use_complex:
+            raise ValueError(
+                'the alternating certificate method supports only real '
+                'frames; call with use_complex=False (or None), or choose '
+                'another method for complex frames.')
+        _use_complex = False
     # Complex S is feasible only when d_ext >= 2*n_rows: the Heisenberg LP
     # seeks real u such that D u = Y_j (complex equation) which becomes a
     # 2*n_rows × d_ext real system.  For d_ext < 2*n_rows it is overdetermined
     # and generically infeasible; restrict S to real in that case.
     # Caller may override via use_complex= (True/False); None -> auto-select.
-    if use_complex is None:
+    elif use_complex is None:
         _use_complex = (d_ext >= 2 * pauli_string_dim)
     else:
         _use_complex = bool(use_complex)
@@ -745,6 +924,111 @@ def _run_subgradient(objective, n_params, n_s, d_ext_single, n_qubits, d_ext,
     return global_best_D, global_best_val, global_best_x
 
 
+# Tuning constants of the alternating certificate method.
+_ALT_SHRINK = 0.9          # level shrink toward the floor per sweep
+_ALT_PG_ITERS = 150        # FISTA iterations of the U refinement
+_ALT_STALL_PATIENCE = 8    # sweeps without incumbent improvement -> stop
+
+
+def _run_alternating(objective, n_s, d_ext_single, n_qubits, d_ext,
+                     rng, n_restarts, maxfev, tol, verbose, *,
+                     extra_init_xs=None, gate=None):
+    """Certificate-based alternating minimisation ("gamma-iteration").
+
+    Lifts the framability into its bilinear certificate: framability <= t
+    iff there is a coefficient matrix U with
+
+        gᵀ (S⊗S) = (S⊗S) U   and   ||u_j||_1 <= t  for every column j.
+
+    Each sweep alternates three convex block steps on (U, S):
+
+      1. Exact LP (the existing batched framability LP) — gives the current
+         framability t_exact and its coefficient matrix U.  Incumbents are
+         tracked here; the iteration is non-monotone.
+      2. Level-set U-step: fix the budget t̄ = floor + _ALT_SHRINK * (t_best −
+         floor) strictly below the incumbent and minimise the certificate
+         residual ||gᵀD − D U||_F over ||u_j||_1 <= t̄ (FISTA, warm-started
+         from the LP coefficients).  Zero residual would *certify*
+         framability <= t̄; minimising it drives S toward such a certificate.
+      3. S-step: with U fixed the residual is linear in each Kronecker
+         factor separately, so update the right factor, then the left factor
+         (small projected least squares each), and symmetrise by averaging.
+         Averaging is justified by swap symmetry of the gate, which makes
+         the objective invariant under factor exchange (checked upfront in
+         minimize_framability via _require_swap_symmetric).
+
+    Real gates, real frames, n_qubits == 2 only.  Returns
+    (D_opt, f_opt, x_opt) like the other drivers.
+    """
+    gate = np.asarray(gate).real
+    gT = gate.T
+    floor = spectral_floor(gate)
+    n_free = d_ext_single - N_FIXED_COLS
+    inits = _build_inits(n_s, d_ext_single, d_ext, n_restarts, rng,
+                         extra_init_xs=extra_init_xs, use_complex=False)
+
+    # Each sweep costs one batched LP, one FISTA run of cheap matvecs and two
+    # small least-squares solves — comparable to a handful of plain objective
+    # evaluations, so the maxfev budget is spread accordingly.
+    n_sweeps = max(10, maxfev // (max(1, len(inits)) * 5))
+
+    best_val, best_D, best_x = np.inf, None, None
+
+    for restart, x0 in enumerate(inits):
+        free = np.asarray(x0, dtype=float)[:n_s * n_free].reshape(n_s, n_free)
+        S = np.hstack([_FIXED_COLS, _project_columns_bloch(free)])
+        local_best_val, local_best_S = np.inf, S.copy()
+        stall = 0
+        n_done = 0
+
+        for sweep in range(n_sweeps):
+            n_done = sweep + 1
+            D = _kron_power(S, n_qubits)
+            val, U = _get_framability_fast(D, gate, return_coeffs=True)
+            if not np.isfinite(val) or U is None:
+                break                    # rank-deficient frame; keep incumbent
+            if val < local_best_val - 1e-12:
+                local_best_val, local_best_S, stall = val, S.copy(), 0
+            else:
+                stall += 1
+                if stall >= _ALT_STALL_PATIENCE:
+                    break
+            if local_best_val <= floor + tol:
+                break
+
+            # -- level-set U-step at a budget below the incumbent
+            level = floor + _ALT_SHRINK * (local_best_val - floor)
+            Y = gT @ D
+            U_lvl = _refine_coeffs_l1(D, Y, U, level, n_iter=_ALT_PG_ITERS)
+
+            # -- S-step: right factor, left factor, then symmetrise
+            B = _solve_kron_factor(gT, U_lvl, S, 'right', d_ext_single)
+            A = _solve_kron_factor(gT, U_lvl, B, 'left', d_ext_single)
+            S_free = 0.5 * (A[:, N_FIXED_COLS:] + B[:, N_FIXED_COLS:])
+            S = np.hstack([_FIXED_COLS, _project_columns_bloch(S_free)])
+
+        if verbose:
+            print(f'  alternating restart {restart + 1}/{len(inits)}: '
+                  f'f_opt={local_best_val:.6f}  ({n_done} sweeps)', flush=True)
+
+        if local_best_val < best_val:
+            best_val = local_best_val
+            best_D = _kron_power(local_best_S, n_qubits)
+            best_x = local_best_S[:, N_FIXED_COLS:].ravel().copy()
+
+    if best_D is None:
+        # Every restart hit an infeasible LP immediately — fall back to the
+        # first init so callers still receive a frame (with penalty value).
+        x0 = np.asarray(inits[0], dtype=float)[:n_s * n_free]
+        free = x0.reshape(n_s, n_free)
+        S = np.hstack([_FIXED_COLS, _project_columns_bloch(free)])
+        best_D = _kron_power(S, n_qubits)
+        best_val = objective(x0)
+        best_x = x0.copy()
+
+    return best_D, best_val, best_x
+
+
 def _run_restarts(objective, n_params, d_ext, n_s, d_ext_single, n_qubits,
                   rng, n_restarts, method, max_iter, maxfev, tol,
                   verbose, *, extra_init_xs=None, use_complex=True, gate=None):
@@ -752,6 +1036,10 @@ def _run_restarts(objective, n_params, d_ext, n_s, d_ext_single, n_qubits,
 
     Methods
     -------
+    'alternating'         Certificate-based alternating minimisation (default;
+                          see _run_alternating).  Real swap-symmetric gates,
+                          real frames, n_qubits == 2 only — enforced upfront
+                          in minimize_framability.
     'dual_annealing'      Cauchy-Lorentz SA with Powell polishing.  No smoothness
                           assumption; good global search (large budgets).
     'basinhopping'        Random basin-hopping around deterministic inits with
@@ -763,6 +1051,16 @@ def _run_restarts(objective, n_params, d_ext, n_s, d_ext_single, n_qubits,
     'differential_evolution'  SciPy DE; thorough but slow.
     'cobyqa','Powell','Nelder-Mead'  Local methods with random restarts (legacy).
     """
+
+    # ------------------------------------------------------------------
+    # alternating  (certificate-based block minimisation, default)
+    # ------------------------------------------------------------------
+    if method == 'alternating':
+        return _run_alternating(
+            objective, n_s, d_ext_single, n_qubits, d_ext,
+            rng, n_restarts, maxfev, tol, verbose,
+            extra_init_xs=extra_init_xs, gate=gate,
+        )
 
     _BOUNDS = [(-1.5, 1.5)] * n_params   # Bloch-ball values live in [-1, 1]
 
@@ -1139,11 +1437,13 @@ def minimize_schroedinger_framability(gate, d_ext_single, *, n_restarts=5,
         octahedron (stabilizer) and SIC-tetrahedron state frames when
         d_ext_single allows; the rest are random Bloch vectors.
     method : str | None
-        None (default) falls back to DEFAULT_METHOD ('Nelder-Mead', the
-        simplex method — no smoothness assumption, robust on the nonsmooth
-        max-of-LP objective).  'dual_annealing' runs a global search within
-        the Bloch box; 'Powell' / 'cobyqa' are accepted as local
-        alternatives with the same restart scheme.
+        None (default) falls back to SCHRO_DEFAULT_METHOD ('Nelder-Mead',
+        the simplex method — no smoothness assumption, robust on the
+        nonsmooth max-of-LP objective; the 'alternating' certificate scheme
+        of minimize_framability is not implemented for state frames).
+        'dual_annealing' runs a global search within the Bloch box;
+        'Powell' / 'cobyqa' are accepted as local alternatives with the
+        same restart scheme.
     max_iter, maxfev, tol, seed, verbose :
         As in minimize_framability.
     extra_init_xs : list of ndarray | None
@@ -1163,7 +1463,7 @@ def minimize_schroedinger_framability(gate, d_ext_single, *, n_restarts=5,
     Pauli-support constraint is satisfied, since the penalty is then zero).
     """
     if method is None:
-        method = DEFAULT_METHOD
+        method = SCHRO_DEFAULT_METHOD
     if d_ext_single < 4:
         raise ValueError(
             f'd_ext_single must be >= 4 for a state frame (got {d_ext_single}): '
@@ -1341,7 +1641,7 @@ if __name__ == '__main__':
     from framability import schroedinger_framability
 
     print(f'\nOptimising Schrödinger framability (state frame, '
-          f'd_ext_single={d_ext_single}, method={DEFAULT_METHOD}, '
+          f'd_ext_single={d_ext_single}, method={SCHRO_DEFAULT_METHOD}, '
           f'maxfev=1000) ...')
 
     # Baseline: octahedron (stabilizer-state) frame, +-X, +-Y, +-Z.
@@ -1356,7 +1656,7 @@ if __name__ == '__main__':
     t0 = time.perf_counter()
     D_schro, f_schro = minimize_schroedinger_framability(
         gate, d_ext_single=d_ext_single, n_restarts=3,
-        method=DEFAULT_METHOD, max_iter=200, maxfev=1000,
+        method=SCHRO_DEFAULT_METHOD, max_iter=200, maxfev=1000,
         seed=42, verbose=True,
     )
     elapsed = time.perf_counter() - t0
