@@ -4,11 +4,16 @@ Per-point cluster worker for the 4-qubit Trotter RoM sub-pipeline
 Choi-state RoM of the matching 4-qubit (2x2-lattice) gate.
 
 One model (trotter_lindbladian_scan.MODELS, model1..model6) is scanned over
-its two varying parameters on the same grid as the main trotter scan:
+the REDUCED grid trotter_rom_4q.ROM_GRIDS[model] (an exact subset of the
+model's full scan grid; 2697 points across all six models):
 
-    ix in 0 .. N_X-1   (p1, x-axis)
-    iy in 0 .. N_Y-1   (p2, y-axis)
-    point_id = ix * N_Y + iy            (0 .. N_X*N_Y - 1)
+    irx in 0 .. n1-1   (p1, x-axis of the reduced grid)
+    iry in 0 .. n2-1   (p2, y-axis of the reduced grid)
+    point_id = irx * n2 + iry           (0 .. n1*n2 - 1)
+
+Each reduced-grid point maps 1:1 onto a point (ix, iy) of the model's FULL
+grid; files are named by those full-grid indices, so they line up with the
+main scan's pt files and stay valid if the ranges are ever extended.
 
 The stabilizer-3 framability is NOT recomputed when the main scan already
 holds it: for each point the worker first looks for
@@ -16,7 +21,7 @@ holds it: for each point the worker first looks for
 dt and reuses its 'stab_fra'.  Points without scan data (all of model6, or any
 missing/stale file) get it computed from the bond gate directly.
 
-Output: <out_dir>/<model>/pt_<ix:03d>_<iy:03d>.npz
+Output: <out_dir>/<model>/pt_<ix:03d>_<iy:03d>.npz   (full-grid indices)
 
 Usage (single point):
     python scripts/trotter_rom_worker.py --model model6 --task_id 0
@@ -37,7 +42,7 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from trotter_lindbladian_scan import MODELS, TLS_VERSION, choose_dt
-from trotter_rom_4q import ROM_VERSION, compute_rom_point
+from trotter_rom_4q import ROM_VERSION, ROM_GRIDS, compute_rom_point
 
 # npz keys written per point (beyond the compute_rom_point result keys).
 RESULT_KEYS = [
@@ -80,12 +85,21 @@ def _scan_stab_fra(scan_dir: Path, model, ix: int, iy: int,
         return None
 
 
-def run_point(model, point_id: int, args) -> None:
-    """Compute and save one grid point (skips if already current)."""
-    ix = point_id // model.N_Y
-    iy = point_id %  model.N_Y
-    p1 = float(model.p1_vals[ix])
-    p2 = float(model.p2_vals[iy])
+def _main_index(vals: np.ndarray, v: float) -> int:
+    """Index of reduced-grid value `v` in the model's full grid `vals`."""
+    idx = np.where(np.isclose(np.asarray(vals, float), v, rtol=0, atol=1e-9))[0]
+    assert idx.size == 1, f'value {v} not on the full model grid'
+    return int(idx[0])
+
+
+def run_point(model, p1_vals, p2_vals, point_id: int, args) -> None:
+    """Compute and save one reduced-grid point (skips if already current)."""
+    n2 = len(p2_vals)
+    p1 = float(p1_vals[point_id // n2])
+    p2 = float(p2_vals[point_id %  n2])
+    # full-grid indices: used for the output name and the stab_fra lookup
+    ix = _main_index(model.p1_vals, p1)
+    iy = _main_index(model.p2_vals, p2)
     out_dir = Path(args.out_dir) / model.name
     out = out_dir / f'pt_{ix:03d}_{iy:03d}.npz'
 
@@ -108,7 +122,7 @@ def run_point(model, point_id: int, args) -> None:
 
     out_dir.mkdir(parents=True, exist_ok=True)
     t0 = time.perf_counter()
-    print(f'[point {point_id}/{model.N_TOTAL}] {model.name} '
+    print(f'[point {point_id}/{len(p1_vals) * n2}] {model.name} '
           f'{model.p1_name}={p1:.4f} {model.p2_name}={p2:.4f} '
           f'dim={dim} dt={dt:.6g} '
           f'stab_fra={"scan" if stab_fra is not None else "compute"}',
@@ -162,13 +176,14 @@ def main() -> None:
     args = p.parse_args()
 
     model = MODELS[args.model]
-    N = model.N_TOTAL
+    p1_vals, p2_vals = ROM_GRIDS[args.model]
+    N = len(p1_vals) * len(p2_vals)
 
     if args.n_chunks <= 1:
         if not (0 <= args.task_id < N):
             print(f'ERROR: task_id must be in [0, {N})', file=sys.stderr)
             sys.exit(1)
-        run_point(model, args.task_id, args)
+        run_point(model, p1_vals, p2_vals, args.task_id, args)
         return
 
     if not (0 <= args.task_id < args.n_chunks):
@@ -179,7 +194,7 @@ def main() -> None:
     print(f'[chunk {args.task_id}/{args.n_chunks}] {model.name}: '
           f'{len(point_ids)} points', flush=True)
     for pid in point_ids:
-        run_point(model, pid, args)
+        run_point(model, p1_vals, p2_vals, pid, args)
 
 
 if __name__ == '__main__':

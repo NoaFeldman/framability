@@ -28,33 +28,46 @@ import matplotlib.pyplot as plt
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from trotter_lindbladian_scan import MODELS
+from trotter_rom_4q import ROM_GRIDS
 
 # A panel counts as reaching 1 if its minimum does so to within this tolerance.
 ONE_TOL = 1e-6
 
 
-def load_results(in_dir: Path, model) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """(stab_fra, rom, certified) arrays of shape (N_X, N_Y); NaN if missing."""
-    stab = np.full((model.N_X, model.N_Y), np.nan)
-    rom = np.full((model.N_X, model.N_Y), np.nan)
-    cert = np.full((model.N_X, model.N_Y), np.nan)
+def _main_index(vals: np.ndarray, v: float) -> int:
+    """Index of reduced-grid value `v` in the model's full grid `vals`."""
+    idx = np.where(np.isclose(np.asarray(vals, float), v, rtol=0, atol=1e-9))[0]
+    assert idx.size == 1, f'value {v} not on the full model grid'
+    return int(idx[0])
+
+
+def load_results(in_dir: Path, model, p1_vals: np.ndarray,
+                 p2_vals: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """(stab_fra, rom, certified) arrays over the reduced grid (n1, n2); NaN
+    where data is missing.  Files are named by full-grid indices."""
+    n1, n2 = len(p1_vals), len(p2_vals)
+    stab = np.full((n1, n2), np.nan)
+    rom = np.full((n1, n2), np.nan)
+    cert = np.full((n1, n2), np.nan)
     n_loaded = 0
     mdir = in_dir / model.name
-    for ix in range(model.N_X):
-        for iy in range(model.N_Y):
+    for irx, p1 in enumerate(p1_vals):
+        ix = _main_index(model.p1_vals, float(p1))
+        for iry, p2 in enumerate(p2_vals):
+            iy = _main_index(model.p2_vals, float(p2))
             f = mdir / f'pt_{ix:03d}_{iy:03d}.npz'
             if not f.exists():
                 continue
             try:
                 d = np.load(f, allow_pickle=True)
-                stab[ix, iy] = float(d['stab_fra'])
-                rom[ix, iy] = float(d['rom'])
-                cert[ix, iy] = float(bool(d['rom_certified']))
+                stab[irx, iry] = float(d['stab_fra'])
+                rom[irx, iry] = float(d['rom'])
+                cert[irx, iry] = float(bool(d['rom_certified']))
                 n_loaded += 1
             except Exception as e:
                 print(f'  warning: {f.name}: {e}', flush=True)
     n_cert = int(np.nansum(cert))
-    print(f'Loaded {n_loaded}/{model.N_TOTAL} points for {model.name} '
+    print(f'Loaded {n_loaded}/{n1 * n2} points for {model.name} '
           f'({n_cert} certified).', flush=True)
     return stab, rom, cert
 
@@ -69,8 +82,9 @@ def _edges(vals: np.ndarray) -> np.ndarray:
 
 
 def plot_side_by_side(stab: np.ndarray, rom: np.ndarray, model,
+                      p1_vals: np.ndarray, p2_vals: np.ndarray,
                       out_png: Path, log2: bool = False) -> None:
-    x_vals, y_vals = np.array(model.p1_vals), np.array(model.p2_vals)
+    x_vals, y_vals = np.asarray(p1_vals, float), np.asarray(p2_vals, float)
     x_edges, y_edges = _edges(x_vals), _edges(y_vals)
 
     rom_plot = np.log2(rom) if log2 else rom
@@ -134,14 +148,16 @@ def main() -> None:
     out_png = Path(args.out_png) if args.out_png else \
         Path('results_plots') / f'trotter_rom_{model.name}.png'
 
-    stab, rom, cert = load_results(in_dir, model)
+    p1_vals, p2_vals = ROM_GRIDS[args.model]
+    stab, rom, cert = load_results(in_dir, model, p1_vals, p2_vals)
     if args.save_npz:
         npz = in_dir / model.name / 'rom_summary.npz'
         np.savez(npz, stab_fra=stab, rom=rom, certified=cert,
-                 p1=model.p1_vals, p2=model.p2_vals)
+                 p1=p1_vals, p2=p2_vals)
         print(f'Saved {npz}', flush=True)
 
-    plot_side_by_side(stab, rom, model, out_png, log2=args.log2)
+    plot_side_by_side(stab, rom, model, p1_vals, p2_vals, out_png,
+                      log2=args.log2)
 
 
 if __name__ == '__main__':

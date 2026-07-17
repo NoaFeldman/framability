@@ -2,11 +2,12 @@
 # ============================================================
 #  SLURM job-array: 4-qubit Trotter RoM sub-pipeline (trotter_rom_4q).
 #
-#  One MODEL (model1..model6) is scanned over its two varying parameters on
-#  the same grid as the main trotter scan.  Grid sizes (point counts):
-#    model1  21 x  51 = 1071     model2  21 x  51 = 1071
-#    model3  51 x  51 = 2601     model4  51 x  51 = 2601
-#    model5  21 x 101 = 2121     model6  51 x  51 = 2601
+#  One MODEL (model1..model6) is scanned over the REDUCED parameter ranges of
+#  trotter_rom_4q.ROM_GRIDS -- exact subsets of the main-scan grids, so every
+#  point reuses the stored stabilizer-3 framability.  Grid sizes:
+#    model1   6 x 31 = 186      model2   6 x 21 = 126
+#    model3  21 x 22 = 462      model4  31 x 31 = 961
+#    model5  11 x 26 = 286      model6  26 x 26 = 676     (total 2697)
 #
 #  The grid is split across a 200-task array (N_CHUNKS=200); each task
 #  processes a strided subset and skips any npz already current on disk, so

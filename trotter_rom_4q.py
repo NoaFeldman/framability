@@ -44,7 +44,9 @@ Usage:
 
 Cluster pipeline: scripts/trotter_rom_worker.py (per-point array worker),
 scripts/trotter_rom.slurm.sh (200-task array), scripts/trotter_rom_collect.py
-(side-by-side stab-3 framability | RoM colormaps).
+(side-by-side stab-3 framability | RoM colormaps).  The pipeline runs on the
+reduced ROM_GRIDS parameter ranges (2697 points total), each an exact subset
+of the model's full scan grid.
 """
 
 from __future__ import annotations
@@ -65,6 +67,41 @@ ROM_VERSION = '1.0'
 # 2x2 open-boundary lattice, sites row-major (0 1 / 2 3): the four bonds of
 # L_4 = L_2^(01) + L_2^(23) + L_2^(02) + L_2^(13).
 LATTICE_BONDS_2X2 = ((0, 1), (2, 3), (0, 2), (1, 3))
+
+
+# ---------------------------------------------------------------------------
+#  Restricted scan grids of the RoM sub-pipeline
+# ---------------------------------------------------------------------------
+def _restrict(vals: np.ndarray, lo: float, hi: float,
+              stride: int = 1) -> np.ndarray:
+    """Subset of a model grid: values in [lo, hi], optionally strided."""
+    vals = np.asarray(vals)
+    return vals[(vals >= lo - 1e-9) & (vals <= hi + 1e-9)][::stride]
+
+
+# The RoM sub-pipeline runs on reduced parameter ranges (2026-07-17).  Every
+# grid is an exact subset of the model's full scan grid in MODELS (same step,
+# 0.2, for models 1-5; model6 keeps the full [0, pi/2] range but at half the
+# resolution, step 2 pi 1e-2 = every 2nd point of the fine pi 1e-2 grid), so
+# each point maps 1:1 onto a main-scan point and its stored stab_fra.
+#
+#   model1   6 x 31 = 186     model2   6 x 21 = 126
+#   model3  21 x 22 = 462     model4  31 x 31 = 961
+#   model5  11 x 26 = 286     model6  26 x 26 = 676     (total 2697)
+ROM_GRIDS: dict[str, tuple[np.ndarray, np.ndarray]] = {
+    'model1': (_restrict(MODELS['model1'].p1_vals, 0.0, 1.0),    # h
+               _restrict(MODELS['model1'].p2_vals, 0.0, 6.0)),   # gamma
+    'model2': (_restrict(MODELS['model2'].p1_vals, 0.0, 1.0),    # h
+               _restrict(MODELS['model2'].p2_vals, 0.0, 4.0)),   # gamma
+    'model3': (_restrict(MODELS['model3'].p1_vals, 0.0, 4.0),    # gamma
+               _restrict(MODELS['model3'].p2_vals, 0.0, 4.2)),   # gamma'
+    'model4': (_restrict(MODELS['model4'].p1_vals, 0.0, 6.0),    # gamma
+               _restrict(MODELS['model4'].p2_vals, 0.0, 6.0)),   # gamma'
+    'model5': (_restrict(MODELS['model5'].p1_vals, 0.0, 2.0),    # J_y
+               _restrict(MODELS['model5'].p2_vals, 0.0, 5.0)),   # gamma
+    'model6': (MODELS['model6'].p1_vals[::2],                    # rho
+               MODELS['model6'].p2_vals[::2]),                   # sigma
+}
 
 
 # ---------------------------------------------------------------------------
