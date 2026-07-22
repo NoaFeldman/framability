@@ -179,6 +179,18 @@ def main() -> None:
     p1_vals, p2_vals = ROM_GRIDS[args.model]
     N = len(p1_vals) * len(p2_vals)
 
+    # Fail fast: the RoM machinery is needed at every point, so import it once
+    # up front -- a broken environment (missing numba/tqdm, missing handbook
+    # clone) then kills the task with a single clear error instead of one
+    # traceback per point.
+    try:
+        import rom_of_gate  # noqa: F401
+    except BaseException as e:                 # includes the sys.exit bootstrap
+        print(f'ERROR: cannot import rom_of_gate ({e!r}). Check that the venv '
+              'has numba and tqdm and that the RoM-handbook repo is cloned '
+              '(ROM_HANDBOOK_DIR).', file=sys.stderr)
+        sys.exit(1)
+
     if args.n_chunks <= 1:
         if not (0 <= args.task_id < N):
             print(f'ERROR: task_id must be in [0, {N})', file=sys.stderr)
@@ -193,8 +205,20 @@ def main() -> None:
     point_ids = list(range(args.task_id, N, args.n_chunks))
     print(f'[chunk {args.task_id}/{args.n_chunks}] {model.name}: '
           f'{len(point_ids)} points', flush=True)
+    n_fail = 0
     for pid in point_ids:
-        run_point(model, p1_vals, p2_vals, pid, args)
+        # One bad point must not kill the rest of the chunk.
+        try:
+            run_point(model, p1_vals, p2_vals, pid, args)
+        except Exception:
+            n_fail += 1
+            import traceback
+            traceback.print_exc()
+            print(f'[fail] point {pid} failed; continuing', flush=True)
+    if n_fail:
+        print(f'ERROR: {n_fail}/{len(point_ids)} points failed',
+              file=sys.stderr)
+        sys.exit(1)
 
 
 if __name__ == '__main__':

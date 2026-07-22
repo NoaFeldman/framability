@@ -22,11 +22,13 @@
 #    mkdir -p logs results_trotter_rom
 #    MODEL=model6 sbatch scripts/trotter_rom.slurm.sh
 #
-#  ONE-TIME SETUP (shared with rom_gate.slurm.sh):
+#  ONE-TIME SETUP (run on the LOGIN node -- $HOME and pip installs are not
+#  available from the compute nodes, so everything must exist beforehand):
 #    git clone https://github.com/quantum-programming/RoM-handbook.git
 #    g++ RoM-handbook/exputils/dot/fast_dot_products.cpp \
 #        -o RoM-handbook/exputils/dot/fast_dot_products.exe \
 #        -std=c++17 -lz -O2 -DNDEBUG -mtune=native -march=native -fopenmp
+#    .venv/bin/pip install numba tqdm gurobipy
 # ============================================================
 
 #SBATCH --job-name=trot_rom
@@ -48,27 +50,31 @@ METHOD=${METHOD:-auto}
 SOLVER=${SOLVER:-auto}
 K=${K:-}              # empty -> handbook default (1e-8 at n_choi=8)
 
-# --- environment (same stack as rom_gate.slurm.sh) ----------------------------
-VENV="$HOME/venvs/framability"
-if [ ! -d "$VENV" ]; then
-    python3 -m venv "$VENV"
-fi
-source "$VENV/bin/activate"
-python -m pip install --quiet --upgrade pip
-python -m pip install --quiet numpy scipy numba tqdm
+# --- environment ---------------------------------------------------------------
+# Repo-local venv, exactly like trotter_scan.slurm.sh.  Do NOT use $HOME (it is
+# read-only on the compute nodes) and do NOT pip-install here (system python is
+# PEP-668 externally managed): all packages must already be in .venv (see the
+# one-time setup above).
+source "${SLURM_SUBMIT_DIR}/.venv/bin/activate"
+cd "${SLURM_SUBMIT_DIR}"
 
 # Gurobi: effectively required for the 8-qubit Choi CG LPs.  If the cluster
-# provides it as a module this picks it up; otherwise --solver auto falls back
-# to scipy (slow and fragile at n_choi=8).
+# provides it as a module this picks up the full license; the pip gurobipy
+# alone carries a size-limited license that CANNOT solve the n_choi=8 LPs.
 module load gurobi 2>/dev/null || true
-python -m pip install --quiet gurobipy 2>/dev/null || true
 
-cd "${SLURM_SUBMIT_DIR}"
 export ROM_HANDBOOK_DIR="${ROM_HANDBOOK_DIR:-$PWD/RoM-handbook}"
 export ROM_TMPDIR="${SLURM_TMPDIR:-/tmp}"
 export OMP_NUM_THREADS="$SLURM_CPUS_PER_TASK"
 export MPLCONFIGDIR="/tmp/matplotlib-${SLURM_JOB_ID}"
 
+# Fail fast on a broken environment (missing deps killed every point of the
+# first submission silently, one traceback per point).
+if ! python -c "import numpy, scipy, numba, tqdm" 2>/dev/null; then
+    echo "ERROR: .venv is missing RoM dependencies. On the login node run:" \
+         "  .venv/bin/pip install numba tqdm gurobipy" >&2
+    exit 1
+fi
 if [ ! -x "$ROM_HANDBOOK_DIR/exputils/dot/fast_dot_products.exe" ]; then
     echo "ERROR: fast_dot_products.exe not compiled; it is required for the" \
          "8-qubit Choi column generation. See one-time setup above." >&2
