@@ -11,10 +11,17 @@ that share a letter sit on the same line:
     e : product-state framability chi=10 | chi=20 | chi=40
     f : opt Schrodinger framability d=4 | d=6 | d=8
     g : dephasing opt framability H (d=4) | S (d=4)
+    d*: opt framability d=4 ^(1/dt) | opt framability d=6 ^(1/dt)   [bottom row]
 
 All framability panels share one colour scale that always includes 1.0, and each
 draws a thin white contour at framability = 1 separating the framable (=1) region
 from >1.
+
+The extra bottom row (d*) rescales the optimised framability per unit time:
+G = expm(L*dt) is one Trotter step, so a small (per-point adaptive) dt trivially
+pushes G toward the identity and its framability toward 1.  Raising to 1/dt
+removes that dt-dependence and estimates the unit-time propagator's framability;
+its white contour is drawn only where fra^(1/dt) is still <= 1 + FRA_ONE_TOL.
 
 Usage:
     python scripts/trotter_scan_collect.py --model model1 \
@@ -45,9 +52,12 @@ N_Q = len(QUANTITIES)
 FRA_ONE_TOL = 1e-6
 
 
-def load_results(in_dir: Path, model) -> np.ndarray:
-    """Return (N_X, N_Y, N_Q) array; NaN where data is missing."""
+def load_results(in_dir: Path, model) -> tuple[np.ndarray, np.ndarray]:
+    """Return ((N_X, N_Y, N_Q) quantity array, (N_X, N_Y) Trotter-step array);
+    NaN where data is missing.  dt is loaded alongside the quantities because it
+    varies per point and is needed for the per-unit-time framability panels."""
     arr = np.full((model.N_X, model.N_Y, N_Q), np.nan)
+    dt_arr = np.full((model.N_X, model.N_Y), np.nan)
     n_loaded = 0
     mdir = in_dir / model.name
     for ix in range(model.N_X):
@@ -60,11 +70,13 @@ def load_results(in_dir: Path, model) -> np.ndarray:
                 for qi, (key, _, _, _) in enumerate(QUANTITIES):
                     if key in d:
                         arr[ix, iy, qi] = float(d[key])
+                if 'dt' in d:
+                    dt_arr[ix, iy] = float(d['dt'])
                 n_loaded += 1
             except Exception as e:
                 print(f'  warning: {f.name}: {e}', flush=True)
     print(f'Loaded {n_loaded}/{model.N_TOTAL} points for {model.name}.', flush=True)
-    return arr
+    return arr, dt_arr
 
 
 def _edges(vals: np.ndarray) -> np.ndarray:
@@ -86,6 +98,21 @@ def _robust_limits(data: np.ndarray) -> tuple[float, float]:
     return lo, hi
 
 
+def _derived_limits(panels: list) -> tuple[float, float]:
+    """Shared (vmin, vmax) for the per-unit-time framability panels.  These
+    explode for non-framable points (fra>1 raised to 1/dt), so the upper limit
+    is a robust percentile rather than the raw max; the scale always spans 1."""
+    finite = np.concatenate([p[np.isfinite(p)].ravel() for p in panels]) \
+        if panels else np.array([])
+    if finite.size == 0:
+        return 0.0, 2.0
+    vmin = min(float(np.nanpercentile(finite, 2)), 1.0)
+    vmax = max(float(np.nanpercentile(finite, 98)), 1.0 + 1e-3)
+    if vmin == vmax:
+        vmin, vmax = vmin - 0.05, vmax + 0.05
+    return vmin, vmax
+
+
 def _shared_fra_limits(arr: np.ndarray, fra_idx: list) -> tuple[float, float]:
     """Common (vmin, vmax) across all framability panels, always spanning 1.0."""
     finite = arr[:, :, fra_idx]
@@ -99,7 +126,8 @@ def _shared_fra_limits(arr: np.ndarray, fra_idx: list) -> tuple[float, float]:
     return vmin, vmax
 
 
-def plot_colormaps(arr: np.ndarray, model, out_png: Path) -> None:
+def plot_colormaps(arr: np.ndarray, dt_arr: np.ndarray, model,
+                   out_png: Path) -> None:
     x_vals, y_vals = np.array(model.p1_vals), np.array(model.p2_vals)
     x_edges, y_edges = _edges(x_vals), _edges(y_vals)
 
@@ -110,8 +138,26 @@ def plot_colormaps(arr: np.ndarray, model, out_png: Path) -> None:
     by_group: dict[str, list[int]] = {g: [] for g in GROUPS}
     for qi, (_, _, group, _) in enumerate(QUANTITIES):
         by_group[group].append(qi)
-    n_cols = max(len(v) for v in by_group.values())
-    n_rows = len(GROUPS)
+
+    # Extra bottom row: optimised framability normalised per unit time.  One
+    # Trotter step is G = expm(L*dt); a small dt trivially pushes G toward the
+    # identity (hence framability -> 1), so the raw opt framability is not
+    # comparable across points with different adaptive dt.  Raising it to 1/dt
+    # removes that dt-dependence and estimates the framability of the unit-time
+    # propagator (submultiplicativity: fra(expm(L)) <= fra(expm(L*dt))^(1/dt)).
+    # A point is only framable under this stricter test if fra^(1/dt) is still
+    # <= 1 + FRA_ONE_TOL, so the white contour is drawn at that level.
+    key_index = {key: qi for qi, (key, _, _, _) in enumerate(QUANTITIES)}
+    DERIVED = [('opt_fra_4', r'Opt framability H (d=4)$^{1/\Delta t}$'),
+               ('opt_fra_6', r'Opt framability H (d=6)$^{1/\Delta t}$')]
+    with np.errstate(over='ignore', invalid='ignore'):
+        inv_dt = 1.0 / dt_arr
+        derived = [(label, np.power(arr[:, :, key_index[key]], inv_dt).T)
+                   for key, label in DERIVED]
+    dvmin, dvmax = _derived_limits([d for _, d in derived])
+
+    n_cols = max(max(len(v) for v in by_group.values()), len(DERIVED))
+    n_rows = len(GROUPS) + 1
 
     fig, axes = plt.subplots(n_rows, n_cols,
                              figsize=(4.5 * n_cols, 3.6 * n_rows),
@@ -168,6 +214,39 @@ def plot_colormaps(arr: np.ndarray, model, out_png: Path) -> None:
         cbar.set_ticks(ticks)
         cbar.set_label('framability')
 
+    # Bottom row: per-unit-time (fra^(1/dt)) optimised-framability panels.
+    r = len(GROUPS)
+    der_im, der_axes = None, []
+    for c in range(n_cols):
+        ax = axes[r][c]
+        if c >= len(derived):
+            ax.set_visible(False)
+            continue
+        label, pdata = derived[c]
+        im = ax.pcolormesh(x_edges, y_edges, pdata, cmap='magma',
+                           vmin=dvmin, vmax=dvmax, shading='flat')
+        ax.set_xlabel(model.p1_label)
+        ax.set_ylabel(model.p2_label)
+
+        title = f'(d$^\\star$) {label}'
+        finite = pdata[np.isfinite(pdata)]
+        if finite.size and float(finite.min()) > 1.0 + FRA_ONE_TOL:
+            title += f'\nmin$-1$ = {float(finite.min()) - 1.0:.3g}'
+        ax.set_title(title, fontsize=10)
+
+        der_im = im
+        der_axes.append(ax)
+        # white contour only where fra^(1/dt) is still <= 1 + FRA_ONE_TOL
+        try:
+            ax.contour(x_vals, y_vals, pdata, levels=[1.0 + FRA_ONE_TOL],
+                       colors='white', linewidths=1.0)
+        except Exception:
+            pass
+
+    if der_im is not None:
+        cbar = fig.colorbar(der_im, ax=der_axes, pad=0.02)
+        cbar.set_label(r'framability$^{1/\Delta t}$')
+
     fig.suptitle(f'{model.name}:  {model.title}', fontsize=13)
     out_png.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(out_png, dpi=150)
@@ -190,14 +269,14 @@ def main() -> None:
     out_png = Path(args.out_png) if args.out_png else \
         Path('results_plots') / f'trotter_{model.name}.png'
 
-    arr = load_results(in_dir, model)
+    arr, dt_arr = load_results(in_dir, model)
     if args.save_npz:
         npz = in_dir / model.name / 'scan_summary.npz'
-        np.savez(npz, arr=arr, p1=model.p1_vals, p2=model.p2_vals,
+        np.savez(npz, arr=arr, dt=dt_arr, p1=model.p1_vals, p2=model.p2_vals,
                  quantities=[k for k, _, _, _ in QUANTITIES])
         print(f'Saved {npz}', flush=True)
 
-    plot_colormaps(arr, model, out_png)
+    plot_colormaps(arr, dt_arr, model, out_png)
 
 
 if __name__ == '__main__':

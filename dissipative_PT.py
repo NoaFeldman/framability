@@ -272,6 +272,25 @@ def _kron_power(S: np.ndarray, n: int) -> np.ndarray:
     return D
 
 
+# HiGHS solver ladder for the per-column framability LPs.  The original single
+# attempt used presolve=False, which makes HiGHS report a spurious non-zero
+# status -- and hence a spurious +inf framability -- on many *feasible*,
+# full-rank problems (verified e.g. on rank-16 frames whose columns are all
+# reachable to 1e-15 residual).  We therefore try presolve ON first (default
+# HiGHS pivoting, then interior-point, then dual simplex) and only fall back to
+# the original presolve OFF.  A column is deemed genuinely unexpandable
+# (framability +inf) only when *every* attempt fails; the ladder was validated
+# to (a) resolve the spurious infs to their true finite value, (b) preserve
+# genuine framability>1 frames, and (c) still return +inf for the rare
+# numerically ill-conditioned point no HiGHS configuration can solve.
+_HIGHS_ATTEMPTS = (
+    dict(solver=None,      presolve=True),
+    dict(solver='ipm',     presolve=True),
+    dict(solver='simplex', presolve=True),
+    dict(solver=None,      presolve=False),
+)
+
+
 def _framability_lp(D: np.ndarray, gate: np.ndarray) -> float:
     D = np.asarray(D, dtype=float)
     nrows, d_ext = D.shape
@@ -285,12 +304,20 @@ def _framability_lp(D: np.ndarray, gate: np.ndarray) -> float:
     lp = _clean_inputs(_LPProblem(c_obj, A_ub, b_ub, A_eq, np.zeros(nrows), bounds, None))
     best = 0.0
     for j in range(d_ext):
-        r = _linprog_highs(lp._replace(b_eq=Y[:, j].copy()), solver=None, presolve=False)
-        if r['status'] != 0:
-            # Column j of the gate cannot be expanded in this frame: the frame
-            # is incomplete for the gate, so its framability is +inf.  Returning
-            # 0 here (the old behaviour) silently dropped the column and let the
-            # optimiser cheat by collapsing D to a rank-deficient frame.
+        lp_j = lp._replace(b_eq=Y[:, j].copy())
+        r = None
+        for kw in _HIGHS_ATTEMPTS:
+            cand = _linprog_highs(lp_j, **kw)
+            if cand['status'] == 0:
+                r = cand
+                break
+        if r is None:
+            # Every HiGHS configuration failed on column j: the frame is either
+            # genuinely incomplete for the gate (column unreachable) or the LP is
+            # too ill-conditioned to certify, so its framability is +inf.
+            # Returning 0 here (the pre-2.0 behaviour) silently dropped the
+            # column and let the optimiser cheat by collapsing D to a
+            # rank-deficient frame.
             return float('inf')
         best = max(best, float(np.sum(np.abs(r['x'][:d_ext]))))
     return best

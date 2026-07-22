@@ -773,6 +773,26 @@ def minimize_framability(gate, d_ext_single, *, n_restarts=5,
         use_complex=_use_complex, gate=gate,
     )
 
+    # Confirmation gate.  The search objective _get_framability_fast is a single
+    # batched LP that UNDER-reports the framability on some frames (a batched-LP
+    # defect, not tolerance/presolve: e.g. it returns 1.0 where the true value is
+    # 1.045).  So the framability of the *returned* frame D_opt is re-evaluated
+    # with the independent, hardened per-column reference LP
+    # (dissipative_PT._framability_lp, presolve-on solver ladder) and the report
+    # is raised to that value when they disagree.  Real frames only (the
+    # reference LP is real); the alternating method always uses them.  Only a
+    # finite, larger reference value overrides -- a spurious/ill-conditioned inf
+    # never discards an otherwise-valid result.
+    if not _use_complex and result[0] is not None:
+        try:
+            from dissipative_PT import _framability_lp as _ref_lp
+            f_conf = _ref_lp(np.asarray(result[0]).real, gate)
+            if np.isfinite(f_conf) and f_conf > result[1]:
+                result = (result[0], float(f_conf)) + tuple(result[2:])
+        except Exception as exc:                       # pragma: no cover
+            if verbose:
+                print(f'  [confirm] reference-LP check skipped: {exc}')
+
     if verbose:
         f_opt = result[1]
         print(f'floor (spectral radius) = {floor:.6f}   '
