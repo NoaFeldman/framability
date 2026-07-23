@@ -48,7 +48,12 @@ ROM_TMPDIR       : directory for per-call temporary npz files exchanged with
 The C++ helper must be compiled once (needed only for n_choi >= 6):
 
     g++ exputils/dot/fast_dot_products.cpp -o exputils/dot/fast_dot_products.exe \
-        -std=c++17 -lz -O2 -DNDEBUG -mtune=native -march=native -fopenmp
+        -std=c++17 -lz -O2 -DNDEBUG -march=x86-64-v2 -fopenmp
+
+Do NOT use -march=native on a cluster: a binary built on the login node then
+crashes with SIGILL (subprocess returncode -4) on older compute nodes.
+x86-64-v2 (SSE4.2/POPCNT) is safe on any node from the last ~15 years; drop
+the -march flag entirely if even that fails.
 
 Usage
 -----
@@ -369,13 +374,35 @@ def topk_botk_Amat(
 DEFAULT_K = {1: 1.0, 2: 1.0, 3: 1.0, 4: 1e-1, 5: 1e-2, 6: 1e-3, 7: 1e-5, 8: 1e-8}
 
 
+_GUROBI_LICENSE_OK: Optional[bool] = None    # probed once per process
+
+
+def _gurobi_license_ok(n_vars: int = 3000) -> bool:
+    """True iff gurobipy is importable AND licensed for models beyond the
+    pip-install size-limited license (~2000 vars/constraints).  The RoM LPs
+    have 2x(number of stabilizer columns) variables -- already 73920 for the
+    full 4-qubit Amat -- so a size-limited license is as good as no Gurobi."""
+    global _GUROBI_LICENSE_OK
+    if _GUROBI_LICENSE_OK is None:
+        try:
+            import gurobipy as gp
+
+            m = gp.Model("license_probe")
+            m.Params.OutputFlag = 0
+            m.addMVar(shape=n_vars, lb=0)
+            m.optimize()
+            m.dispose()
+            _GUROBI_LICENSE_OK = True
+        except Exception:
+            _GUROBI_LICENSE_OK = False
+    return _GUROBI_LICENSE_OK
+
+
 def pick_solver(solver: str, n_qubit: int) -> str:
     if solver != "auto":
         return solver
     try:
         import gurobipy  # noqa: F401
-
-        return "gurobi"
     except ImportError:
         if n_qubit >= 5:
             warnings.warn(
@@ -383,6 +410,14 @@ def pick_solver(solver: str, n_qubit: int) -> str:
                 "the LPs are large and scipy may be slow or fail."
             )
         return "scipy"
+    if _gurobi_license_ok():
+        return "gurobi"
+    warnings.warn(
+        "gurobipy is installed but only carries the pip size-limited license "
+        "(refuses the RoM LPs); falling back to scipy/HiGHS. Set "
+        "GRB_LICENSE_FILE to a full (e.g. free academic) license to use Gurobi."
+    )
+    return "scipy"
 
 
 def rom_naive(

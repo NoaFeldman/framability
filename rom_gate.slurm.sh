@@ -21,7 +21,8 @@
 #   git clone https://github.com/quantum-programming/RoM-handbook.git
 #   g++ RoM-handbook/exputils/dot/fast_dot_products.cpp \
 #       -o RoM-handbook/exputils/dot/fast_dot_products.exe \
-#       -std=c++17 -lz -O2 -DNDEBUG -mtune=native -march=native -fopenmp
+#       -std=c++17 -lz -O2 -DNDEBUG -march=x86-64-v2 -fopenmp
+#   (no -march=native: a login-node build SIGILLs on older compute nodes)
 
 # --- environment ------------------------------------------------------------
 VENV="$HOME/venvs/framability"

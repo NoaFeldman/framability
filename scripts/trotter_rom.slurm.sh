@@ -27,8 +27,9 @@
 #    git clone https://github.com/quantum-programming/RoM-handbook.git
 #    g++ RoM-handbook/exputils/dot/fast_dot_products.cpp \
 #        -o RoM-handbook/exputils/dot/fast_dot_products.exe \
-#        -std=c++17 -lz -O2 -DNDEBUG -mtune=native -march=native -fopenmp
+#        -std=c++17 -lz -O2 -DNDEBUG -march=x86-64-v2 -fopenmp
 #    .venv/bin/pip install numba tqdm gurobipy
+#  (no -march=native: a login-node build SIGILLs on older compute nodes)
 # ============================================================
 
 #SBATCH --job-name=trot_rom
@@ -58,9 +59,12 @@ K=${K:-}              # empty -> handbook default (1e-8 at n_choi=8)
 source "${SLURM_SUBMIT_DIR}/.venv/bin/activate"
 cd "${SLURM_SUBMIT_DIR}"
 
-# Gurobi: effectively required for the 8-qubit Choi CG LPs.  If the cluster
-# provides it as a module this picks up the full license; the pip gurobipy
-# alone carries a size-limited license that CANNOT solve the n_choi=8 LPs.
+# Gurobi: strongly recommended for the 8-qubit Choi CG LPs.  The pip gurobipy
+# alone carries a size-limited license that CANNOT solve them -- rom_of_gate
+# probes the license and falls back to scipy/HiGHS automatically.  For a real
+# license either load a cluster module or point at a (free academic) license
+# file -- $HOME is read-only on the compute nodes but still readable:
+#   export GRB_LICENSE_FILE=$HOME/gurobi.lic
 module load gurobi 2>/dev/null || true
 
 export ROM_HANDBOOK_DIR="${ROM_HANDBOOK_DIR:-$PWD/RoM-handbook}"
