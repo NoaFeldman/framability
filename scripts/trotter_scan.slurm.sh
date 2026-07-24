@@ -2,11 +2,12 @@
 # ============================================================
 #  SLURM job-array: generic two-qubit Trotter Lindbladian scan.
 #
-#  One MODEL (model1..model6) is scanned over its two varying parameters.
-#  Grid sizes (point counts):
+#  One MODEL (model1..model6, model7a..model7e) is scanned over its two varying
+#  parameters.  Grid sizes (point counts):
 #    model1  21 x 51 = 1071      model2  21 x  51 = 1071
 #    model3  51 x 51 = 2601      model4  51 x  51 = 2601
 #    model5  21 x 101 = 2121     model6  51 x  51 = 2601
+#    model7a..model7d  20 x 20 = 400   model7e  20 x 11 = 220
 #
 #  The grid is split across a 200-task array (N_CHUNKS=200); each task processes
 #  a strided subset and skips any npz already current on disk.

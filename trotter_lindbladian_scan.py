@@ -65,7 +65,7 @@ from scipy.optimize import minimize
 
 # Reuse the validated primitives from the dissipative-PT pipeline.
 from dissipative_PT import (
-    _I2, _SX, _SY, _SZ, _PAULI, S_MINUS, _build_lindbladian, _site_op, bonds_2d,
+    _I2, _SX, _SY, _SZ, _PAULI, S_MINUS, S_PLUS, _build_lindbladian, _site_op, bonds_2d,
     pauli_to_rho, steady_state_and_decay, vn_entropy, negativity,
     site_magnetization, lpdo_bond_entropy,
     pauli_framability, optimise_framability,
@@ -622,6 +622,41 @@ def _build_model6(rho: float, sigma: float):
     return None, H2, jumps1, []
 
 
+# model7 (added 2026-07, no version bump: existing model data is unchanged).
+# Anisotropic XY(Z) bond with a transverse Z field and a single finite-temperature
+# lowering/raising jump:
+#   H1 = omega Z
+#   H2 = (1+gamma) 1/2 J XX + (1-gamma) 1/2 J YY + delta J ZZ   (gamma = XY anisotropy)
+#   jump L1 = Gamma ((n+1) 1/2 S^- + n S^+)   (one-qubit; amplitude includes the rate)
+# Five parameter sets (model7a..model7e) share these terms; they differ only in
+# which two parameters vary on the scan grid and in the values of the fixed ones.
+def _model7_terms(omega: float, J: float, gamma: float, delta: float,
+                  Gamma: float, n: float):
+    """(H1, H2, jumps1, jumps2) for the model7 family at a given parameter point."""
+    H1 = omega * _SZ
+    H2 = ((1.0 + gamma) * 0.5 * J * np.kron(_SX, _SX)
+          + (1.0 - gamma) * 0.5 * J * np.kron(_SY, _SY)
+          + delta * J * np.kron(_SZ, _SZ))
+    jumps1 = [Gamma * ((n + 1.0) * 0.5 * S_MINUS + n * S_PLUS)]
+    return H1, H2, jumps1, []
+
+
+def _make_model7_gamma_delta(omega: float, n: float, Gamma: float, J: float):
+    """build(gamma, delta) for the gamma-delta scan variants (model7a..model7d);
+    omega, n, Gamma, J are fixed."""
+    def build(gamma: float, delta: float):
+        return _model7_terms(omega, J, gamma, delta, Gamma, n)
+    return build
+
+
+def _make_model7_gamma_n(omega: float, Gamma: float, J: float, delta: float):
+    """build(gamma, n) for the gamma-n scan variant (model7e); omega, Gamma, J,
+    delta are fixed."""
+    def build(gamma: float, n: float):
+        return _model7_terms(omega, J, gamma, delta, Gamma, n)
+    return build
+
+
 # All models use dim=2 and the per-point adaptive Trotter step (dt=None ->
 # choose_dt).  Models 1-4 share H = J ZZ + h X; models 1-2 relax the lpdo_max
 # path from |+>^N (the transverse-field / X-basis dynamics sit far from a |0>^N
@@ -675,6 +710,52 @@ MODELS: dict[str, ModelSpec] = {
         p2_name='sigma', p2_label=r'$\sigma$',
         p2_vals=_arange(0, np.pi / 2, np.pi * 1e-2),
         build=_build_model6),
+    # model7 (added 2026-07): anisotropic XY(Z) bond H2 = (1+gamma)/2 J XX +
+    # (1-gamma)/2 J YY + delta J ZZ with field H1 = omega Z and a single
+    # finite-T jump L = Gamma((n+1)/2 S^- + n S^+).  model7a..model7d scan the
+    # anisotropy gamma against the ZZ ratio delta (both 0..0.95 step 0.05, 20x20)
+    # at fixed (omega, n, Gamma, J); model7e scans gamma against the temperature
+    # occupation n (0..0.05 step 0.005, 11 values) at fixed delta=0.5, J=0.1.
+    'model7a': ModelSpec(
+        name='model7a',
+        title=r'$H=\omega Z+\tfrac{(1+\gamma)}{2}J\,XX+\tfrac{(1-\gamma)}{2}J\,YY'
+              r'+\delta J\,ZZ$,  jump $\Gamma(\tfrac{n{+}1}{2}S^-{+}nS^+)$'
+              r'  ($\omega{=}1,\ n{=}0,\ \Gamma{=}0.05,\ J{=}0.05$)',
+        p1_name='gamma', p1_label=r'$\gamma$', p1_vals=_arange(0, 0.95, 0.05),
+        p2_name='delta', p2_label=r'$\delta$', p2_vals=_arange(0, 0.95, 0.05),
+        build=_make_model7_gamma_delta(omega=1.0, n=0.0, Gamma=0.05, J=0.05)),
+    'model7b': ModelSpec(
+        name='model7b',
+        title=r'$H=\omega Z+\tfrac{(1+\gamma)}{2}J\,XX+\tfrac{(1-\gamma)}{2}J\,YY'
+              r'+\delta J\,ZZ$,  jump $\Gamma(\tfrac{n{+}1}{2}S^-{+}nS^+)$'
+              r'  ($\omega{=}1,\ n{=}0.05,\ \Gamma{=}0.05,\ J{=}0.05$)',
+        p1_name='gamma', p1_label=r'$\gamma$', p1_vals=_arange(0, 0.95, 0.05),
+        p2_name='delta', p2_label=r'$\delta$', p2_vals=_arange(0, 0.95, 0.05),
+        build=_make_model7_gamma_delta(omega=1.0, n=0.05, Gamma=0.05, J=0.05)),
+    'model7c': ModelSpec(
+        name='model7c',
+        title=r'$H=\omega Z+\tfrac{(1+\gamma)}{2}J\,XX+\tfrac{(1-\gamma)}{2}J\,YY'
+              r'+\delta J\,ZZ$,  jump $\Gamma(\tfrac{n{+}1}{2}S^-{+}nS^+)$'
+              r'  ($\omega{=}1,\ n{=}0,\ \Gamma{=}0.05,\ J{=}0.05$)',
+        p1_name='gamma', p1_label=r'$\gamma$', p1_vals=_arange(0, 0.95, 0.05),
+        p2_name='delta', p2_label=r'$\delta$', p2_vals=_arange(0, 0.95, 0.05),
+        build=_make_model7_gamma_delta(omega=1.0, n=0.0, Gamma=0.05, J=0.05)),
+    'model7d': ModelSpec(
+        name='model7d',
+        title=r'$H=\omega Z+\tfrac{(1+\gamma)}{2}J\,XX+\tfrac{(1-\gamma)}{2}J\,YY'
+              r'+\delta J\,ZZ$,  jump $\Gamma(\tfrac{n{+}1}{2}S^-{+}nS^+)$'
+              r'  ($\omega{=}1,\ n{=}0.01,\ \Gamma{=}0.05,\ J{=}0.1$)',
+        p1_name='gamma', p1_label=r'$\gamma$', p1_vals=_arange(0, 0.95, 0.05),
+        p2_name='delta', p2_label=r'$\delta$', p2_vals=_arange(0, 0.95, 0.05),
+        build=_make_model7_gamma_delta(omega=1.0, n=0.01, Gamma=0.05, J=0.1)),
+    'model7e': ModelSpec(
+        name='model7e',
+        title=r'$H=\omega Z+\tfrac{(1+\gamma)}{2}J\,XX+\tfrac{(1-\gamma)}{2}J\,YY'
+              r'+\delta J\,ZZ$,  jump $\Gamma(\tfrac{n{+}1}{2}S^-{+}nS^+)$'
+              r'  ($\omega{=}1,\ \delta{=}0.5,\ \Gamma{=}0.05,\ J{=}0.1$)',
+        p1_name='gamma', p1_label=r'$\gamma$', p1_vals=_arange(0, 0.95, 0.05),
+        p2_name='n',     p2_label=r'$n$',      p2_vals=_arange(0, 0.05, 0.005),
+        build=_make_model7_gamma_n(omega=1.0, Gamma=0.05, J=0.1, delta=0.5)),
 }
 
 
