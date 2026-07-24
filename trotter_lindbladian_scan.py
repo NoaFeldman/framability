@@ -622,6 +622,7 @@ def _build_model6(rho: float, sigma: float):
     return None, H2, jumps1, []
 
 
+# https://journals.aps.org/pra/pdf/10.1103/PhysRevA.94.012341
 # model7 (added 2026-07, no version bump: existing model data is unchanged).
 # Anisotropic XY(Z) bond with a transverse Z field and a single finite-temperature
 # lowering/raising jump:
@@ -718,40 +719,40 @@ MODELS: dict[str, ModelSpec] = {
     # occupation n (0..0.05 step 0.005, 11 values) at fixed delta=0.5, J=0.1.
     'model7a': ModelSpec(
         name='model7a',
-        title=r'$H=\omega Z+\tfrac{(1+\gamma)}{2}J\,XX+\tfrac{(1-\gamma)}{2}J\,YY'
-              r'+\delta J\,ZZ$,  jump $\Gamma(\tfrac{n{+}1}{2}S^-{+}nS^+)$'
+        title=r'$H=\omega Z+\frac{(1+\gamma)}{2}J\,XX+\frac{(1-\gamma)}{2}J\,YY'
+              r'+\delta J\,ZZ$,  jump $\Gamma(\frac{n{+}1}{2}S^-{+}nS^+)$'
               r'  ($\omega{=}1,\ n{=}0,\ \Gamma{=}0.05,\ J{=}0.05$)',
         p1_name='gamma', p1_label=r'$\gamma$', p1_vals=_arange(0, 0.95, 0.05),
         p2_name='delta', p2_label=r'$\delta$', p2_vals=_arange(0, 0.95, 0.05),
         build=_make_model7_gamma_delta(omega=1.0, n=0.0, Gamma=0.05, J=0.05)),
     'model7b': ModelSpec(
         name='model7b',
-        title=r'$H=\omega Z+\tfrac{(1+\gamma)}{2}J\,XX+\tfrac{(1-\gamma)}{2}J\,YY'
-              r'+\delta J\,ZZ$,  jump $\Gamma(\tfrac{n{+}1}{2}S^-{+}nS^+)$'
+        title=r'$H=\omega Z+\frac{(1+\gamma)}{2}J\,XX+\frac{(1-\gamma)}{2}J\,YY'
+              r'+\delta J\,ZZ$,  jump $\Gamma(\frac{n{+}1}{2}S^-{+}nS^+)$'
               r'  ($\omega{=}1,\ n{=}0.05,\ \Gamma{=}0.05,\ J{=}0.05$)',
         p1_name='gamma', p1_label=r'$\gamma$', p1_vals=_arange(0, 0.95, 0.05),
         p2_name='delta', p2_label=r'$\delta$', p2_vals=_arange(0, 0.95, 0.05),
         build=_make_model7_gamma_delta(omega=1.0, n=0.05, Gamma=0.05, J=0.05)),
     'model7c': ModelSpec(
         name='model7c',
-        title=r'$H=\omega Z+\tfrac{(1+\gamma)}{2}J\,XX+\tfrac{(1-\gamma)}{2}J\,YY'
-              r'+\delta J\,ZZ$,  jump $\Gamma(\tfrac{n{+}1}{2}S^-{+}nS^+)$'
+        title=r'$H=\omega Z+\frac{(1+\gamma)}{2}J\,XX+\frac{(1-\gamma)}{2}J\,YY'
+              r'+\delta J\,ZZ$,  jump $\Gamma(\frac{n{+}1}{2}S^-{+}nS^+)$'
               r'  ($\omega{=}1,\ n{=}0,\ \Gamma{=}0.05,\ J{=}0.05$)',
         p1_name='gamma', p1_label=r'$\gamma$', p1_vals=_arange(0, 0.95, 0.05),
         p2_name='delta', p2_label=r'$\delta$', p2_vals=_arange(0, 0.95, 0.05),
         build=_make_model7_gamma_delta(omega=1.0, n=0.0, Gamma=0.05, J=0.05)),
     'model7d': ModelSpec(
         name='model7d',
-        title=r'$H=\omega Z+\tfrac{(1+\gamma)}{2}J\,XX+\tfrac{(1-\gamma)}{2}J\,YY'
-              r'+\delta J\,ZZ$,  jump $\Gamma(\tfrac{n{+}1}{2}S^-{+}nS^+)$'
+        title=r'$H=\omega Z+\frac{(1+\gamma)}{2}J\,XX+\frac{(1-\gamma)}{2}J\,YY'
+              r'+\delta J\,ZZ$,  jump $\Gamma(\frac{n{+}1}{2}S^-{+}nS^+)$'
               r'  ($\omega{=}1,\ n{=}0.01,\ \Gamma{=}0.05,\ J{=}0.1$)',
         p1_name='gamma', p1_label=r'$\gamma$', p1_vals=_arange(0, 0.95, 0.05),
         p2_name='delta', p2_label=r'$\delta$', p2_vals=_arange(0, 0.95, 0.05),
         build=_make_model7_gamma_delta(omega=1.0, n=0.01, Gamma=0.05, J=0.1)),
     'model7e': ModelSpec(
         name='model7e',
-        title=r'$H=\omega Z+\tfrac{(1+\gamma)}{2}J\,XX+\tfrac{(1-\gamma)}{2}J\,YY'
-              r'+\delta J\,ZZ$,  jump $\Gamma(\tfrac{n{+}1}{2}S^-{+}nS^+)$'
+        title=r'$H=\omega Z+\frac{(1+\gamma)}{2}J\,XX+\frac{(1-\gamma)}{2}J\,YY'
+              r'+\delta J\,ZZ$,  jump $\Gamma(\frac{n{+}1}{2}S^-{+}nS^+)$'
               r'  ($\omega{=}1,\ \delta{=}0.5,\ \Gamma{=}0.05,\ J{=}0.1$)',
         p1_name='gamma', p1_label=r'$\gamma$', p1_vals=_arange(0, 0.95, 0.05),
         p2_name='n',     p2_label=r'$n$',      p2_vals=_arange(0, 0.05, 0.005),
