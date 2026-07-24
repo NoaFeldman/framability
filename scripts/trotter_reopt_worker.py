@@ -61,15 +61,18 @@ from trotter_lindbladian_scan import (
     gamma_ch1_framability, _CH1_SEEDS,
 )
 from dissipative_PT import (
-    _SZ, _framability_lp, _kron_power, frame_from_params,
+    _SZ, _framability_lp, _kron_power, frame_from_params, _ixyz_init,
 )
 from optimize_framability import (
     minimize_framability, minimize_schroedinger_framability,
-    polyak_floor_polish, spectral_floor, OPT_VERSION,
+    polyak_floor_polish, spectral_floor, OPT_VERSION, SUPPORT_EPS,
 )
 from gamma_ch1_sphere import gamma_CH1, frame_op_1q, pauli_coeffs
 
-REOPT_VERSION = f'{OPT_VERSION}-reopt1'
+# -reopt2: the Heisenberg re-optimisation now enforces genuine per-Pauli support
+# (SUPPORT_EPS) on the returned frame, rejecting the collapsed all-identity frames
+# the rank-only guard admitted (vacuous framability = spectral floor).
+REOPT_VERSION = f'{OPT_VERSION}-reopt2'
 FRA_ONE_TOL = 1e-6
 
 # The optimised-framability quantities this worker recomputes, with their
@@ -100,10 +103,29 @@ def _seed_x(S) -> np.ndarray | None:
     return S[:, 1:].ravel()
 
 
-def _confirm_heis(S, gate) -> float:
-    """Reference-LP framability of the Heisenberg frame S (or +inf if invalid)."""
+def _pauli_support_ok(S) -> bool:
+    """True iff every Pauli X, Y, Z has support >= SUPPORT_EPS on some column of
+    the single-qubit frame S:  max_j |S[a, j]| >= SUPPORT_EPS  for a in {X,Y,Z}.
+
+    The rank-based _has_full_support (rtol 1e-6) used by the framability LPs is
+    too lenient -- it admits near-collapsed frames whose whole Bloch part is
+    ~1e-3, so D = S(x)S is technically full rank but the framability certificate
+    is vacuous (all mass on the identity column; framability trivially = the
+    spectral floor).  This is the same per-Pauli support requirement the
+    Schrodinger optimiser enforces, and is what "the frame has support on all
+    Pauli operators" means here."""
     S = np.asarray(S, dtype=float)
-    if not np.all(np.isfinite(S)):
+    if S.ndim != 2 or S.shape[0] < 4 or S.shape[1] < 1 or not np.all(np.isfinite(S)):
+        return False
+    return bool(np.min(np.max(np.abs(S[1:4, :]), axis=1)) >= SUPPORT_EPS)
+
+
+def _confirm_heis(S, gate) -> float:
+    """Reference-LP framability of the Heisenberg frame S, or +inf when the frame
+    lacks genuine support on every Pauli (a collapsed frame is rejected so it can
+    never win the never-degrade comparison)."""
+    S = np.asarray(S, dtype=float)
+    if not _pauli_support_ok(S):
         return float('inf')
     return _framability_lp(_kron_power(S, 2), gate)
 
@@ -136,26 +158,46 @@ def _neighbour_heis_seeds(in_dir: Path, name: str, ix: int, iy: int,
 #  Per-kind re-optimisers.  Each returns (new_value, new_frame_or_None).
 # ---------------------------------------------------------------------------
 def _reopt_heis(gate, de, stored_S, in_dir, name, ix, iy, args):
-    """Alternating-certificate re-optimisation of the Heisenberg framability.
+    """Alternating-certificate re-optimisation of the Heisenberg framability,
+    constrained to frames with genuine support on every Pauli.
 
-    Warm-started from the stored opt_S frame plus the grid-neighbour opt_S
-    frames, then Polyak floor-polished; every candidate is reference-LP
-    confirmed.  Returns (value, frame) with the value LP-confirmed."""
+    Warm-started from the stored opt_S frame, the grid-neighbour opt_S frames
+    and -- always -- the extended-Pauli (ixyz) frame, which is full-support by
+    construction so a valid answer exists even when the local optimiser drifts
+    into a collapsed frame.  The alternating result is Polyak floor-polished, and
+    among {optimised, polished, ixyz baseline} only the frames that pass the
+    per-Pauli support test are kept; the one with the smallest reference-LP
+    framability is returned.  Returns (value, frame) with value LP-confirmed and
+    the frame guaranteed to have full Pauli support (never a vacuous certificate).
+    """
+    ixyz_x = _ixyz_init(de)
     seeds = [_seed_x(stored_S)] if stored_S is not None else []
     seeds += _neighbour_heis_seeds(in_dir, name, ix, iy, de)
+    seeds.append(ixyz_x)                       # guaranteed full-support seed
     extra = [s for s in seeds if s is not None] or None
     _, _f, x_opt = minimize_framability(
         gate, de, n_restarts=args.n_restarts, method='alternating',
         maxfev=args.maxfev, seed=args.seed, verbose=False, return_x=True,
         extra_init_xs=extra)
     S_opt = frame_from_params(x_opt, de)
-    best_val, best_S = _confirm_heis(S_opt, gate), S_opt
-    if args.polish_iters > 0 and np.all(np.isfinite(S_opt)):
-        f_pol, S_pol = polyak_floor_polish(S_opt, gate, n_iter=args.polish_iters)
-        v_pol = _confirm_heis(S_pol, gate)
-        if np.isfinite(v_pol) and v_pol < best_val:
-            best_val, best_S = v_pol, S_pol
-    return float(best_val), np.asarray(best_S)
+
+    # Candidate full-support frames.  The optimiser can return a collapsed frame
+    # (its internal LP only checks rank, not per-Pauli support); polishing may
+    # collapse a good frame too.  Keep every candidate but score each through
+    # _confirm_heis, which rejects support-poor frames with +inf -- so the ixyz
+    # extended-Pauli frame (always full-support) is the guaranteed fallback.
+    cands = [S_opt]
+    if args.polish_iters > 0 and _pauli_support_ok(S_opt):
+        _, S_pol = polyak_floor_polish(S_opt, gate, n_iter=args.polish_iters)
+        cands.append(S_pol)
+    cands.append(frame_from_params(ixyz_x, de))
+
+    best_val, best_S = float('inf'), None
+    for S in cands:
+        v = _confirm_heis(S, gate)             # +inf unless full Pauli support
+        if np.isfinite(v) and v < best_val:
+            best_val, best_S = v, np.asarray(S)
+    return float(best_val), best_S
 
 
 def _reopt_schro(gate, de, args):
@@ -262,17 +304,26 @@ def process_point(in_dir: Path, name: str, ix: int, iy: int, args) -> None:
             continue
 
         data[f'reopt_{key}'] = np.array(new_val)
+
+        # A stored Heisenberg value whose frame lacks genuine Pauli support is a
+        # vacuous certificate (the very bug this fixes): treat it as +inf so the
+        # honest full-support result always replaces it, even when numerically
+        # larger.  Every _reopt_heis result is full-support by construction.
+        stored_invalid = (kind == 'heis'
+                          and not _pauli_support_ok(data.get(f'opt_S_{de}')))
+        eff_stored = float('inf') if stored_invalid else stored
         if direction == 'min':
-            improved = np.isfinite(new_val) and new_val < stored - 1e-12
+            improved = np.isfinite(new_val) and new_val < eff_stored - 1e-12
         else:                                                    # 'max'
-            improved = np.isfinite(new_val) and new_val > stored + 1e-12
+            improved = np.isfinite(new_val) and new_val > eff_stored + 1e-12
         if improved:
             data[key] = np.array(new_val)
             if new_S is not None and de is not None and f'opt_S_{de}' in data \
                     and kind == 'heis':
                 data[f'opt_S_{de}'] = new_S      # keep the stored frame consistent
-        line.append(f'{key}: {stored:.6f}->{new_val:.6f} '
-                    f'{"IMPROVED" if improved else "kept"}')
+        tag = 'IMPROVED' + ('(stored-collapsed)' if stored_invalid else '') \
+            if improved else 'kept'
+        line.append(f'{key}: {stored:.6f}->{new_val:.6f} {tag}')
 
     data['reopt_version'] = np.array(REOPT_VERSION)
     tmp = f.with_name(f'{f.stem}.tmp{os.getpid()}.npz')
