@@ -42,7 +42,8 @@
 #SBATCH --error=logs/trot_rom_%A_%a.err
 
 MODEL=${MODEL:-model1}
-OUT_DIR=${OUT_DIR:-results_trotter_rom}
+SYSTEM=${SYSTEM:-2x2}   # 2x2: 4-qubit gate (heavy); 2x1: bond gate (cheap naive LP)
+OUT_DIR=${OUT_DIR:-}    # empty -> results_trotter_rom (2x2) / results_trotter_rom2 (2x1)
 SCAN_DIR=${SCAN_DIR:-results_trotter_v3}
 N_CHUNKS=${N_CHUNKS:-200}
 DIM=${DIM:-}          # empty -> the model's own dim (all models: 2)
@@ -79,24 +80,28 @@ if ! python -c "import numpy, scipy, numba, tqdm" 2>/dev/null; then
          "  .venv/bin/pip install numba tqdm gurobipy" >&2
     exit 1
 fi
-if [ ! -x "$ROM_HANDBOOK_DIR/exputils/dot/fast_dot_products.exe" ]; then
+# The C++ enumerator is only needed for the 8-qubit Choi (SYSTEM=2x2); the
+# 2x1 bond-gate RoM is a naive LP over the precomputed 4-qubit Amat.
+if [ "$SYSTEM" = "2x2" ] && \
+   [ ! -x "$ROM_HANDBOOK_DIR/exputils/dot/fast_dot_products.exe" ]; then
     echo "ERROR: fast_dot_products.exe not compiled; it is required for the" \
          "8-qubit Choi column generation. See one-time setup above." >&2
     exit 1
 fi
 
-echo "[$MODEL] chunk ${SLURM_ARRAY_TASK_ID}/${N_CHUNKS}: starting"
+echo "[$MODEL/$SYSTEM] chunk ${SLURM_ARRAY_TASK_ID}/${N_CHUNKS}: starting"
 
 EXTRA_ARGS=()
+[ -n "$OUT_DIR" ] && EXTRA_ARGS+=(--out_dir "$OUT_DIR")
 [ -n "$DIM" ] && EXTRA_ARGS+=(--dim "$DIM")
 [ -n "$DT" ]  && EXTRA_ARGS+=(--dt "$DT")
 [ -n "$K" ]   && EXTRA_ARGS+=(--K "$K")
 
 python scripts/trotter_rom_worker.py \
     --model    "$MODEL" \
+    --system   "$SYSTEM" \
     --task_id  "$SLURM_ARRAY_TASK_ID" \
     --n_chunks "$N_CHUNKS" \
-    --out_dir  "$OUT_DIR" \
     --scan_dir "$SCAN_DIR" \
     --method   "$METHOD" \
     --solver   "$SOLVER" \

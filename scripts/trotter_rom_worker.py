@@ -42,7 +42,10 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from trotter_lindbladian_scan import MODELS, TLS_VERSION, choose_dt
-from trotter_rom_4q import ROM_VERSION, ROM_GRIDS, compute_rom_point
+from trotter_rom_4q import ROM_VERSION, ROM_GRIDS, SYSTEMS, compute_rom_point
+
+# default output directory per lattice system
+DEFAULT_OUT = {'2x2': 'results_trotter_rom', '2x1': 'results_trotter_rom2'}
 
 # npz keys written per point (beyond the compute_rom_point result keys).
 RESULT_KEYS = [
@@ -123,13 +126,14 @@ def run_point(model, p1_vals, p2_vals, point_id: int, args) -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
     t0 = time.perf_counter()
     print(f'[point {point_id}/{len(p1_vals) * n2}] {model.name} '
+          f'system={args.system} '
           f'{model.p1_name}={p1:.4f} {model.p2_name}={p2:.4f} '
           f'dim={dim} dt={dt:.6g} '
           f'stab_fra={"scan" if stab_fra is not None else "compute"}',
           flush=True)
 
     res = compute_rom_point(
-        model, p1, p2, dim=dim, dt=dt, stab_fra=stab_fra,
+        model, p1, p2, system=args.system, dim=dim, dt=dt, stab_fra=stab_fra,
         method=args.method, solver=args.solver, K=args.K,
         certify=not args.no_certify, verbose=args.verbose)
 
@@ -138,6 +142,7 @@ def run_point(model, p1_vals, p2_vals, point_id: int, args) -> None:
         p1=np.array(p1), p2=np.array(p2),
         ix=np.array(ix), iy=np.array(iy),
         dim=np.array(dim), dt=np.array(res['dt']),
+        system=np.array(args.system),
         model=np.array(model.name),
         code_version=np.array(ROM_VERSION),
     )
@@ -149,12 +154,19 @@ def run_point(model, p1_vals, p2_vals, point_id: int, args) -> None:
 
 def main() -> None:
     p = argparse.ArgumentParser()
-    p.add_argument('--model',    type=str, required=True, choices=list(MODELS))
+    p.add_argument('--model',    type=str, required=True,
+                   choices=sorted(ROM_GRIDS))
+    p.add_argument('--system',   type=str, default='2x2', choices=SYSTEMS,
+                   help='2x2: 4-qubit lattice gate (8-qubit Choi, CG); '
+                        '2x1: the two-qubit bond gate itself (4-qubit Choi, '
+                        'naive LP, cheap)')
     p.add_argument('--task_id',  type=int, required=True,
                    help='point id when --n_chunks=1, else chunk id 0..n_chunks-1')
     p.add_argument('--n_chunks', type=int, default=1,
                    help='split the grid into this many strided array tasks')
-    p.add_argument('--out_dir',  type=str, default='results_trotter_rom')
+    p.add_argument('--out_dir',  type=str, default=None,
+                   help='default: results_trotter_rom (2x2) / '
+                        'results_trotter_rom2 (2x1)')
     p.add_argument('--scan_dir', type=str, default='results_trotter_v3',
                    help='main trotter-scan results holding the precomputed '
                         'stabilizer-3 framabilities (models 1-5)')
@@ -178,6 +190,8 @@ def main() -> None:
     model = MODELS[args.model]
     p1_vals, p2_vals = ROM_GRIDS[args.model]
     N = len(p1_vals) * len(p2_vals)
+    if args.out_dir is None:
+        args.out_dir = DEFAULT_OUT[args.system]
 
     # Fail fast: the RoM machinery is needed at every point, so import it once
     # up front -- a broken environment (missing numba/tqdm, missing handbook

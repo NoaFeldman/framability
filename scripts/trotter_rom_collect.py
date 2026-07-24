@@ -83,13 +83,15 @@ def _edges(vals: np.ndarray) -> np.ndarray:
 
 def plot_side_by_side(stab: np.ndarray, rom: np.ndarray, model,
                       p1_vals: np.ndarray, p2_vals: np.ndarray,
-                      out_png: Path, log2: bool = False) -> None:
+                      out_png: Path, log2: bool = False,
+                      system: str = '2x2') -> None:
     x_vals, y_vals = np.asarray(p1_vals, float), np.asarray(p2_vals, float)
     x_edges, y_edges = _edges(x_vals), _edges(y_vals)
 
+    gate_name = {'2x2': '4-qubit gate', '2x1': '2-qubit bond gate'}[system]
     rom_plot = np.log2(rom) if log2 else rom
     rom_level = 0.0 if log2 else 1.0
-    rom_label = 'log2 RoM of 4-qubit gate' if log2 else 'RoM of 4-qubit gate'
+    rom_label = f'log2 RoM of {gate_name}' if log2 else f'RoM of {gate_name}'
 
     panels = [
         ('Stabilizer-3 framability (2-qubit gate)', stab, 1.0),
@@ -133,10 +135,15 @@ def plot_side_by_side(stab: np.ndarray, rom: np.ndarray, model,
 
 def main() -> None:
     p = argparse.ArgumentParser()
-    p.add_argument('--model',   type=str, required=True, choices=list(MODELS))
-    p.add_argument('--in_dir',  type=str, default='results_trotter_rom')
+    p.add_argument('--model',   type=str, required=True,
+                   choices=sorted(ROM_GRIDS))
+    p.add_argument('--system',  type=str, default='2x2',
+                   choices=('2x2', '2x1'))
+    p.add_argument('--in_dir',  type=str, default=None,
+                   help='default: results_trotter_rom (2x2) / '
+                        'results_trotter_rom2 (2x1)')
     p.add_argument('--out_png', type=str, default=None,
-                   help='default results_plots/trotter_rom_<model>.png')
+                   help='default results_plots/trotter_rom[2]_<model>.png')
     p.add_argument('--log2', action='store_true',
                    help='plot log2(RoM) instead of RoM')
     p.add_argument('--save_npz', action='store_true',
@@ -144,9 +151,12 @@ def main() -> None:
     args = p.parse_args()
 
     model = MODELS[args.model]
-    in_dir = Path(args.in_dir)
+    tag = 'rom' if args.system == '2x2' else 'rom2'
+    in_dir = Path(args.in_dir) if args.in_dir else \
+        Path('results_trotter_rom' if args.system == '2x2'
+             else 'results_trotter_rom2')
     out_png = Path(args.out_png) if args.out_png else \
-        Path('results_plots') / f'trotter_rom_{model.name}.png'
+        Path('results_plots') / f'trotter_{tag}_{model.name}.png'
 
     p1_vals, p2_vals = ROM_GRIDS[args.model]
     stab, rom, cert = load_results(in_dir, model, p1_vals, p2_vals)
@@ -157,7 +167,7 @@ def main() -> None:
         print(f'Saved {npz}', flush=True)
 
     plot_side_by_side(stab, rom, model, p1_vals, p2_vals, out_png,
-                      log2=args.log2)
+                      log2=args.log2, system=args.system)
 
 
 if __name__ == '__main__':

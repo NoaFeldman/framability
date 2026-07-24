@@ -208,26 +208,37 @@ def rom_of_channel_ptm(R: np.ndarray, method: str = 'auto', solver: str = 'auto'
 # ---------------------------------------------------------------------------
 #  Per-point computation
 # ---------------------------------------------------------------------------
-def compute_rom_point(model, p1: float, p2: float, *,
+# '2x2': RoM of the 4-qubit lattice gate (8-qubit Choi, column generation).
+# '2x1': RoM of the two-qubit bond gate itself -- a 2x1 lattice has the single
+#        bond (0,1), so its gate IS U_2 = expm(L_bond dt), exactly the gate the
+#        stabilizer-3 framability refers to (4-qubit Choi, cheap naive LP, no
+#        C++ enumeration involved).
+SYSTEMS = ('2x2', '2x1')
+
+
+def compute_rom_point(model, p1: float, p2: float, *, system: str = '2x2',
                       dim: int | None = None, dt: float | None = None,
                       stab_fra: float | None = None, method: str = 'auto',
                       solver: str = 'auto', K: float | None = None,
                       certify: bool = True, verbose: bool = False) -> dict:
     """Stabilizer-3 framability of the two-qubit bond gate and Choi-state RoM
-    of the matching 4-qubit gate at one (p1, p2) point of `model`.
+    of the matching lattice gate (see SYSTEMS) at one (p1, p2) point of
+    `model`.
 
     Pass stab_fra to reuse an already-computed framability (models 1-5 in
     results_trotter_v3) instead of recomputing it; it MUST come from the same
     dim / dt (the worker checks the stored dt before reusing).
     """
+    assert system in SYSTEMS, f'unknown system {system!r}'
     H1, H2, jumps1, jumps2 = model.build(p1, p2)
     if dim is None:
         dim = model.dim
     if dt is None:
         dt = model.dt if model.dt is not None else choose_dt(H1, H2, jumps1, jumps2)
 
-    out: dict = dict(p1=p1, p2=p2, dim=dim, dt=dt)
+    out: dict = dict(p1=p1, p2=p2, dim=dim, dt=dt, system=system)
 
+    gate2 = None
     if stab_fra is None:
         gate2 = bond_trotter_gate(H1, H2, jumps1, jumps2, dim, dt)
         out['stab_fra'] = float(stabilizer_3_framability(gate2))
@@ -239,8 +250,12 @@ def compute_rom_point(model, p1: float, p2: float, *,
         print(f'  stab_fra = {out["stab_fra"]:.6f} ({out["stab_fra_source"]})',
               flush=True)
 
-    gate4 = four_qubit_gate_ptm(H1, H2, jumps1, jumps2, dim, dt)
-    out.update(rom_of_channel_ptm(gate4, method=method, solver=solver, K=K,
+    if system == '2x1':
+        gate = gate2 if gate2 is not None else \
+            bond_trotter_gate(H1, H2, jumps1, jumps2, dim, dt)
+    else:
+        gate = four_qubit_gate_ptm(H1, H2, jumps1, jumps2, dim, dt)
+    out.update(rom_of_channel_ptm(gate, method=method, solver=solver, K=K,
                                   certify=certify, verbose=verbose))
     if verbose:
         print(f'  rom = {out["rom"]:.6f}  (log2 = {out["log2_rom"]:.4f}, '
@@ -331,6 +346,7 @@ def main() -> None:
     import argparse
     p = argparse.ArgumentParser()
     p.add_argument('--self_test', action='store_true')
+    p.add_argument('--system', type=str, default='2x2', choices=SYSTEMS)
     p.add_argument('--model',  type=str, choices=list(MODELS))
     p.add_argument('--p1',     type=float)
     p.add_argument('--p2',     type=float)
@@ -353,7 +369,8 @@ def main() -> None:
 
     model = MODELS[args.model]
     print(f'[{model.name}] {model.p1_name}={args.p1} {model.p2_name}={args.p2}')
-    res = compute_rom_point(model, args.p1, args.p2, dim=args.dim, dt=args.dt,
+    res = compute_rom_point(model, args.p1, args.p2, system=args.system,
+                            dim=args.dim, dt=args.dt,
                             method=args.method, solver=args.solver, K=args.K,
                             certify=not args.no_certify, verbose=True)
     for k, v in res.items():
