@@ -413,9 +413,10 @@ def pick_solver(solver: str, n_qubit: int) -> str:
     if _gurobi_license_ok():
         return "gurobi"
     warnings.warn(
-        "gurobipy is installed but only carries the pip size-limited license "
-        "(refuses the RoM LPs); falling back to scipy/HiGHS. Set "
-        "GRB_LICENSE_FILE to a full (e.g. free academic) license to use Gurobi."
+        "gurobipy is installed but has no usable license (pip size-limited "
+        "license, or an unreachable license/token server); falling back to "
+        "scipy/HiGHS. Point GRB_LICENSE_FILE at a working license to use "
+        "Gurobi."
     )
     return "scipy"
 
