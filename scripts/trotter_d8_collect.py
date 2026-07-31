@@ -74,17 +74,17 @@ def _edges(vals):
 def _fra_limits(data):
     finite = data[np.isfinite(data)]
     if finite.size == 0:
-        return 0.0, 2.0
-    vmin, vmax = min(float(finite.min()), 1.0), max(float(finite.max()), 1.0)
+        return 0.0, 1.0
+    vmin, vmax = float(finite.min()), float(finite.max())
     return (vmin - 0.05, vmax + 0.05) if vmin == vmax else (vmin, vmax)
 
 
 def _derived_limits(p):
     finite = p[np.isfinite(p)]
     if finite.size == 0:
-        return 0.0, 2.0
-    vmin = min(float(np.nanpercentile(finite, 2)), 1.0)
-    vmax = max(float(np.nanpercentile(finite, 98)), 1.0 + 1e-3)
+        return 0.0, 1.0
+    vmin = float(np.nanpercentile(finite, 2))
+    vmax = float(np.nanpercentile(finite, 98))
     return (vmin - 0.05, vmax + 0.05) if vmin == vmax else (vmin, vmax)
 
 
@@ -127,7 +127,6 @@ def main() -> None:
     except Exception:
         pass
     cbar = fig.colorbar(im, ax=ax, pad=0.02)
-    cbar.set_ticks(sorted(set(np.linspace(vmin, vmax, 5).tolist() + [1.0])))
     cbar.set_label('framability')
 
     # (d*) opt_fra_8 ^ (1/dt)
