@@ -11,7 +11,7 @@ that share a letter sit on the same line:
     e : product-state framability chi=10 | chi=20 | chi=40
     f : opt Schrodinger framability d=4 | d=6 | d=8
     g : dephasing opt framability H (d=4) | S (d=4)
-    d*: opt framability d=4 ^(1/dt) | opt framability d=6 ^(1/dt)   [bottom row]
+    d*: opt framability d=4 ^(1/dt) | d=6 ^(1/dt)   [bottom row]
 
 All framability panels share one colour scale that always includes 1.0, and each
 draws a thin white contour at framability = 1 separating the framable (=1) region
@@ -19,9 +19,11 @@ from >1.
 
 The extra bottom row (d*) rescales the optimised framability per unit time:
 G = expm(L*dt) is one Trotter step, so a small (per-point adaptive) dt trivially
-pushes G toward the identity and its framability toward 1.  Raising to 1/dt
-removes that dt-dependence and estimates the unit-time propagator's framability;
-its white contour is drawn only where fra^(1/dt) is still <= 1 + FRA_ONE_TOL.
+pushes G toward the identity and its framability toward 1.  Raising the
+framability to 1/dt removes the dt-dependence and measures it per unit time, i.e.
+the framability of the propagator evolved over one time unit expm(L) =
+G^(1/dt).  The white contour is drawn only where fra^(1/dt) is still
+<= 1 + FRA_ONE_TOL.
 
 Usage:
     python scripts/trotter_scan_collect.py --model model1 \
@@ -38,6 +40,7 @@ import numpy as np
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
+from matplotlib.colors import LogNorm
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from trotter_lindbladian_scan import MODELS, QUANTITIES
@@ -50,6 +53,13 @@ N_Q = len(QUANTITIES)
 # A framability panel counts as having a framable point if its minimum reaches 1
 # to within this tolerance (optimised values sit at 1 +/- ~1e-9 when framable).
 FRA_ONE_TOL = 1e-6
+
+# LPDO bond-entropy panels (a2 NESS, a4 max-along-path) get a thin white contour
+# tracing the boundary of the vanishing-entropy region.  The entropy is >= 0 and
+# sits at ~0 (to numerical noise) where the state is a product across the cut, so
+# the contour is drawn at a small level rather than exactly 0.
+LPDO_ZERO_LEVEL = 1e-6
+LPDO_KEYS = ('lpdo', 'lpdo_max')
 
 
 def load_results(in_dir: Path, model) -> tuple[np.ndarray, np.ndarray]:
@@ -99,9 +109,9 @@ def _robust_limits(data: np.ndarray) -> tuple[float, float]:
 
 
 def _derived_limits(panels: list) -> tuple[float, float]:
-    """Shared (vmin, vmax) for the per-unit-time framability panels.  These
-    explode for non-framable points (fra>1 raised to 1/dt), so the upper limit
-    is a robust percentile rather than the raw max; the scale always spans 1."""
+    """Shared (vmin, vmax) for the per-unit-time framability panels.
+    These explode for non-framable points (fra>1 raised to 1/dt), so the
+    upper limit is a robust percentile rather than the raw max; the scale spans 1."""
     finite = np.concatenate([p[np.isfinite(p)].ravel() for p in panels]) \
         if panels else np.array([])
     if finite.size == 0:
@@ -139,18 +149,19 @@ def plot_colormaps(arr: np.ndarray, dt_arr: np.ndarray, model,
     for qi, (_, _, group, _) in enumerate(QUANTITIES):
         by_group[group].append(qi)
 
-    # Extra bottom row: optimised framability normalised per unit time.  One
-    # Trotter step is G = expm(L*dt); a small dt trivially pushes G toward the
+    # Extra bottom row: optimised framability normalised per unit time.
+    # One Trotter step is G = expm(L*dt); a small dt trivially pushes G toward the
     # identity (hence framability -> 1), so the raw opt framability is not
-    # comparable across points with different adaptive dt.  Raising it to 1/dt
-    # removes that dt-dependence and estimates the framability of the unit-time
-    # propagator (submultiplicativity: fra(expm(L)) <= fra(expm(L*dt))^(1/dt)).
-    # A point is only framable under this stricter test if fra^(1/dt) is still
-    # <= 1 + FRA_ONE_TOL, so the white contour is drawn at that level.
+    # comparable across points with different adaptive dt.  Raising the framability
+    # to 1/dt removes the dt-dependence and estimates the framability of the
+    # propagator over one time unit (submultiplicativity: fra(expm(L)) <=
+    # fra(expm(L*dt))^(1/dt)).  A point is only framable under this stricter test
+    # if fra^(1/dt) is still <= 1 + FRA_ONE_TOL, so the white contour is drawn at
+    # that level.
     key_index = {key: qi for qi, (key, _, _, _) in enumerate(QUANTITIES)}
     DERIVED = [('opt_fra_4', r'Opt framability H (d=4)$^{1/\Delta t}$'),
                ('opt_fra_6', r'Opt framability H (d=6)$^{1/\Delta t}$')]
-    with np.errstate(over='ignore', invalid='ignore'):
+    with np.errstate(over='ignore', invalid='ignore', divide='ignore'):
         inv_dt = 1.0 / dt_arr
         derived = [(label, np.power(arr[:, :, key_index[key]], inv_dt).T)
                    for key, label in DERIVED]
@@ -207,6 +218,14 @@ def plot_colormaps(arr: np.ndarray, dt_arr: np.ndarray, model,
                     pass
             else:
                 fig.colorbar(im, ax=ax, pad=0.02)
+                # white contour tracing where the LPDO bond entropy vanishes
+                if key in LPDO_KEYS:
+                    try:
+                        ax.contour(x_vals, y_vals, data,
+                                   levels=[LPDO_ZERO_LEVEL],
+                                   colors='white', linewidths=1.0)
+                    except Exception:
+                        pass
 
     if fra_im is not None:
         cbar = fig.colorbar(fra_im, ax=fra_axes, pad=0.02)
@@ -214,7 +233,7 @@ def plot_colormaps(arr: np.ndarray, dt_arr: np.ndarray, model,
         cbar.set_ticks(ticks)
         cbar.set_label('framability')
 
-    # Bottom row: per-unit-time (fra^(1/dt)) optimised-framability panels.
+    # Bottom row: per-unit-time (fra^(1/dt)) opt-framability panels.
     r = len(GROUPS)
     der_im, der_axes = None, []
     for c in range(n_cols):
