@@ -9,11 +9,12 @@ figure's framability row:
                                               viridis, colour scale spanning 1.0,
                                               a thin white contour at framability=1
                                               separating framable (=1) from >1.
-    (d*) opt_fra_8 ^ (1/(dt*Delta_L))      -- normalised per equilibration time
-                                              (Delta_L = Liouvillian gap = lind_rate),
-                                              removing the per-point dt so the value
-                                              measures the framability of the
-                                              propagator over one equilibration time.
+    (d*) opt_fra_8 ^ (1/dt)                 -- framability per unit time: raising
+                                              one Trotter step G = expm(L*dt) to the
+                                              1/dt power removes the per-point dt,
+                                              giving the framability of the
+                                              propagator over one unit of time
+                                              expm(L) = G^(1/dt).
 
 Usage:
     python scripts/trotter_d8_collect.py --model model7a \
@@ -38,10 +39,9 @@ FRA_ONE_TOL = 1e-6
 
 
 def load(in_dir: Path, model):
-    """(N_X, N_Y) arrays: opt_fra_8, dt, lind_rate; NaN where missing."""
+    """(N_X, N_Y) arrays: opt_fra_8, dt; NaN where missing."""
     fra = np.full((model.N_X, model.N_Y), np.nan)
     dt = np.full((model.N_X, model.N_Y), np.nan)
-    rate = np.full((model.N_X, model.N_Y), np.nan)
     n = 0
     mdir = in_dir / model.name
     for ix in range(model.N_X):
@@ -56,13 +56,11 @@ def load(in_dir: Path, model):
                     n += 1
                 if 'dt' in d:
                     dt[ix, iy] = float(d['dt'])
-                if 'lind_rate' in d:
-                    rate[ix, iy] = float(d['lind_rate'])
             except Exception as e:
                 print(f'  warning: {f.name}: {e}', flush=True)
     print(f'Loaded opt_fra_8 for {n}/{model.N_TOTAL} points of {model.name}.',
           flush=True)
-    return fra, dt, rate
+    return fra, dt
 
 
 def _edges(vals):
@@ -103,12 +101,12 @@ def main() -> None:
     out_png = Path(args.out_png) if args.out_png else \
         Path('results_plots') / f'trotter_{model.name}_d8.png'
 
-    fra, dt, rate = load(in_dir, model)
+    fra, dt = load(in_dir, model)
     x_vals, y_vals = np.array(model.p1_vals), np.array(model.p2_vals)
     x_edges, y_edges = _edges(x_vals), _edges(y_vals)
 
     with np.errstate(over='ignore', invalid='ignore', divide='ignore'):
-        derived = np.power(fra, 1.0 / (dt * rate))         # per equilibration time
+        derived = np.power(fra, 1.0 / dt)                  # framability per unit time
 
     fig, axes = plt.subplots(1, 2, figsize=(11, 4.2), constrained_layout=True)
 
@@ -132,13 +130,13 @@ def main() -> None:
     cbar.set_ticks(sorted(set(np.linspace(vmin, vmax, 5).tolist() + [1.0])))
     cbar.set_label('framability')
 
-    # (d*) opt_fra_8 ^ (1/(dt*Delta_L))
+    # (d*) opt_fra_8 ^ (1/dt)
     ax = axes[1]
     dvmin, dvmax = _derived_limits(derived)
     im = ax.pcolormesh(x_edges, y_edges, derived.T, cmap='magma',
                        vmin=dvmin, vmax=dvmax, shading='flat')
     title = (r'(d$^\star$) Opt framability H (d=8)'
-             r'$^{1/(\Delta t\,\Delta_{\mathrm{L}})}$')
+             r'$^{1/\Delta t}$')
     finite = derived[np.isfinite(derived)]
     if finite.size and float(finite.min()) > 1.0 + FRA_ONE_TOL:
         title += f'\nmin$-1$ = {float(finite.min()) - 1.0:.3g}'
@@ -150,7 +148,7 @@ def main() -> None:
     except Exception:
         pass
     cbar = fig.colorbar(im, ax=ax, pad=0.02)
-    cbar.set_label(r'framability$^{1/(\Delta t\,\Delta_{\mathrm{L}})}$')
+    cbar.set_label(r'framability$^{1/\Delta t}$')
 
     fig.suptitle(f'{model.name}:  {model.title}', fontsize=12)
     out_png.parent.mkdir(parents=True, exist_ok=True)
