@@ -170,6 +170,33 @@ def _get_lp_cache(d_ext: int, n: int):
 
 
 # ---------------------------------------------------------------------------
+#  Full-support requirement
+# ---------------------------------------------------------------------------
+# A frame is only valid if its dictionary D = S(x)S spans ALL n_rows Pauli
+# directions (numerical rank == n_rows).  When some Pauli row of S is
+# identically zero (e.g. no X/Y support) D collapses onto a gate-invariant
+# subspace; the framability LP is then solved only inside that subspace and
+# returns a finite value (often 1) that is a VACUOUS certificate -- it says
+# nothing about the missing directions.  Every framability evaluator therefore
+# rejects such frames (framability = +inf), which also steers the optimiser
+# (whose objective barrier and alternating-sweep break both trigger on +inf)
+# toward full-support frames.
+_SUPPORT_RTOL = 1e-6
+
+
+def _has_full_support(D, rtol=_SUPPORT_RTOL):
+    """True iff D (n_rows x d_ext) has numerical rank == n_rows, i.e. the frame
+    spans every Pauli direction.  Uses the smallest singular value relative to
+    the largest so it is scale-free."""
+    D = np.asarray(D)
+    nrows = D.shape[0]
+    if D.shape[1] < nrows:
+        return False
+    sig = np.linalg.svd(D, compute_uv=False)
+    return bool(sig[nrows - 1] > rtol * sig[0])
+
+
+# ---------------------------------------------------------------------------
 #  Fast framability: single batched LP  (one linprog call instead of d_ext)
 # ---------------------------------------------------------------------------
 
@@ -194,8 +221,18 @@ def _get_framability_fast(D, gate, return_norms=False, return_coeffs=False):
     With return_coeffs=True the signed coefficient matrix U (d_ext × d_ext,
     U[k, j] = coefficient of atom k in the min-1-norm representation of
     target column j, so D @ U ≈ gateᵀ @ D) is appended to the return value.
+
+    A frame without full Pauli support (rank-deficient D) is rejected with
+    framability +inf (see _has_full_support): its certificate would be vacuous.
     """
     n, d_ext = D.shape
+    if not _has_full_support(D):
+        out = [np.inf]
+        if return_norms:
+            out.append(None)
+        if return_coeffs:
+            out.append(None)
+        return out[0] if len(out) == 1 else tuple(out)
 
     # Retrieve (or build) the pre-cleaned LP object and its mutable COO view
     lp_clean, coo_eq, blk_nnz = _get_lp_cache(d_ext, n)
