@@ -12,8 +12,12 @@ the same construction and the same defaults (fit_n = 15, deg = 1) as
 scripts/trotter_dtbase_line_extrap.py, so the framability panel is directly
 comparable with results_dtbase_line.
 
---raw instead extrapolates the raw values, which must come out at 1 everywhere;
-that panel is a validation of the sweep rather than a physical result.
+--raw instead extrapolates the raw values.  Those tend to 1, but only up to the
+curvature a degree-1 fit cannot remove: value(dt) = 1 + rate0 dt + O((rate0 dt)^2),
+so the raw panel sits slightly ABOVE 1 by a residual that grows with rate0 -- it
+is a validation of the sweep (the excess must be far smaller than the value at
+the smallest dt, and must shrink with fit_n or with deg=2) rather than a
+physical result.
 
 Panels reuse the styling of trotter_rom_state_collect (viridis, log colour axis
 labelled in powers of ten, white contour at the reference value, colour range
@@ -98,7 +102,7 @@ def plot_model(res: dict, model, out_png: Path, *, raw: bool,
                              constrained_layout=True)
     for ax, (key, label) in zip(np.atleast_1d(axes), QUANTITIES):
         if raw:
-            # the raw limit sits at 1 everywhere; plot it linearly
+            # the raw limit sits just above 1 (residual curvature); plot linearly
             _panel(ax, fig, x_vals, y_vals, res[key],
                    f'{label}\nraw value at $dt\\to0$', 1.0, model)
         else:
@@ -154,7 +158,8 @@ def main() -> None:
                    help='polynomial degree of the dt-extrapolation fit')
     p.add_argument('--raw', action='store_true',
                    help='extrapolate the raw values instead of value**(1/dt) '
-                        '(a validation panel: the limit must be 1 everywhere)')
+                        '(a validation panel: the limit sits just above 1, by '
+                        'the O((rate0 dt)^2) curvature the fit cannot remove)')
     args = p.parse_args()
 
     in_dir = Path(args.in_dir)
