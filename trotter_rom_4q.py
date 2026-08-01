@@ -3,6 +3,23 @@ Sub-pipeline of trotter_lindbladian_scan: stabilizer-3 framability of the
 two-qubit bond Trotter gate vs the Choi-state Robustness of Magic (RoM) of the
 matching 4-qubit (2x2-lattice) Trotter gate.
 
+    NOTE -- two RoM sub-pipelines exist; pick the right one.
+
+    trotter_rom_4q (this module)   RoM of the 4-qubit GATE, via its 8-qubit
+                                   Choi state.  Needs column generation, the
+                                   compiled C++ enumerator and Gurobi; hours
+                                   per point, which is why it only ever ran on
+                                   the reduced ROM_GRIDS below.
+
+    trotter_rom_state              RoM of the 4-qubit STATE obtained by
+                                   applying the lattice step once to the
+                                   lpdo_max start state.  One sparse HiGHS LP
+                                   over the full 4-qubit stabilizer matrix:
+                                   numpy + scipy only, seconds per point, and
+                                   it covers the FULL grids of models 1-6.
+
+    The two quantities are different and neither module imports the other.
+
 Models, bond gates and the per-point adaptive dt are exactly those of
 trotter_lindbladian_scan (MODELS / build_bond_lindbladian / choose_dt).  For
 one (p1, p2) point of a model this module computes:

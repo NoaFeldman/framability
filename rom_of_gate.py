@@ -24,7 +24,8 @@ caps at n_choi = 8):
 
     gate qubits n | n_choi | method               | requirements
     --------------+--------+----------------------+---------------------------
-    1, 2          | 2, 4   | naive LP (exact)     | scipy only, runs anywhere
+    1, 2          | 2, 4   | naive sparse scipy LP| scipy only, runs anywhere
+                  |        | (exact, certified)   | (rom_naive_scipy)
     3             | 6      | column generation    | compiled C++ helper,
                   |        | (exact, certified)   | Gurobi recommended
     4             | 8      | column generation    | C++ helper + Gurobi, heavy
@@ -87,6 +88,7 @@ from typing import List, Optional, Tuple
 
 import numpy as np
 import scipy.sparse
+from scipy.optimize import linprog
 
 # --- RoM-handbook import bootstrap -------------------------------------------
 ROM_HANDBOOK_DIR = os.environ.get(
@@ -432,6 +434,41 @@ def rom_naive(
     return rom, coeff, Amat, {"certified": True, "cert_value": None, "iterations": 1}
 
 
+def rom_naive_scipy(
+    n_qubit: int, rho_vec: np.ndarray, verbose: bool
+) -> Tuple[float, np.ndarray, scipy.sparse.csc_matrix, dict]:
+    """Exact RoM for n <= 4 qubits via a direct sparse scipy/HiGHS LP.
+
+    Over the full precomputed stabilizer A matrix (columns = pure stabilizer
+    states in the Pauli basis) this solves
+
+        RoM(rho) = min ||x||_1   s.t.   A x = b        (b_P = tr(rho P))
+
+    as the standard split-variable LP  min 1^T (u + v)  s.t. [A, -A] (u; v) = b,
+    u, v >= 0  (x = u - v).  [A, -A] is kept SPARSE so the LP stays light: at
+    n = 4 the A matrix is 4^4 = 256 rows x ~36720 columns, and a dense hstack
+    would be a ~150 MB (256 x ~73440) array that chokes the solver.
+
+    Self-contained -- scipy HiGHS only, with no handbook LP wrapper or Gurobi --
+    and exact (the full stabilizer set is used, so the value is certified by
+    construction).  Returns (rom, coeff, Amat, info) like the other solvers.
+    """
+    assert n_qubit <= 4, "scipy naive LP is intended for the small (n <= 4) case"
+    Amat = get_actual_Amat(n_qubit)
+    A = scipy.sparse.csr_matrix(Amat)
+    N = A.shape[1]
+    A_eq = scipy.sparse.hstack([A, -A], format="csr")        # x = u - v
+    c = np.ones(2 * N)
+    res = linprog(c, A_eq=A_eq, b_eq=rho_vec, bounds=(0, None), method="highs")
+    assert res.success, f"RoM LP failed: {res.message}"
+    coeff = res.x[:N] - res.x[N:]
+    if verbose:
+        print(f"[naive-scipy] n={n_qubit}: RoM={res.fun:.12f}, cols={N}")
+    return float(res.fun), coeff, Amat, {
+        "certified": True, "cert_value": None, "iterations": 1,
+    }
+
+
 def rom_column_generation(
     n_qubit: int,
     rho_vec: np.ndarray,
@@ -559,7 +596,13 @@ def compute_gate_rom(
     K_used = DEFAULT_K[n_choi] if K is None else K
 
     t0 = time.perf_counter()
-    if method == "naive":
+    if n_choi <= 4:
+        # n_choi <= 4 (1- and 2-qubit gates): exact RoM via a direct sparse
+        # scipy/HiGHS LP over the full stabilizer Amat -- cheap and self-contained
+        # (no handbook LP wrapper or Gurobi).  This overrides method/solver.
+        method, solver = "naive", "scipy"
+        rom, coeff, Amat, info = rom_naive_scipy(n_choi, rho_vec, verbose)
+    elif method == "naive":
         rom, coeff, Amat, info = rom_naive(n_choi, rho_vec, solver, verbose)
     elif method == "cg":
         rom, coeff, Amat, info = rom_column_generation(
