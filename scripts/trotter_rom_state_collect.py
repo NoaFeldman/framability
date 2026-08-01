@@ -53,13 +53,62 @@ LOAD_KEYS = ('stab_fra', 'log10_stab_fra_pow', 'rom', 'log2_rom', 'rom_rate',
              'dt')
 
 
+SUMMARY_NAME = 'rom_state_summary.npz'
+
+
+def _load_summary(mdir: Path, model, n1: int, n2: int) -> dict | None:
+    """Re-read a previously written rom_state_summary.npz, or None if it is
+    absent or does not match the model's grid.
+
+    This is what makes the figure reproducible from a summary alone: only the
+    summaries are small enough to be worth copying off the cluster, so a local
+    re-plot usually has no pt_*.npz to read.
+    """
+    f = mdir / SUMMARY_NAME
+    if not f.exists():
+        return None
+    try:
+        d = np.load(f)
+        missing = [k for k in LOAD_KEYS if k not in d.files]
+        if missing:
+            print(f'  warning: {f.name} lacks {missing}; ignoring it', flush=True)
+            return None
+        if d['stab_fra'].shape != (n1, n2):
+            print(f'  warning: {f.name} has grid {d["stab_fra"].shape}, expected '
+                  f'{(n1, n2)}; ignoring it', flush=True)
+            return None
+        return {k: np.asarray(d[k], float) for k in LOAD_KEYS}
+    except Exception as e:
+        print(f'  warning: {f.name}: {e}', flush=True)
+        return None
+
+
 def load_results(in_dir: Path, model) -> dict[str, np.ndarray]:
     """Per-quantity (N_X, N_Y) arrays over the model's full grid; NaN where a
-    point is missing."""
+    point is missing.
+
+    Reads the per-point pt_*.npz.  When none are present -- a local re-plot off
+    a copied summary -- it falls back to <model>/rom_state_summary.npz.
+    """
     p1_vals, p2_vals = grid_of(model.name)
     n1, n2 = len(p1_vals), len(p2_vals)
     out = {k: np.full((n1, n2), np.nan) for k in LOAD_KEYS}
     mdir = in_dir / model.name
+
+    if not any(mdir.glob('pt_*.npz')):
+        summary = _load_summary(mdir, model, n1, n2)
+        if summary is None:
+            print(f'No pt_*.npz and no usable {SUMMARY_NAME} for {model.name} '
+                  f'in {mdir} -- the figure will be blank.', flush=True)
+        else:
+            n_pts = int(np.sum(np.isfinite(summary['stab_fra'])))
+            print(f'Loaded {model.name} from {SUMMARY_NAME} '
+                  f'({n_pts}/{n1 * n2} points).', flush=True)
+            out.update(summary)
+        out['p1'], out['p2'] = p1_vals, p2_vals
+        out['from_summary'] = True
+        return out
+
     n_loaded = 0
     for ix in range(n1):
         for iy in range(n2):
@@ -91,16 +140,17 @@ def _edges(vals: np.ndarray) -> np.ndarray:
 def _panel(ax, fig, x_vals, y_vals, data, title, level, model,
            cbar_pow10: bool = False) -> None:
     """One pcolormesh panel; `data` is (N_X, N_Y) and is transposed for drawing
-    so that x = p1 and y = p2.  `level` is the reference contour value."""
+    so that x = p1 and y = p2.  `level` is the reference contour value -- it
+    only decides where the white contour line is drawn, and never touches the
+    colour range, so the map always uses its full dynamic range on the data."""
     grid = np.asarray(data).T                      # (N_Y, N_X)
     finite = grid[np.isfinite(grid)]
     if finite.size:
-        vmin = min(float(finite.min()), level)
-        vmax = max(float(finite.max()), level)
+        vmin, vmax = float(finite.min()), float(finite.max())
         if vmin == vmax:
             vmin, vmax = vmin - 0.05, vmax + 0.05
     else:
-        vmin, vmax = level - 0.05, level + 1.0
+        vmin, vmax = 0.0, 1.0
 
     im = ax.pcolormesh(_edges(x_vals), _edges(y_vals), grid, cmap='viridis',
                        vmin=vmin, vmax=vmax, shading='flat')
@@ -111,16 +161,17 @@ def _panel(ax, fig, x_vals, y_vals, data, title, level, model,
     ax.set_title(title, fontsize=10)
 
     cbar = fig.colorbar(im, ax=ax, pad=0.02)
-    ticks = sorted(set(np.linspace(vmin, vmax, 5).tolist() + [level]))
-    cbar.set_ticks(ticks)
     if cbar_pow10:
         # the panel holds log10(value); label the bar with the value itself
+        ticks = np.linspace(vmin, vmax, 5)
+        cbar.set_ticks(ticks)
         cbar.set_ticklabels([f'$10^{{{t:.3g}}}$' for t in ticks])
-    try:
-        ax.contour(x_vals, y_vals, grid, levels=[level], colors='white',
-                   linewidths=1.0)
-    except Exception:
-        pass
+    if finite.size and vmin < level < vmax:
+        try:
+            ax.contour(x_vals, y_vals, grid, levels=[level], colors='white',
+                       linewidths=1.0)
+        except Exception:
+            pass
 
 
 def plot_model(res: dict, model, out_png: Path, rate: bool = False) -> None:
@@ -162,8 +213,12 @@ def run_model(name: str, in_dir: Path, out_png: Path | None,
               save_npz: bool, rate: bool) -> None:
     model = MODELS[name]
     res = load_results(in_dir, model)
-    if save_npz:
-        npz = in_dir / model.name / 'rom_state_summary.npz'
+    if save_npz and res.get('from_summary'):
+        # the summary WAS the input; rewriting it can only lose information
+        print(f'  (skipping --save_npz for {model.name}: read from '
+              f'{SUMMARY_NAME})', flush=True)
+    elif save_npz:
+        npz = in_dir / model.name / SUMMARY_NAME
         np.savez(npz, **{k: res[k] for k in list(LOAD_KEYS) + ['p1', 'p2']})
         print(f'Saved {npz}', flush=True)
     png = out_png or Path('results_plots') / f'trotter_rom_state_{name}.png'
