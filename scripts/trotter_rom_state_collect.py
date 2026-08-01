@@ -9,9 +9,15 @@ npz and a colormap figure over the model's full scan grid:
        the colourbar with the corresponding powers of ten)
     3. RoM of the 2x2-lattice state after one application of the lattice
        propagator to the lpdo_max start state
-    4. log2(RoM)/dt, the magic RATE (on by default; --no_rate drops it).
-       One step is short, so RoM = 1 + O(dt) and panel 3 largely tracks the
-       per-point variation of dt; this panel divides that out.
+    4. the same as a per-unit-time rate, RoM**(1/dt), on the same log colour
+       axis as panel 2.  One step is short, so RoM = 1 + O(dt) and panel 3
+       largely tracks the per-point variation of dt; this panel divides it out.
+
+--rate appends a fifth panel holding log2(RoM)/dt, which is exactly
+log2(panel 4) -- the same information on a linear axis.
+
+Panels 2 and 4 are derived here from the stored rom / log2_rom / rom_rate / dt,
+so neither needs a worker re-run.
 
 All panels use the perceptually uniform sequential viridis map (every quantity
 is a one-sided magnitude) and draw a thin white contour at the reference value
@@ -117,8 +123,14 @@ def _panel(ax, fig, x_vals, y_vals, data, title, level, model,
         pass
 
 
-def plot_model(res: dict, model, out_png: Path, rate: bool = True) -> None:
+def plot_model(res: dict, model, out_png: Path, rate: bool = False) -> None:
     x_vals, y_vals = res['p1'], res['p2']
+
+    # RoM**(1/dt) gets the same log-axis treatment as stab_fra**(1/dt): the raw
+    # power overflows float64 the moment RoM exceeds ~1.002.  log10(RoM)/dt is
+    # taken from the stored rate rather than from RoM itself, so it is exactly
+    # consistent with it and needs no worker re-run.
+    log10_rom_pow = res['rom_rate'] * np.log10(2.0)
 
     panels = [
         ('Stabilizer-3 framability (2-qubit bond gate)', res['stab_fra'],
@@ -126,6 +138,7 @@ def plot_model(res: dict, model, out_png: Path, rate: bool = True) -> None:
         (r'Stabilizer-3 framability$^{1/dt}$', res['log10_stab_fra_pow'],
          0.0, True),
         ('RoM of the once-evolved 2x2 state', res['rom'], 1.0, False),
+        (r'RoM$^{1/dt}$', log10_rom_pow, 0.0, True),
     ]
     if rate:
         panels.append((r'Magic rate  $\log_2(\mathrm{RoM})/dt$',
@@ -168,8 +181,9 @@ def main() -> None:
                         '(ignored with --all)')
     p.add_argument('--save_npz', action='store_true',
                    help='also save <in_dir>/<model>/rom_state_summary.npz')
-    p.add_argument('--no_rate', action='store_true',
-                   help='drop the log2(RoM)/dt panel (three panels only)')
+    p.add_argument('--rate', action='store_true',
+                   help='append a fifth panel with log2(RoM)/dt on a linear '
+                        'axis (= log2 of the RoM^(1/dt) panel)')
     args = p.parse_args()
 
     in_dir = Path(args.in_dir)
@@ -177,7 +191,7 @@ def main() -> None:
     for name in names:
         run_model(name, in_dir,
                   None if args.all or args.out_png is None else Path(args.out_png),
-                  args.save_npz, not args.no_rate)
+                  args.save_npz, args.rate)
 
 
 if __name__ == '__main__':
