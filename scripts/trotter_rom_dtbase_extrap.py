@@ -42,9 +42,10 @@ import matplotlib.pyplot as plt
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from trotter_lindbladian_scan import MODELS
-from trotter_rom_state import STATE_ROM_MODELS, grid_of
+from trotter_rom_state import STATE_ROM_MODELS
 from trotter_rom_dtbase import (
-    FIT_N_DEFAULT, DEG_DEFAULT, extrapolate_to_zero,
+    FIT_N_DEFAULT, DEG_DEFAULT, GRID_STRIDE_DEFAULT, dtbase_grid,
+    extrapolate_to_zero,
 )
 # scripts/ is on sys.path[0]: reuse the panel styling of the state pipeline so
 # both figure families look identical.
@@ -60,26 +61,29 @@ QUANTITIES = [
 
 
 def load_and_extrapolate(in_dir: Path, model, *, fit_n: int, deg: int,
-                         raw: bool) -> dict:
-    """(N_X, N_Y) dt=0 limit of each quantity; NaN where a point is missing."""
-    p1_vals, p2_vals = grid_of(model.name)
+                         raw: bool, stride: int) -> dict:
+    """(N_X, N_Y) dt=0 limit of each quantity over the DECIMATED sweep grid;
+    NaN where a point is missing.  Files are named by full-grid indices."""
+    p1_vals, p2_vals = dtbase_grid(model.name, stride)
     n1, n2 = len(p1_vals), len(p2_vals)
     out = {k: np.full((n1, n2), np.nan) for k, _ in QUANTITIES}
     out['n_base'] = np.full((n1, n2), np.nan)
     mdir = in_dir / model.name
 
     n_loaded = 0
-    for ix in range(n1):
-        for iy in range(n2):
+    for irx in range(n1):
+        ix = irx * stride
+        for iry in range(n2):
+            iy = iry * stride
             f = mdir / f'pt_{ix:03d}_{iy:03d}.npz'
             if not f.exists():
                 continue
             try:
                 d = np.load(f, allow_pickle=True)
                 dt = np.asarray(d['dt'], float)
-                out['n_base'][ix, iy] = int(np.sum(np.isfinite(dt)))
+                out['n_base'][irx, iry] = int(np.sum(np.isfinite(dt)))
                 for key, _ in QUANTITIES:
-                    out[key][ix, iy] = extrapolate_to_zero(
+                    out[key][irx, iry] = extrapolate_to_zero(
                         dt, np.asarray(d[key], float),
                         fit_n=fit_n, deg=deg, raw=raw)
                 n_loaded += 1
@@ -125,14 +129,16 @@ def plot_model(res: dict, model, out_png: Path, *, raw: bool,
 
 
 def run_model(name: str, in_dir: Path, out_png: Path | None, *,
-              save_npz: bool, fit_n: int, deg: int, raw: bool) -> None:
+              save_npz: bool, fit_n: int, deg: int, raw: bool,
+              stride: int) -> None:
     model = MODELS[name]
-    res = load_and_extrapolate(in_dir, model, fit_n=fit_n, deg=deg, raw=raw)
+    res = load_and_extrapolate(in_dir, model, fit_n=fit_n, deg=deg, raw=raw,
+                               stride=stride)
     suffix = '_raw' if raw else ''
     if save_npz:
         npz = in_dir / model.name / SUMMARY_NAME.replace('.npz', f'{suffix}.npz')
         npz.parent.mkdir(parents=True, exist_ok=True)
-        np.savez(npz, fit_n=fit_n, deg=deg, raw=raw,
+        np.savez(npz, fit_n=fit_n, deg=deg, raw=raw, stride=stride,
                  **{k: res[k] for k in
                     [q for q, _ in QUANTITIES] + ['n_base', 'p1', 'p2']})
         print(f'Saved {npz}', flush=True)
@@ -156,6 +162,9 @@ def main() -> None:
                    help='number of points nearest dt=0 used in the fit')
     p.add_argument('--deg',   type=int, default=DEG_DEFAULT,
                    help='polynomial degree of the dt-extrapolation fit')
+    p.add_argument('--stride', type=int, default=GRID_STRIDE_DEFAULT,
+                   help='grid decimation the sweep was run at (must match the '
+                        "worker's --stride; default 2)")
     p.add_argument('--raw', action='store_true',
                    help='extrapolate the raw values instead of value**(1/dt) '
                         '(a validation panel: the limit sits just above 1, by '
@@ -168,7 +177,7 @@ def main() -> None:
         run_model(name, in_dir,
                   None if args.all or args.out_png is None else Path(args.out_png),
                   save_npz=args.save_npz, fit_n=args.fit_n, deg=args.deg,
-                  raw=args.raw)
+                  raw=args.raw, stride=args.stride)
 
 
 if __name__ == '__main__':

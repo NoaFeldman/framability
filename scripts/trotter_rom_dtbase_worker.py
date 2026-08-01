@@ -44,10 +44,10 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from trotter_lindbladian_scan import MODELS
-from trotter_rom_state import STATE_ROM_MODELS, grid_of
+from trotter_rom_state import STATE_ROM_MODELS
 from trotter_rom_dtbase import (
-    ROM_DTBASE_VERSION, BASE_MODES, DEFAULT_BASE_MODE, base_grid,
-    compute_base_line,
+    ROM_DTBASE_VERSION, BASE_MODES, DEFAULT_BASE_MODE, GRID_STRIDE_DEFAULT,
+    base_grid, dtbase_grid, compute_base_line,
 )
 
 DEFAULT_OUT = 'results_trotter_rom_dtbase'
@@ -75,10 +75,15 @@ def _is_current(out: Path, mode: str) -> bool:
 
 
 def run_point(model, p1_vals, p2_vals, point_id: int, args) -> None:
-    """Compute and save one grid point's whole DT_BASE line."""
+    """Compute and save one grid point's whole DT_BASE line.
+
+    point_id indexes the DECIMATED grid; the output file is named by the
+    corresponding FULL-grid indices, so a point stays valid across strides.
+    """
     n2 = len(p2_vals)
-    ix, iy = point_id // n2, point_id % n2
-    p1, p2 = float(p1_vals[ix]), float(p2_vals[iy])
+    irx, iry = point_id // n2, point_id % n2
+    p1, p2 = float(p1_vals[irx]), float(p2_vals[iry])
+    ix, iy = irx * args.stride, iry * args.stride      # full-grid indices
     out_dir = Path(args.out_dir) / model.name
     out = out_dir / f'pt_{ix:03d}_{iy:03d}.npz'
 
@@ -104,6 +109,7 @@ def run_point(model, p1_vals, p2_vals, point_id: int, args) -> None:
         dim=np.array(res['dim']),
         lpdo_init=np.array(res['lpdo_init']),
         base_mode=np.array(args.mode),
+        stride=np.array(args.stride),
         model=np.array(model.name),
         code_version=np.array(ROM_DTBASE_VERSION),
     )
@@ -128,6 +134,11 @@ def main() -> None:
                    help="'fit': 20 bases 0.01..0.20 (default, all the "
                         "extrapolation uses); 'full': the 99-base "
                         'results_dtbase_line grid')
+    p.add_argument('--stride',   type=int, default=GRID_STRIDE_DEFAULT,
+                   help='use every stride-th value of each model axis, i.e. '
+                        'multiply the grid step by stride (default 2: half the '
+                        'resolution of the main scan). Files are named by '
+                        'full-grid indices, so strides interoperate.')
     p.add_argument('--dim',      type=int, default=None, choices=(1, 2, 3),
                    help="default: the model's own dim (all models: 2)")
     p.add_argument('--verbose', action='store_true',
@@ -135,7 +146,7 @@ def main() -> None:
     args = p.parse_args()
 
     model = MODELS[args.model]
-    p1_vals, p2_vals = grid_of(args.model)
+    p1_vals, p2_vals = dtbase_grid(args.model, args.stride)
     N = len(p1_vals) * len(p2_vals)
 
     # Fail fast on a broken environment before burning a task on per-point errors.
@@ -160,7 +171,8 @@ def main() -> None:
 
     point_ids = list(range(args.task_id, N, args.n_chunks))
     print(f'[chunk {args.task_id}/{args.n_chunks}] {model.name}: '
-          f'{len(point_ids)} points x {len(base_grid(args.mode))} bases',
+          f'{len(point_ids)} points x {len(base_grid(args.mode))} bases '
+          f'(stride {args.stride}, {len(p1_vals)}x{len(p2_vals)} grid)',
           flush=True)
     n_fail = 0
     for pid in point_ids:

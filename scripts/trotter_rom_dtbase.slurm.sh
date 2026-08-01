@@ -17,10 +17,16 @@
 #  MODE=full 99 bases 0.01..0.99 -- the results_dtbase_line grid, 5x the cost
 #            and the same extrapolant; use it only to inspect the full line.
 #
-#  Each model runs on its FULL trotter_lindbladian_scan grid:
-#    model1  21 x  51 = 1071      model2  21 x  51 = 1071
-#    model3  51 x  51 = 2601      model4  51 x  51 = 2601
-#    model5  21 x 101 = 2121      model6  51 x  51 = 2601    (total 12066)
+#  The sweep costs ~20x a single-dt point, so it runs at HALF the resolution of
+#  the main scan: STRIDE=2 takes every 2nd value of each model axis (the grid
+#  step is multiplied by 2 on both axes, i.e. a quarter of the points).  Output
+#  files are named by FULL-grid indices, so points already computed at another
+#  stride stay valid and are skipped.  STRIDE=1 is the full grid.
+#
+#    model1  11 x 26 =  286      model2  11 x 26 =  286
+#    model3  26 x 26 =  676      model4  26 x 26 =  676
+#    model5  11 x 51 =  561      model6  26 x 26 =  676     (total 3161)
+#                                        (12066 at STRIDE=1)
 #
 #  The unit of work is a grid POINT (the whole base line at once): L_bond and
 #  L_full do not depend on DT_BASE, so they are built once per point and only
@@ -28,8 +34,8 @@
 #  200-task array; each task skips any npz already complete on disk, so
 #  resubmission after a timeout simply continues.
 #
-#  Cost is ~20x a trotter_rom_state point, i.e. roughly 60 points x 20 bases per
-#  task at MODE=fit.  If tasks time out, resubmit -- finished points are skipped.
+#  At MODE=fit and STRIDE=2 a task carries ~16 points x 20 bases.  If tasks time
+#  out, resubmit -- finished points are skipped.
 #
 #  Submit one model (default model1):
 #    mkdir -p logs results_trotter_rom_dtbase
@@ -55,6 +61,7 @@
 MODEL=${MODEL:-model1}
 OUT_DIR=${OUT_DIR:-results_trotter_rom_dtbase}
 MODE=${MODE:-fit}        # fit (20 bases) | full (99 bases)
+STRIDE=${STRIDE:-2}      # grid decimation: 2 = half resolution, 1 = full grid
 N_CHUNKS=${N_CHUNKS:-200}
 DIM=${DIM:-}             # empty -> the model's own dim (all models: 2)
 
@@ -79,7 +86,7 @@ if [ ! -f "$ROM_HANDBOOK_DIR/data/Amat/Amat4.npz" ]; then
     exit 1
 fi
 
-echo "[$MODEL/$MODE] chunk ${SLURM_ARRAY_TASK_ID}/${N_CHUNKS}: starting"
+echo "[$MODEL/$MODE stride=$STRIDE] chunk ${SLURM_ARRAY_TASK_ID}/${N_CHUNKS}: starting"
 
 EXTRA_ARGS=()
 [ -n "$DIM" ] && EXTRA_ARGS+=(--dim "$DIM")
@@ -90,6 +97,7 @@ python scripts/trotter_rom_dtbase_worker.py \
     --n_chunks "$N_CHUNKS" \
     --out_dir  "$OUT_DIR" \
     --mode     "$MODE" \
+    --stride   "$STRIDE" \
     "${EXTRA_ARGS[@]}"
 
 echo "[$MODEL] chunk ${SLURM_ARRAY_TASK_ID}: done"

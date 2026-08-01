@@ -66,7 +66,7 @@ from trotter_lindbladian_scan import (
     build_full_lindbladian_model, lpdo_init_vector,
 )
 from trotter_rom_state import (
-    N_LATTICE, STATE_ROM_MODELS, coeffs_to_pauli_vec, rom_of_pauli_vec,
+    N_LATTICE, STATE_ROM_MODELS, coeffs_to_pauli_vec, rom_of_pauli_vec, grid_of,
 )
 from framability import stabilizer_3_framability
 
@@ -80,6 +80,30 @@ DEFAULT_BASE_MODE = 'fit'
 # Extrapolation defaults, identical to scripts/trotter_dtbase_line_extrap.
 FIT_N_DEFAULT = 15
 DEG_DEFAULT = 1
+
+
+# Parameter-grid decimation.  The DT_BASE sweep costs ~20x a single-dt point, so
+# it runs at half the resolution of the main scan: every GRID_STRIDE-th value of
+# each model axis, i.e. the step is multiplied by GRID_STRIDE on both axes.
+# The grid stays an exact SUBSET of the model's own grid, and output files are
+# named by FULL-grid indices (ix = irx * stride), so points computed at one
+# stride remain valid at any other and line up with results_trotter_rom_state.
+#
+#   stride 2 grid sizes (vs the full grid):
+#     model1  11 x 26 =  286  (21 x  51)    model2  11 x 26 =  286  (21 x  51)
+#     model3  26 x 26 =  676  (51 x  51)    model4  26 x 26 =  676  (51 x  51)
+#     model5  11 x 51 =  561  (21 x 101)    model6  26 x 26 =  676  (51 x  51)
+#   total 3161 points, vs 12066 at stride 1.
+GRID_STRIDE_DEFAULT = 2
+
+
+def dtbase_grid(model_name: str,
+                stride: int = GRID_STRIDE_DEFAULT) -> tuple[np.ndarray, np.ndarray]:
+    """(p1_vals, p2_vals) of the decimated sweep grid: every `stride`-th value
+    of the model's full trotter_lindbladian_scan grid on each axis."""
+    assert stride >= 1, 'stride must be a positive integer'
+    p1, p2 = grid_of(model_name)
+    return p1[::stride], p2[::stride]
 
 
 def base_grid(mode: str = DEFAULT_BASE_MODE) -> np.ndarray:
