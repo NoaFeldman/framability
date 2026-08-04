@@ -109,10 +109,10 @@ def extrapolate(dt_vals: np.ndarray, fra_vals: np.ndarray, *,
 #  Per-model grid extrapolation
 # ---------------------------------------------------------------------------
 def extrapolate_model(model: str, in_dir: Path, *, fit_n: int, deg: int,
-                      raw: bool) -> dict:
+                      raw: bool, stride: int = 1) -> dict:
     m = MODELS[model]
-    p1_vals = np.asarray(m.p1_vals, float)     # gamma  (x-axis)
-    p2_vals = np.asarray(m.p2_vals, float)     # gamma' (y-axis)
+    p1_vals = np.asarray(m.p1_vals[::stride], float)     # gamma  (x-axis)
+    p2_vals = np.asarray(m.p2_vals[::stride], float)     # gamma' (y-axis)
     nx, ny = len(p1_vals), len(p2_vals)
 
     grids = {k: np.full((nx, ny), np.nan) for k, _ in MEASURES}
@@ -188,6 +188,10 @@ def main() -> None:
                     choices=list(MODELS))
     ap.add_argument('--in_dir', type=str, default='results_dtbase_line')
     ap.add_argument('--out_dir', type=str, default='results_dtbase_line')
+    ap.add_argument('--stride', type=int, default=1,
+                    help='use every stride-th p1/p2 grid value, matching the '
+                         'sweep resolution actually computed (e.g. STRIDE used '
+                         'at submit time)')
     ap.add_argument('--fit_n', type=int, default=15,
                     help='number of points nearest dt=0 used in the fit')
     ap.add_argument('--deg', type=int, default=1,
@@ -204,7 +208,7 @@ def main() -> None:
 
     for model in args.models:
         data = extrapolate_model(model, in_dir, fit_n=args.fit_n, deg=args.deg,
-                                 raw=args.raw)
+                                 raw=args.raw, stride=args.stride)
         npz = out_dir / f'{model}_dtbase_{suffix}.npz'
         png = out_dir / f'{model}_dtbase_{suffix}.png'
         np.savez(npz, model=model, fit_n=args.fit_n, deg=args.deg,
