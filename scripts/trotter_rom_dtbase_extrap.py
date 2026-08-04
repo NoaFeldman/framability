@@ -19,6 +19,12 @@ is a validation of the sweep (the excess must be far smaller than the value at
 the smallest dt, and must shrink with fit_n or with deg=2) rather than a
 physical result.
 
+The --raw figure carries a THIRD panel: the RoM of the 2x2 lattice NESS
+(trotter_ness_rom), read from --ness_dir.  That quantity has no dt dependence at
+all -- the steady state is a property of the generator -- so it is not
+extrapolated and sits with the raw values rather than with the rates.  Cells
+where the steady state is not unique (the gamma = 0 edges) are blank.
+
 Panels reuse the styling of trotter_rom_state_collect (viridis, log colour axis
 labelled in powers of ten, white contour at the reference value, colour range
 never forced to include it).
@@ -26,7 +32,8 @@ never forced to include it).
 Usage:
     python scripts/trotter_rom_dtbase_extrap.py --all --save_npz
     python scripts/trotter_rom_dtbase_extrap.py --model model3 --fit_n 12 --deg 2
-    python scripts/trotter_rom_dtbase_extrap.py --all --raw
+    python scripts/trotter_rom_dtbase_extrap.py --all --raw           # + NESS panel
+    python scripts/trotter_rom_dtbase_extrap.py --all --raw --ness_dir ''
 """
 
 from __future__ import annotations
@@ -53,11 +60,18 @@ from trotter_rom_state_collect import _panel
 
 SUMMARY_NAME = 'rom_dtbase_extrap.npz'
 
-# (key, panel title without the dt->0 suffix)
+# (key, panel title without the dt->0 suffix).  These are the two swept
+# quantities, the ones that get extrapolated.
 QUANTITIES = [
     ('stab_fra', 'Stabilizer-3 framability'),
     ('rom',      'RoM of the once-evolved 2x2 state'),
 ]
+
+# The NESS RoM (trotter_ness_rom) is a property of the generator alone -- it has
+# no dt dependence and is not extrapolated, so it is loaded from its own results
+# directory and drawn as an extra panel on the --raw figure only.
+NESS_KEY = 'ness_rom'
+NESS_LABEL = 'RoM of the 2x2 NESS'
 
 
 def load_and_extrapolate(in_dir: Path, model, *, fit_n: int, deg: int,
@@ -98,24 +112,67 @@ def load_and_extrapolate(in_dir: Path, model, *, fit_n: int, deg: int,
     return out
 
 
+def load_ness(ness_dir: Path, model, stride: int) -> np.ndarray:
+    """(N_X, N_Y) RoM of the NESS over the same decimated grid; NaN where the
+    point is missing OR where the steady state is not unique (the gamma = 0
+    edges, which trotter_ness_rom legitimately stores as NaN)."""
+    p1_vals, p2_vals = dtbase_grid(model.name, stride)
+    n1, n2 = len(p1_vals), len(p2_vals)
+    out = np.full((n1, n2), np.nan)
+    mdir = ness_dir / model.name
+    if not mdir.is_dir():
+        print(f'  note: no NESS results in {mdir}; that panel will be blank',
+              flush=True)
+        return out
+
+    n_loaded = n_degenerate = 0
+    for irx in range(n1):
+        ix = irx * stride
+        for iry in range(n2):
+            iy = iry * stride
+            f = mdir / f'pt_{ix:03d}_{iy:03d}.npz'
+            if not f.exists():
+                continue
+            try:
+                d = np.load(f, allow_pickle=True)
+                out[irx, iry] = float(d[NESS_KEY])
+                n_loaded += 1
+                if not bool(d['ness_ok']):
+                    n_degenerate += 1
+            except Exception as e:
+                print(f'  warning: {f.name}: {e}', flush=True)
+    print(f'  NESS RoM: {n_loaded}/{n1 * n2} points'
+          + (f' ({n_degenerate} with no unique steady state)'
+             if n_degenerate else ''), flush=True)
+    return out
+
+
 def plot_model(res: dict, model, out_png: Path, *, raw: bool,
                fit_n: int, deg: int) -> None:
     x_vals, y_vals = res['p1'], res['p2']
 
-    fig, axes = plt.subplots(1, len(QUANTITIES), figsize=(5.5 * len(QUANTITIES), 4.2),
-                             constrained_layout=True)
-    for ax, (key, label) in zip(np.atleast_1d(axes), QUANTITIES):
+    # (data, title, contour level, log10 colour axis)
+    panels = []
+    for key, label in QUANTITIES:
         if raw:
             # the raw limit sits just above 1 (residual curvature); plot linearly
-            _panel(ax, fig, x_vals, y_vals, res[key],
-                   f'{label}\nraw value at $dt\\to0$', 1.0, model)
+            panels.append((res[key], f'{label}\nraw value at $dt\\to0$',
+                           1.0, False))
         else:
             # exp(rate0) spans decades across a grid; plot log10 with 10^x ticks
             with np.errstate(divide='ignore', invalid='ignore'):
-                log10_lim = np.log10(res[key])
-            _panel(ax, fig, x_vals, y_vals, log10_lim,
-                   f'{label}$^{{1/dt}}$\nat $dt\\to0$', 0.0, model,
-                   cbar_pow10=True)
+                panels.append((np.log10(res[key]),
+                               f'{label}$^{{1/dt}}$\nat $dt\\to0$', 0.0, True))
+    if raw and NESS_KEY in res:
+        # dt-independent, so it belongs with the raw values rather than the rates
+        panels.append((res[NESS_KEY], f'{NESS_LABEL}\n(steady state, no $dt$)',
+                       1.0, False))
+
+    fig, axes = plt.subplots(1, len(panels), figsize=(5.5 * len(panels), 4.2),
+                             constrained_layout=True)
+    for ax, (data, title, level, pow10) in zip(np.atleast_1d(axes), panels):
+        _panel(ax, fig, x_vals, y_vals, data, title, level, model,
+               cbar_pow10=pow10)
 
     kind = 'raw value' if raw else r'value$^{1/dt}$'
     fig.suptitle(f'{model.name}:  {model.title}\n'
@@ -130,17 +187,21 @@ def plot_model(res: dict, model, out_png: Path, *, raw: bool,
 
 def run_model(name: str, in_dir: Path, out_png: Path | None, *,
               save_npz: bool, fit_n: int, deg: int, raw: bool,
-              stride: int) -> None:
+              stride: int, ness_dir: Path | None) -> None:
     model = MODELS[name]
     res = load_and_extrapolate(in_dir, model, fit_n=fit_n, deg=deg, raw=raw,
                                stride=stride)
+    if raw and ness_dir is not None:
+        res[NESS_KEY] = load_ness(ness_dir, model, stride)
     suffix = '_raw' if raw else ''
     if save_npz:
         npz = in_dir / model.name / SUMMARY_NAME.replace('.npz', f'{suffix}.npz')
         npz.parent.mkdir(parents=True, exist_ok=True)
+        keys = [q for q, _ in QUANTITIES] + ['n_base', 'p1', 'p2']
+        if NESS_KEY in res:
+            keys.append(NESS_KEY)
         np.savez(npz, fit_n=fit_n, deg=deg, raw=raw, stride=stride,
-                 **{k: res[k] for k in
-                    [q for q, _ in QUANTITIES] + ['n_base', 'p1', 'p2']})
+                 **{k: res[k] for k in keys})
         print(f'Saved {npz}', flush=True)
     png = out_png or (Path('results_plots') /
                       f'trotter_rom_dtbase_extrap{suffix}_{name}.png')
@@ -153,6 +214,9 @@ def main() -> None:
     g.add_argument('--model', type=str, choices=list(STATE_ROM_MODELS))
     g.add_argument('--all', action='store_true', help='every model in turn')
     p.add_argument('--in_dir',  type=str, default='results_trotter_rom_dtbase')
+    p.add_argument('--ness_dir', type=str, default='results_trotter_ness_rom',
+                   help='trotter_ness_rom results; its RoM-of-the-NESS panel is '
+                        'added to the --raw figure (pass "" to omit it)')
     p.add_argument('--out_png', type=str, default=None,
                    help='default results_plots/trotter_rom_dtbase_extrap_<model>.png '
                         '(ignored with --all)')
@@ -172,12 +236,13 @@ def main() -> None:
     args = p.parse_args()
 
     in_dir = Path(args.in_dir)
+    ness_dir = Path(args.ness_dir) if args.ness_dir else None
     names = list(STATE_ROM_MODELS) if args.all else [args.model]
     for name in names:
         run_model(name, in_dir,
                   None if args.all or args.out_png is None else Path(args.out_png),
                   save_npz=args.save_npz, fit_n=args.fit_n, deg=args.deg,
-                  raw=args.raw, stride=args.stride)
+                  raw=args.raw, stride=args.stride, ness_dir=ness_dir)
 
 
 if __name__ == '__main__':
