@@ -45,9 +45,9 @@ from trotter_dtbase_line_worker import (  # noqa: E402  (scripts/ is on the path
 # ---------------------------------------------------------------------------
 #  Load one point's DT_BASE line (dt and the five measures, ordered by base)
 # ---------------------------------------------------------------------------
-def load_point(model: str, p1: float, p2: float, in_dir: Path):
-    """Return (dt_vals, {measure: array}) over the base grid, or None if the
-    point has no data directory."""
+def _load_point_raw(model: str, p1: float, p2: float, in_dir: Path):
+    """load_point()'s original source: the per-base npz directory written by
+    trotter_dtbase_line_worker.py, or None if that directory is absent/empty."""
     pt_dir = in_dir / point_tag(model, p1, p2)
     if not pt_dir.is_dir():
         return None
@@ -67,6 +67,34 @@ def load_point(model: str, p1: float, p2: float, in_dir: Path):
     if not np.isfinite(dt_vals).any():
         return None
     return dt_vals, arrs
+
+
+def _load_point_collected(model: str, p1: float, p2: float, in_dir: Path):
+    """Fallback source: the aggregate <tag>_dtbase_line.npz written by
+    trotter_dtbase_line_collect.py, used when the raw per-base directory has
+    been cleaned up but the collected summary survives. Same (dt_vals, arrs)
+    shape as _load_point_raw since collect.py stores dt_vals/measures directly."""
+    npz = in_dir / f'{point_tag(model, p1, p2)}_dtbase_line.npz'
+    if not npz.is_file():
+        return None
+    try:
+        d = np.load(npz, allow_pickle=True)
+        dt_vals = np.asarray(d['dt_vals'], dtype=float)
+        arrs = {k: np.asarray(d[k], dtype=float) for k, _ in MEASURES}
+    except Exception:
+        return None
+    if not np.isfinite(dt_vals).any():
+        return None
+    return dt_vals, arrs
+
+
+def load_point(model: str, p1: float, p2: float, in_dir: Path):
+    """Return (dt_vals, {measure: array}) over the base grid, or None if the
+    point has no data. Tries the raw per-base directory first, falling back to
+    the collected per-point summary npz (results_dtbase_line/<tag>_dtbase_line.npz)
+    when the raw directory has been removed/consolidated."""
+    return (_load_point_raw(model, p1, p2, in_dir)
+            or _load_point_collected(model, p1, p2, in_dir))
 
 
 # ---------------------------------------------------------------------------
