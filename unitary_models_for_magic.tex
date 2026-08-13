@@ -1,0 +1,120 @@
+\documentclass[11pt]{article}
+\usepackage{amsmath,amssymb}
+\usepackage[margin=1in]{geometry}
+
+\newcommand{\X}{X}
+\newcommand{\Y}{Y}
+\newcommand{\Z}{Z}
+
+\title{Five nearest-neighbour qubit models with a 2D phase diagram}
+\author{}
+\date{}
+
+\begin{document}
+\maketitle
+
+\section{Common setup}
+
+Every model lives on the square lattice with sites $i$ carrying a qubit
+(spin-$1/2$) and Pauli operators $X_i, Y_i, Z_i$. Each Hamiltonian has the
+form
+\[
+  H(p_1,p_2) \;=\; \sum_{i} H_1(p_1,p_2) \;+\; \sum_{\langle ij\rangle} H_2(p_1,p_2),
+\]
+where $H_1$ is a single fixed one-qubit term placed on every site and $H_2$
+is a single fixed two-qubit term placed on every nearest-neighbour bond
+$\langle ij\rangle$ of the lattice (both directions, at full coupling
+strength); there are no further-neighbour or multi-qubit terms. $(p_1,p_2)$
+are the two scan parameters, always with $J=1$. Each model's $(p_1,p_2)$
+range is sampled on a uniform $20\times 20$ grid (linspace with 20 points on
+each axis, endpoints included).
+
+\section{Model 1: Ising chain in a tilted field}
+
+\[
+  H \;=\; J \sum_{\langle ij\rangle} \Z_i \Z_j \;+\; h_x \sum_i \X_i \;+\; h_z \sum_i \Z_i,
+  \qquad J = 1 .
+\]
+
+The transverse component $h_x$ drives the paramagnet--ferromagnet quantum
+critical point at $h_x = J$; the longitudinal component $h_z$ confines the
+domain-wall excitations into meson-like bound states and breaks the model's
+integrability away from the $h_z=0$ line. Grid:
+\[
+  h_x \in [0,\,2], \qquad h_z \in [-1,\,1], \qquad 20\times20 \text{ points}.
+\]
+
+\section{Model 2: Anisotropic XY chain in a transverse field}
+
+\[
+  H \;=\; J \sum_{\langle ij\rangle}
+    \left[ \frac{1+\gamma}{2}\, \X_i \X_j + \frac{1-\gamma}{2}\, \Y_i \Y_j \right]
+    \;+\; h \sum_i \Z_i,
+  \qquad J = 1 .
+\]
+
+$\gamma$ is the XY anisotropy and $h$ the transverse field. The line
+$\gamma = 0$ is the gapless XX chain with a field-driven transition at
+$h = J$; $|\gamma| = 1$ recovers the transverse-field Ising model; the point
+$(\gamma,h) = (0, \pm J)$ is the multicritical point where the two critical
+lines of the family meet. Grid:
+\[
+  \gamma \in [-1,\,1], \qquad h \in [0,\,2], \qquad 20\times20 \text{ points}.
+\]
+
+\section{Model 3: XXZ chain in a transverse field}
+
+\[
+  H \;=\; J \sum_{\langle ij\rangle}
+    \left[ \X_i \X_j + \Y_i \Y_j + \Delta\, \Z_i \Z_j \right]
+    \;+\; h \sum_i \X_i,
+  \qquad J = 1 .
+\]
+
+The exchange anisotropy $\Delta$ alone (at $h=0$) gives the standard XXZ
+phase diagram: gapless XY phase for $|\Delta|<1$ and gapped Néel/ferromagnetic
+order for $|\Delta|>1$. The transverse field $h$ does not commute with the
+$U(1)$ symmetry of the XXZ chain, so turning it on breaks integrability and
+competes with the $\Delta$-driven order. Grid:
+\[
+  \Delta \in [-2,\,2], \qquad h \in [0,\,2], \qquad 20\times20 \text{ points}.
+\]
+
+\section{Model 4: Fully anisotropic XYZ (Baxter) model}
+
+\[
+  H \;=\; J \sum_{\langle ij\rangle}
+    \left[ \X_i \X_j + \Delta_y\, \Y_i \Y_j + \Delta_z\, \Z_i \Z_j \right],
+  \qquad J = 1, \quad \text{no field} .
+\]
+
+The zero-field, fully anisotropic Heisenberg exchange is the spin-chain
+analogue of Baxter's eight-vertex model. Its $(\Delta_y,\Delta_z)$ plane
+contains the XX line ($\Delta_y=1$), the three inequivalent Ising axes
+($\Delta_y,\Delta_z \to 0$ or $\to\infty$ limits), and the isotropic
+Heisenberg point $\Delta_y=\Delta_z=1$, separating gapless and gapped regions
+along integrable submanifolds. Grid:
+\[
+  \Delta_y \in [-2,\,2], \qquad \Delta_z \in [-2,\,2], \qquad 20\times20 \text{ points}.
+\]
+
+\section{Model 5: XY chain with Dzyaloshinskii--Moriya interaction in a transverse field}
+
+\[
+  H \;=\; J \sum_{\langle ij\rangle} \left[ \X_i \X_j + \Y_i \Y_j \right]
+    \;+\; D \sum_{\langle ij\rangle} \left[ \X_i \Y_j - \Y_i \X_j \right]
+    \;+\; h \sum_i \Z_i,
+  \qquad J = 1 .
+\]
+
+The bond term is the isotropic XY exchange plus a Dzyaloshinskii--Moriya
+(DM) coupling of strength $D$ along the bond direction fixed by the lattice's
+nearest-neighbour ordering $\langle ij\rangle$ (i.e.\ every bond carries the
+same chirality). The DM term breaks parity and competes with the
+field-driven polarized phase at large $h$, producing chiral analogues of the
+XY model's critical line. Grid:
+\[
+  D \in [0,\,2], \qquad h \in [0,\,2], \qquad 20\times20 \text{ points}.
+\]
+
+\end{document}
