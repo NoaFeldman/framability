@@ -7,12 +7,13 @@ five models.  Reads every <in_dir>/<model>/pt_<ix>_<iy>.npz written by
 scripts/magic_worker.py, assembles one (n_p2, n_p1) array per quantity
 (rows = p2, columns = p1, the pcolormesh orientation) and writes
 
-    <in_dir>/unitary_magic_summary_<model>.npz     all maps + axes + metadata
-    results_plots/unitary_magic_<model>_fra_D1.png     (1)  D = 1
-    results_plots/unitary_magic_<model>_fra_D2.png     (1)  D = 2
-    results_plots/unitary_magic_<model>_nc_2a.png      (2a) .. (2e)
-    ...
-    results_plots/unitary_magic_<model>_overview.png   all seven panels
+    <in_dir>/unitary_magic_summary_<model>.npz          all maps + axes + metadata
+    results_plots/unitary_magic_<model>_fra_D1.png      3-stabilizer framability, D = 1
+    results_plots/unitary_magic_<model>_nc_n{n}_t{k}.png  non-cliffordness, ring size n,
+                                                          t = dt_min * 10**k (18 panels:
+                                                          n in (4, 5, 6), k = 0 .. 5)
+    results_plots/unitary_magic_<model>_overview_n{n}.png  the 6 t-decades of ring size n,
+                                                          one grid per n in (4, 5, 6)
 
 The dt -> 0 framability limit is recomputed here from the stored raw ladder
 (trotter_rom_dtbase.extrapolate_to_zero), so --fit_n / --deg can be changed
@@ -43,7 +44,9 @@ import matplotlib.pyplot as plt                                    # noqa: E402
 from matplotlib.colors import LinearSegmentedColormap, LogNorm, Normalize  # noqa: E402
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from magic_scan_common import TASK_KEYS, TASK_LABELS, FRA_KEYS, NC_KEYS  # noqa: E402
+from magic_scan_common import (                                    # noqa: E402
+    TASK_KEYS, TASK_LABELS, FRA_KEYS, NC_KEYS, RING_NS, T_DECADE_IDX,
+)
 from magic_scan_common import framability_limit, framability_rate       # noqa: E402
 from trotter_rom_dtbase import FIT_N_DEFAULT, DEG_DEFAULT               # noqa: E402
 
@@ -62,29 +65,15 @@ def _viridis_white_cmap(n: int = 256) -> LinearSegmentedColormap:
     return LinearSegmentedColormap.from_list('viridis_white', colors)
 
 
-def _nc_2a_cmap(n: int = 256) -> LinearSegmentedColormap:
-    """Viridis over the lower half of the range, yellow->white over the upper half.
-
-    Used only for the (2a) panel, whose values run notably higher than the
-    other non-cliffordness maps; splitting the range this way keeps the
-    viridis detail for the common low values while still giving the high
-    tail its own visible gradient instead of a thin white sliver.
-    """
-    lower = cm.get_cmap('viridis')(np.linspace(0, 1, n))
-    yellow = np.array(cm.get_cmap('viridis')(1.0))
-    white = np.array([1.0, 1.0, 1.0, 1.0])
-    upper = yellow + (white - yellow) * np.linspace(0, 1, n)[:, None]
-    colors = np.vstack([lower, upper])
-    return LinearSegmentedColormap.from_list('nc_2a', colors)
-
-
 FRA_CMAP = 'viridis'
 NC_CMAP = _viridis_white_cmap()
-NC_2A_CMAP = _nc_2a_cmap()
 # log of the framability limit: finite even where exp(rate) overflows float64.
-RATE_KEYS = ('fra_rate_D1', 'fra_rate_D2')
-# Extra scalar maps kept in the summary npz (diagnostics, not plotted).
-DIAG_KEYS = ('dt_pt', 'gap', 'gap_next', 't_2e')
+RATE_KEYS = ('fra_rate_D1',)
+# Extra scalar maps kept in the summary npz (diagnostics, not plotted): dt_pt
+# plus, per ring size, the gap/energy diagnostics of scripts/magic_worker.py.
+DIAG_KEYS = ('dt_pt',) + tuple(
+    f'{stat}_n{n}' for n in RING_NS for stat in ('gap', 'gap_next', 'e_min', 'e_max')
+)
 EXTRA_KEYS = RATE_KEYS + DIAG_KEYS
 
 
@@ -208,7 +197,7 @@ def make_plots(model, maps, out_dir: Path, *, fra_color: str, fra_plot: str,
     for key in TASK_KEYS:
         is_fra = key in FRA_KEYS
         Z, note = _fra_field(maps, key, fra_plot) if is_fra else (maps[key], unit)
-        cmap = FRA_CMAP if is_fra else (NC_2A_CMAP if key == 'nc_2a' else NC_CMAP)
+        cmap = FRA_CMAP if is_fra else NC_CMAP
         norm = _norm(Z, fra_color if (is_fra and not note) else 'linear')
 
         fig, ax = plt.subplots(figsize=(6.2, 4.4))
@@ -220,24 +209,23 @@ def make_plots(model, maps, out_dir: Path, *, fra_color: str, fra_plot: str,
         plt.close(fig)
         written.append(p)
 
-    fig, axes = plt.subplots(2, 4, figsize=(21, 8.6))
-    for ax, key in zip(axes.ravel(), TASK_KEYS):
-        is_fra = key in FRA_KEYS
-        Z, note = _fra_field(maps, key, fra_plot) if is_fra else (maps[key], unit)
-        pcm = _panel(ax, model, key, Z,
-                     cmap=FRA_CMAP if is_fra else (NC_2A_CMAP if key == 'nc_2a' else NC_CMAP),
-                     norm=_norm(Z, fra_color if (is_fra and not note) else 'linear'),
-                     unit_note=note)
-        fig.colorbar(pcm, ax=ax)
-    axes.ravel()[-1].axis('off')
-    fig.suptitle(f'{model.name}: stabilizer-3 framability ($dt\\to0$) and '
-                 f'Choi-state non-cliffordness   '
-                 f'({", ".join(f"{k}={v}" for k, v in model.consts.items())})')
-    fig.tight_layout(rect=(0, 0, 1, 0.96))
-    p = out_dir / f'unitary_magic_{model.name}_overview.png'
-    fig.savefig(p, dpi=dpi)
-    plt.close(fig)
-    written.append(p)
+    # One overview grid per ring size: its 6 t-decades (t_k = dt_min * 10**k).
+    for n in RING_NS:
+        keys_n = [f'nc_n{n}_t{k}' for k in T_DECADE_IDX]
+        fig, axes = plt.subplots(2, 3, figsize=(16.5, 8.6))
+        for ax, key in zip(axes.ravel(), keys_n):
+            Z = maps[key]
+            pcm = _panel(ax, model, key, Z, cmap=NC_CMAP,
+                         norm=_norm(Z, 'linear'), unit_note=unit)
+            fig.colorbar(pcm, ax=ax)
+        fig.suptitle(f'{model.name}: Choi-state non-cliffordness, PBC ring n = {n}   '
+                     f'({", ".join(f"{k}={v}" for k, v in model.consts.items())})')
+        fig.tight_layout(rect=(0, 0, 1, 0.95))
+        p = out_dir / f'unitary_magic_{model.name}_overview_n{n}.png'
+        fig.savefig(p, dpi=dpi)
+        plt.close(fig)
+        written.append(p)
+
     return written
 
 

@@ -1,19 +1,17 @@
 #!/bin/bash
 # ============================================================
-#  SLURM collect job: aggregation + the seven colormaps of the XXZ magic scan.
+#  SLURM collect job: aggregation + the colormaps of the XXZ magic scan.
 #
 #  Submitted by scripts/submit_xxz_magic.sh with --dependency=afterok on the
 #  data array, so data generation and plotting run in one submission.  Writes
 #
 #    results_xxz_magic/xxz_magic_summary_<model>.npz
-#    results_plots/xxz_magic_<model>_fra_D1.png     (1)  D = 1
-#    results_plots/xxz_magic_<model>_fra_D2.png     (1)  D = 2
-#    results_plots/xxz_magic_<model>_nc_2a.png      (2a) dt = dt_min
-#    results_plots/xxz_magic_<model>_nc_2b.png      (2b) dt = dt(Delta,h)
-#    results_plots/xxz_magic_<model>_nc_2c.png      (2c) T = 1e5 dt_min
-#    results_plots/xxz_magic_<model>_nc_2d.png      (2d) T = 1e5 dt(Delta,h)
-#    results_plots/xxz_magic_<model>_nc_2e.png      (2e) T = 100/gap
-#    results_plots/xxz_magic_<model>_overview.png   all seven panels
+#    results_plots/xxz_magic_<model>_fra_D1.png        3-stabilizer framability, D = 1
+#    results_plots/xxz_magic_<model>_nc_n{n}_t{k}.png  non-cliffordness, PBC ring n,
+#                                                       t = dt_min * 10**k
+#                                                       (18 panels: n in (4,5,6), k=0..5)
+#    results_plots/xxz_magic_<model>_overview_n{n}.png the 6 t-decades of ring size n
+#                                                       (one grid per n in (4,5,6))
 #
 #  Safe to run by hand at any time to see partial progress (missing points are
 #  drawn blank):

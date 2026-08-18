@@ -32,4 +32,4 @@ echo "collect+plot : job $PLOT_ID  (afterok:$DATA_ID)"
 echo
 echo "watch:   squeue -u \$USER"
 echo "logs:    tail -f logs/xxz_magic_${DATA_ID}_0.out"
-echo "figures: results_plots/xxz_magic_xxz_overview.png"
+echo "figures: results_plots/xxz_magic_xxz_overview_n4.png (n=5,6 likewise)"

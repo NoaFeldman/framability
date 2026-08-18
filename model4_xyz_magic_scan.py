@@ -16,10 +16,12 @@ See unitary_models_for_magic.tex (Model 4).
 
 This is a thin model definition on top of magic_scan_common, which carries
 every quantity downstream of (H1, H2) unchanged from xxz_magic_scan.py: the
-Trotter dt -> 0 stabilizer-3 framability (fra_D1, fra_D2) and the exact
-Choi-state non-cliffordness (nc_2a .. nc_2e).  H1 is None here (no field), so
-the bond gate's D dependence -- and the D-dependent part of fra_D1/fra_D2 --
-vanishes; the two dt->0 limits are still computed and reported for
+Trotter dt -> 0 stabilizer-3 framability (fra_D1 only) and the exact
+Choi-state non-cliffordness of exp(i H_n t) on a periodic-boundary (ring)
+chain of n qubits, n in RING_NS = (4, 5, 6), for t = dt_min * 10**k,
+k = 0 .. 5 (nc_n{n}_t{k}, spanning [dt_min, 1e5 dt_min]).  H1 is None here (no
+field), so the bond gate's D dependence -- and the D-dependent part of
+fra_D1 -- vanishes; the dt->0 limit is still computed and reported for
 consistency with the other models.  See magic_scan_common.py and
 xxz_magic_scan.py for the full quantity definitions.
 
@@ -27,7 +29,7 @@ Cluster pipeline (generic, shared with the other 4 models)
 ------------------------------------------------------------
     scripts/magic_worker.py           per-point array worker (all quantities)
     scripts/magic_scan.slurm.sh       200-task data array
-    scripts/magic_collect.py          aggregation + the seven colormaps
+    scripts/magic_collect.py          aggregation + the colormaps
     scripts/magic_collect_all.slurm.sh dependent plotting job (all 5 models)
     scripts/submit_unitary_magic.sh   submits all 5 data arrays + the collect job
 
@@ -40,16 +42,16 @@ from __future__ import annotations
 
 import numpy as np
 
-from dissipative_PT import _SX, _SY, _SZ, bonds_2d
+from dissipative_PT import _SX, _SY, _SZ
 from magic_scan_common import (
-    MagicModel, TASK_KEYS,
+    MagicModel, TASK_KEYS, RING_NS, T_LONG_FACTOR,
     point_dt, min_dt_over_grid, dt_ladder, bond_trotter_gate,
-    lattice_hamiltonian, hamiltonian_gaps, propagator,
-    noncliffordness_at_times, compute_point,
+    ring_hamiltonian, bonds_ring, hamiltonian_gaps, propagator,
+    noncliffordness_at_times, times_for_ring, compute_point,
 )
 
 # Version stamp for cached results; bump when any stored quantity changes.
-MAGIC_VERSION = '1.0'
+MAGIC_VERSION = '2.0'
 
 # --- the fully anisotropic XYZ (Baxter) chain, zero field --------------------
 J_DEFAULT = 1.0
@@ -110,10 +112,12 @@ def self_test() -> None:
     g2 = bond_trotter_gate(H1, H2, (), (), 2, 0.01)
     assert g1.shape == (16, 16) and np.allclose(g1, g2, atol=1e-14)
 
-    # 5. Lattice Hamiltonian: 4 sites, 4 bonds on the 2x2 plaquette, Hermitian.
-    H = lattice_hamiltonian(model, 0.5, -1.4)
+    # 5. Ring Hamiltonian, n = 4: 4 sites, 4 bonds (the ring C4 is isomorphic to
+    #    the old 2x2 open-boundary plaquette, so the shape/trace checks carry
+    #    over unchanged).
+    H = ring_hamiltonian(model, 0.5, -1.4, 4)
     assert H.shape == (16, 16) and np.allclose(H, H.conj().T)
-    assert len(bonds_2d(2, 2)) == 4
+    assert len(bonds_ring(4)) == 4
     # trace = 0: XX, YY, ZZ are all traceless.
     assert abs(np.trace(H)) < 1e-10
     # Delta_y == 1 recovers the XZ-symmetric ("XX + Delta_z ZZ") isotropic-XY
@@ -121,6 +125,11 @@ def self_test() -> None:
     _, H2_iso = model.build(1.0, -1.4)
     assert np.allclose(H2_iso, np.kron(_SX, _SX) + np.kron(_SY, _SY)
                         - 1.4 * np.kron(_SZ, _SZ), atol=1e-12)
+    # Other ring sizes: right shape, Hermitian.
+    for n in (5, 6):
+        Hn = ring_hamiltonian(model, 0.5, -1.4, n)
+        assert Hn.shape == (2 ** n, 2 ** n) and np.allclose(Hn, Hn.conj().T)
+        assert len(bonds_ring(n)) == n
 
     # 6. Propagator and gaps.
     evals, evecs = np.linalg.eigh(H)
@@ -131,10 +140,17 @@ def self_test() -> None:
     gap, gap_next = hamiltonian_gaps(evals)
     assert not np.isfinite(gap) or (gap >= 0 and gap_next <= gap + 1e-12)
 
-    # 7. Non-cliffordness at t = 0 is 0 (identity is Clifford).
+    # 7. Times: t_k = dt_min * 10**k spans exactly [dt_min, 1e5 dt_min].
+    t = times_for_ring(0.001)
+    assert len(t) == 6
+    assert abs(t['t0'] - 0.001) < 1e-15
+    assert abs(t['t5'] - 100.0) < 1e-9
+    assert abs(t['t5'] / t['t0'] - T_LONG_FACTOR) < 1e-6
+
+    # 8. Non-cliffordness at t = 0 is 0 (identity is Clifford).
     try:
-        nc, diag = noncliffordness_at_times(H, {'nc_2a': 0.0})
-        assert nc['nc_2a'] < 1e-9, nc
+        nc, diag = noncliffordness_at_times(H, {'nc_n4_t0': 0.0})
+        assert nc['nc_n4_t0'] < 1e-9, nc
         print(f'non-cliffordness path OK (gap = {diag["gap"]:.6f})')
     except RuntimeError as exc:                          # no RoM-handbook here
         print(f'[skip] non-cliffordness path: {exc}')
@@ -172,8 +188,10 @@ def main() -> None:
         if k in res:
             print(f'  {k:8s} = {res[k]:.9f}')
     print(f'  dt_pt = {res["dt_pt"]:.6g}   dt_min = {res["dt_min"]:.6g}')
-    if 'gap' in res:
-        print(f'  gap = {res["gap"]:.6g}   gap_next = {res["gap_next"]:.6g}')
+    for n in RING_NS:
+        if f'gap_n{n}' in res:
+            print(f'  n={n}: gap = {res[f"gap_n{n}"]:.6g}   '
+                  f'gap_next = {res[f"gap_next_n{n}"]:.6g}')
     print(f'  ({time.perf_counter() - t0:.1f}s)')
 
 

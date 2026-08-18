@@ -7,19 +7,22 @@
 #  all five -- see scripts/submit_unitary_magic.sh, which submits it once per
 #  model with those variables set.
 #
-#  Per point the worker computes all seven maps:
-#     fra_D1, fra_D2   dt->0 limit of the stabilizer-3 framability of the
-#                      nearest-neighbour Trotter bond gate (D = 1, 2), over the
-#                      ladder dt_i = 0.1 i * choose_dt, i = 1..10
-#     nc_2a..nc_2e     non-cliffordness (alpha=2 stabilizer Renyi entropy of the
-#                      Choi state) of exp(iHt) on the 2x2 lattice (4 qubits ->
-#                      8-qubit Choi state), by exact diagonalization
+#  Per point the worker computes:
+#     fra_D1           dt->0 limit of the stabilizer-3 framability of the
+#                      nearest-neighbour Trotter bond gate (D = 1 only), over
+#                      the ladder dt_i = 0.1 i * choose_dt, i = 1..10
+#     nc_n{n}_t{k}     non-cliffordness (alpha=2 stabilizer Renyi entropy of
+#                      the Choi state) of exp(i H_n t_k) on a PERIODIC-BOUNDARY
+#                      (ring) chain of n qubits, n in (4, 5, 6), for
+#                      t_k = dt_min * 10**k, k = 0..5 (18 maps total, spanning
+#                      [dt_min, 1e5 dt_min]); the n=6 Choi state has 12 qubits.
 #
 #  Every model's grid is 20x20 = 400 points; over a 200-task array that is 2
 #  points per task, strided.  Each task skips any npz already complete on
 #  disk, so a resubmission after a timeout simply continues.  Cost is
-#  dominated by the framability group (2 dims x 10 dt x 1080 stabilizer-frame
-#  LPs per point); GROUP=nc runs the cheap magic maps alone in minutes.
+#  dominated by the framability group (10 dt x 1080 stabilizer-frame LPs per
+#  point, D = 1 only); GROUP=nc runs the non-cliffordness maps alone -- still
+#  cheap, but no longer trivial at n = 6 (the 4096-dim Choi state).
 #
 #  Submit one model directly:
 #    mkdir -p logs results_unitary_magic results_plots
@@ -37,7 +40,7 @@
 #SBATCH --job-name=unitary_magic
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=1
-#SBATCH --mem=8G
+#SBATCH --mem=16G
 #SBATCH --time=24:00:00
 #SBATCH --array=0-199
 #SBATCH --output=logs/unitary_magic_%A_%a.out

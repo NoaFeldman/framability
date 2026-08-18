@@ -1,25 +1,25 @@
 """Shared framework for the "unitary magic scan" family of models.
 
-Factored out of xxz_magic_scan.py (which is left untouched and does not
-import this module): every quantity downstream of a model's one-qubit term
-H1 and nearest-neighbour term H2 is model-agnostic, so this module carries
-that machinery once and each `model<N>_..._magic_scan.py` file only supplies
-its own `MagicModel` (Hamiltonian + parameter grid) and a tailored
-`self_test`/`main`, exactly mirroring xxz_magic_scan.py's structure and CLI.
+Factored out of xxz_magic_scan.py (which mirrors every change made here, kept
+as a parallel standalone copy rather than an import): every quantity
+downstream of a model's one-qubit term H1 and nearest-neighbour term H2 is
+model-agnostic, so this module carries that machinery once and each
+`model<N>_..._magic_scan.py` file only supplies its own `MagicModel`
+(Hamiltonian + parameter grid) and a tailored `self_test`/`main`, exactly
+mirroring xxz_magic_scan.py's structure and CLI.
 
 Quantities computed at every grid point
 ---------------------------------------
-fra_D1, fra_D2
+fra_D1
     dt -> 0 limit of the stabilizer-3 framability (framability.
     stabilizer_3_framability) of the two-qubit nearest-neighbour Trotter gate,
-    for spatial dimension D = 1 and D = 2.  The gate is
-    trotter_lindbladian_scan.bond_trotter_gate, i.e. the 16x16 real Pauli
-    transfer matrix of expm(L_bond dt) with
+    for spatial dimension D = 1.  The gate is trotter_lindbladian_scan.
+    bond_trotter_gate, i.e. the 16x16 real Pauli transfer matrix of
+    expm(L_bond dt) with
 
-        H_bond = H2 + 1/(2D) ( H1 (x) I + I (x) H1 ),
+        H_bond = H2 + 1/2 ( H1 (x) I + I (x) H1 ),
 
-    so each one-qubit term is divided by 2 in 1D and by 4 in 2D (a site is
-    shared by 2D bonds).  The gate is evaluated on the dt ladder
+    evaluated on the dt ladder
 
         dt_i = 0.1 i * dt_point,    i = 1 .. 10,     dt_point = choose_dt(...)
 
@@ -27,26 +27,27 @@ fra_D1, fra_D2
     the dt = 0 value of framability**(1/dt) -- the raw framability tends
     trivially to 1 (identity gate), the per-unit-time rate does not.
 
-nc_2a .. nc_2e
+nc_n{n}_t{k}   (n in RING_NS = (4, 5, 6), k in T_DECADE_IDX = 0 .. 5)
     Non-cliffordness (magic_measures.noncliffordness = alpha=2 stabilizer
-    Renyi entropy of the Choi state) of the EXACT propagator of the full 2x2
-    lattice (N = 4 qubits, so the Choi state has 8 qubits), by exact
-    diagonalization:
+    Renyi entropy of the Choi state) of the EXACT propagator
 
-        2a  U = exp(i H dt_min),  dt_min = min over the whole grid of choose_dt
-        2b  U = exp(i H dt_pt),   dt_pt  = choose_dt at this point
-        2c  U = exp(i H T),       T = 1e5 * dt_min
-        2d  U = exp(i H T),       T = 1e5 * dt_pt
-        2e  U = exp(i H T),       T = 100 / gap,  gap = E_1 - E_0 of H
+        U = exp(i H_n t_k),   t_k = dt_min * 10**k,   k = 0 .. 5
 
-    On the 2x2 lattice H carries the model's H1 on every site and H2 on every
-    nearest-neighbour bond at full strength (no 1/2D bond share -- that is a
-    Trotter convention, not part of the physical generator).
+    i.e. t_k sweeps [dt_min, 1e5 * dt_min] (T_LONG_FACTOR = 1e5) in decades,
+    by exact diagonalization.  dt_min = min over the whole parameter grid of
+    choose_dt (the same quantity the old "2a" task used).
+
+    H_n is the full, exact Hamiltonian of a PERIODIC-BOUNDARY (ring) 1D chain
+    of n qubits: the model's H1 on every site and H2 on every nearest-
+    neighbour bond INCLUDING the wraparound bond (n-1, 0), at full coupling
+    strength (no 1/2D bond share -- that is a Trotter convention, not part of
+    the physical generator).  The Choi state of U has 2n qubits.
 
     The gap is to the first eigenvalue distinct from the ground energy
     (tolerance GAP_TOL); the gap to the literal second eigenvalue is stored
     alongside as `gap_next` so a degenerate-ground-state reading can be
-    recovered without recomputing.
+    recovered without recomputing.  Both are diagnostics only now (no task
+    time depends on the gap any more).
 
     The sign of the exponent is immaterial for these numbers: exp(-iHt) gives
     the complex-conjugate Choi state, whose Pauli expectations differ only by
@@ -61,39 +62,37 @@ from typing import Callable
 
 import numpy as np
 
-from dissipative_PT import _I2, _SX, _SY, _SZ, _site_op, bonds_2d
-from trotter_lindbladian_scan import (
-    DT_BASE, LATTICE_LX, LATTICE_LY, choose_dt, bond_trotter_gate,
-    _embed_two_site,
-)
+from dissipative_PT import _I2, _SX, _SY, _SZ, _site_op
+from trotter_lindbladian_scan import DT_BASE, choose_dt, bond_trotter_gate, _embed_two_site
 from trotter_rom_dtbase import extrapolate_to_zero, FIT_N_DEFAULT, DEG_DEFAULT
 from framability import stabilizer_3_framability
 from magic_measures import noncliffordness
 
 # --- conventions -------------------------------------------------------------
 EXP_SIGN = +1.0          # U = expm(EXP_SIGN * 1j * H * t)  (prompt: exp(+iHt))
-DIMS = (1, 2)            # spatial dimensions for the framability maps
+DIMS = (1,)              # spatial dimensions for the framability maps (D = 1 only)
 DT_FRACS = np.array([0.1 * i for i in range(1, 11)])   # dt ladder / dt_point
-T_LONG_FACTOR = 1.0e5    # 2c/2d: T = T_LONG_FACTOR * dt
-GAP_FACTOR = 100.0       # 2e:    T = GAP_FACTOR / gap
 GAP_TOL = 1e-9           # degeneracy tolerance for "first excited state"
 
-# Non-cliffordness lattice (4 qubits -> 8-qubit Choi state, exact).
-NC_LX, NC_LY = LATTICE_LX, LATTICE_LY
+# Non-cliffordness: periodic-boundary (ring) 1D chains of these sizes.
+RING_NS = (4, 5, 6)
+# t_k = dt_min * 10**k, k = 0 .. 5, spans [dt_min, T_LONG_FACTOR * dt_min].
+T_LONG_FACTOR = 1.0e5
+N_T_DECADES = int(round(np.log10(T_LONG_FACTOR))) + 1     # 6
+T_DECADE_IDX = tuple(range(N_T_DECADES))
 
 # Everything a worker stores per point, in plot order.
-TASK_KEYS = ('fra_D1', 'fra_D2', 'nc_2a', 'nc_2b', 'nc_2c', 'nc_2d', 'nc_2e')
-TASK_LABELS = {
-    'fra_D1': r'3-stabilizer framability, $dt\to0$  (D = 1)',
-    'fra_D2': r'3-stabilizer framability, $dt\to0$  (D = 2)',
-    'nc_2a': r'non-cliffordness of $e^{iH\,dt_{\min}}$  (2a)',
-    'nc_2b': r'non-cliffordness of $e^{iH\,dt(p_1,p_2)}$  (2b)',
-    'nc_2c': r'non-cliffordness of $e^{iH\,T}$,  $T = 10^5 dt_{\min}$  (2c)',
-    'nc_2d': r'non-cliffordness of $e^{iH\,T}$,  $T = 10^5 dt(p_1,p_2)$  (2d)',
-    'nc_2e': r'non-cliffordness of $e^{iH\,T}$,  $T = 100/\mathrm{gap}$  (2e)',
-}
-FRA_KEYS = ('fra_D1', 'fra_D2')
-NC_KEYS = ('nc_2a', 'nc_2b', 'nc_2c', 'nc_2d', 'nc_2e')
+TASK_KEYS = ('fra_D1',) + tuple(
+    f'nc_n{n}_t{k}' for n in RING_NS for k in T_DECADE_IDX
+)
+TASK_LABELS = {'fra_D1': r'3-stabilizer framability, $dt\to0$  (D = 1)'}
+TASK_LABELS.update({
+    f'nc_n{n}_t{k}': (rf'non-cliffordness of $e^{{iH_{{n={n}}}t}}$, '
+                      rf'$t = 10^{{{k}}}\,dt_{{\min}}$  (PBC ring)')
+    for n in RING_NS for k in T_DECADE_IDX
+})
+FRA_KEYS = ('fra_D1',)
+NC_KEYS = tuple(f'nc_n{n}_t{k}' for n in RING_NS for k in T_DECADE_IDX)
 
 
 # ---------------------------------------------------------------------------
@@ -219,27 +218,32 @@ def framability_rate(dts: np.ndarray, vals: np.ndarray, *,
 
 
 # ---------------------------------------------------------------------------
-#  (2) non-cliffordness of the exact 2x2-lattice propagator
+#  (2) non-cliffordness of the exact PBC-ring propagator
 # ---------------------------------------------------------------------------
-def lattice_hamiltonian(model: MagicModel, p1: float, p2: float,
-                        Lx: int = NC_LX, Ly: int = NC_LY) -> np.ndarray:
-    """(2^N, 2^N) Hamiltonian of the Lx x Ly open-boundary lattice, N = Lx Ly.
+def bonds_ring(n: int) -> list[tuple[int, int]]:
+    """Nearest-neighbour bonds of a periodic-boundary (ring) chain of n sites:
+    (0,1), (1,2), ..., (n-2,n-1), (n-1,0) -- the wraparound bond included."""
+    return [(i, (i + 1) % n) for i in range(n)]
 
-    H1 on every site and H2 on every nearest-neighbour bond, at full coupling
-    strength -- the Hamiltonian counterpart of
-    trotter_lindbladian_scan.build_full_lindbladian_model.
+
+def ring_hamiltonian(model: MagicModel, p1: float, p2: float, n: int) -> np.ndarray:
+    """(2^n, 2^n) Hamiltonian of the periodic-boundary (ring) chain of n qubits.
+
+    H1 on every site and H2 on every nearest-neighbour bond (including the
+    wraparound bond), at full coupling strength -- the Hamiltonian counterpart
+    of trotter_lindbladian_scan.build_full_lindbladian_model, on a ring instead
+    of an open lattice.
     """
     H1, H2 = model.build(p1, p2)
-    N = Lx * Ly
-    H = np.zeros((2 ** N, 2 ** N), dtype=complex)
+    H = np.zeros((2 ** n, 2 ** n), dtype=complex)
     if H1 is not None:
         H1 = np.asarray(H1, dtype=complex)
-        for s in range(N):
-            H = H + _site_op(H1, s, N)
+        for s in range(n):
+            H = H + _site_op(H1, s, n)
     if H2 is not None:
         H2 = np.asarray(H2, dtype=complex)
-        for (i, j) in bonds_2d(Lx, Ly):
-            H = H + _embed_two_site(H2, i, j, N)
+        for (i, j) in bonds_ring(n):
+            H = H + _embed_two_site(H2, i, j, n)
     return H
 
 
@@ -287,16 +291,12 @@ def noncliffordness_at_times(H: np.ndarray, times: dict[str, float], *,
                  'e_min': float(evals.min()), 'e_max': float(evals.max())}
 
 
-def times_for_point(dt_pt: float, dt_min: float, gap: float) -> dict[str, float]:
-    """The five evolution times of tasks 2a .. 2e."""
-    t_gap = GAP_FACTOR / gap if (np.isfinite(gap) and gap > 0) else float('nan')
-    return {
-        'nc_2a': dt_min,
-        'nc_2b': dt_pt,
-        'nc_2c': T_LONG_FACTOR * dt_min,
-        'nc_2d': T_LONG_FACTOR * dt_pt,
-        'nc_2e': t_gap,
-    }
+def times_for_ring(dt_min: float) -> dict[str, float]:
+    """The N_T_DECADES evolution times t_k = dt_min * 10**k, k in T_DECADE_IDX,
+    spanning [dt_min, T_LONG_FACTOR * dt_min], keyed by the 't{k}' suffix used
+    in TASK_KEYS (the 'nc_n{n}_' prefix is added by the caller per ring size).
+    """
+    return {f't{k}': dt_min * (10.0 ** k) for k in T_DECADE_IDX}
 
 
 # ---------------------------------------------------------------------------
@@ -306,16 +306,18 @@ def compute_point(model: MagicModel, p1: float, p2: float, *,
                   dt_min: float | None = None,
                   groups: tuple[str, ...] = ('fra', 'nc'),
                   dims: tuple[int, ...] = DIMS,
+                  ring_ns: tuple[int, ...] = RING_NS,
                   fit_n: int = FIT_N_DEFAULT, deg: int = DEG_DEFAULT,
                   verbose: bool = False) -> dict:
     """All scan quantities at one (p1, p2) point.
 
-    The returned dict holds the seven TASK_KEYS, the raw framability ladders
-    (`fra_dts`, `fra_raw_D1`, `fra_raw_D2`) so the dt -> 0 fit can be redone at
-    collect time without recomputing any LP, the overflow-safe log of the
-    framability limits (`fra_rate_D1`, `fra_rate_D2`), the five evolution
-    times, the two gaps, and both log conventions for the non-cliffordness
-    (`*_bits`).
+    The returned dict holds the TASK_KEYS (fra_D1 and nc_n{n}_t{k} for every
+    ring size and decade), the raw framability ladder (`fra_dts`,
+    `fra_raw_D1`) so the dt -> 0 fit can be redone at collect time without
+    recomputing any LP, the overflow-safe log of the framability limit
+    (`fra_rate_D1`), both log conventions for the non-cliffordness (`*_bits`),
+    and per-ring-size diagnostics (`gap_n{n}`, `gap_next_n{n}`, `e_min_n{n}`,
+    `e_max_n{n}`).
     """
     dt_pt = point_dt(model, p1, p2)
     dt_min = min_dt_over_grid(model) if dt_min is None else float(dt_min)
@@ -333,14 +335,16 @@ def compute_point(model: MagicModel, p1: float, p2: float, *,
                 dts, vals, fit_n=fit_n, deg=deg, raw=True)
 
     if 'nc' in groups:
-        H = lattice_hamiltonian(model, p1, p2)
-        evals = np.linalg.eigvalsh(H)
-        gap, gap_next = hamiltonian_gaps(evals)
-        times = times_for_point(dt_pt, dt_min, gap)
-        nc, diag = noncliffordness_at_times(H, times, verbose=verbose)
-        out.update(nc)
-        out.update({f'{k}_bits': v / np.log(2.0) for k, v in nc.items()})
-        out.update({f't_{k[-2:]}': v for k, v in times.items()})
-        out.update(diag)
+        times = times_for_ring(dt_min)
+        for n in ring_ns:
+            H = ring_hamiltonian(model, p1, p2, n)
+            nc, diag = noncliffordness_at_times(
+                H, {f'nc_n{n}_{tk}': t for tk, t in times.items()}, verbose=verbose)
+            out.update(nc)
+            out.update({f'{k}_bits': v / np.log(2.0) for k, v in nc.items()})
+            out[f'gap_n{n}'] = diag['gap']
+            out[f'gap_next_n{n}'] = diag['gap_next']
+            out[f'e_min_n{n}'] = diag['e_min']
+            out[f'e_max_n{n}'] = diag['e_max']
 
     return out

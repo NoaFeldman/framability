@@ -9,10 +9,11 @@ function differ between them.  Everything else (compute_point,
 min_dt_over_grid, TASK_KEYS, ...) is the model-agnostic machinery of
 magic_scan_common.py, shared by every scan module.
 
-The unit of work is a GRID POINT: all seven quantities (fra_D1, fra_D2,
-nc_2a .. nc_2e) are computed together, because they share the model terms,
-the Trotter step choose_dt and -- for the five non-cliffordness maps -- a
-single eigendecomposition of the 2x2-lattice Hamiltonian.
+The unit of work is a GRID POINT: fra_D1 and the 18 non-cliffordness maps
+nc_n{n}_t{k} (n in RING_NS = (4, 5, 6), k = 0 .. 5, t_k = dt_min * 10**k) are
+computed together, because they share the model terms and the Trotter step
+choose_dt; each ring size n gets its own eigendecomposition of its
+periodic-boundary (ring) Hamiltonian, shared by that ring's 6 time points.
 
     ix in 0 .. N_P1-1     (p1, x-axis)
     iy in 0 .. N_P2-1     (p2, y-axis)
@@ -49,19 +50,19 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from magic_scan_common import (                                    # noqa: E402
-    TASK_KEYS, FRA_KEYS, NC_KEYS, DIMS, compute_point, min_dt_over_grid,
+    TASK_KEYS, FRA_KEYS, NC_KEYS, DIMS, RING_NS, compute_point, min_dt_over_grid,
 )
 from trotter_rom_dtbase import FIT_N_DEFAULT, DEG_DEFAULT          # noqa: E402
 
 DEFAULT_OUT = 'results_unitary_magic'
 GROUPS = ('fra', 'nc', 'both')
 
-# Scalars stored per point besides the seven task keys.
-SCALAR_KEYS = ['dt_pt', 'dt_min', 'gap', 'gap_next', 'e_min', 'e_max',
-               't_2a', 't_2b', 't_2c', 't_2d', 't_2e',
-               'fra_rate_D1', 'fra_rate_D2',
-               'fra_raw_lim_D1', 'fra_raw_lim_D2']
-ARRAY_KEYS = ['fra_dts', 'fra_raw_D1', 'fra_raw_D2']
+# Scalars stored per point besides the task keys: dt_pt/dt_min, the D=1
+# framability diagnostics, and per-ring-size gap/energy diagnostics.
+SCALAR_KEYS = ['dt_pt', 'dt_min', 'fra_rate_D1', 'fra_raw_lim_D1'] + [
+    f'{stat}_n{n}' for n in RING_NS for stat in ('gap', 'gap_next', 'e_min', 'e_max')
+]
+ARRAY_KEYS = ['fra_dts', 'fra_raw_D1']
 
 
 def _groups_of(name: str) -> tuple[str, ...]:
@@ -91,13 +92,11 @@ def _is_current(out: Path, groups: tuple[str, ...], magic_version: str) -> bool:
                 return False
             if np.isfinite(d[k]):
                 continue
-            # Two non-finite values are legitimate and must not trigger a
-            # recompute on every resubmission:
-            #   fra_D*  exp(rate) overflowed float64 -- fra_rate_D* carries it
-            #   nc_2e   T = 100/gap is undefined for a degenerate ground state
+            # fra_D1's exp(rate) can overflow float64 -- fra_rate_D1 carries
+            # the finite log of it, so that alone is not a stale point.  Every
+            # nc_n{n}_t{k} time is dt_min * 10**k > 0, always finite, so no
+            # equivalent carve-out is needed there any more.
             if k in FRA_KEYS and np.isfinite(d.get(f'fra_rate_D{k[-1]}', np.nan)):
-                continue
-            if k == 'nc_2e' and not np.isfinite(d.get('gap', np.nan)):
                 continue
             return False
         if 'fra' in groups and 'fra_dts' not in d:
@@ -186,9 +185,9 @@ def main() -> None:
                    help='split the grid into this many strided array tasks')
     p.add_argument('--out_dir',  type=str, default=DEFAULT_OUT)
     p.add_argument('--group',    type=str, default='both', choices=GROUPS,
-                   help="'fra' = the two dt->0 framability maps (expensive), "
-                        "'nc' = the five non-cliffordness maps (cheap), "
-                        "'both' = default")
+                   help="'fra' = the D=1 dt->0 framability map (expensive), "
+                        "'nc' = the 18 non-cliffordness maps, 3 ring sizes x "
+                        "6 decades (cheap), 'both' = default")
     p.add_argument('--fit_n',    type=int, default=FIT_N_DEFAULT,
                    help='points nearest dt=0 used by the extrapolation fit '
                         '(the ladder only has 10, so this caps there)')
