@@ -1,10 +1,11 @@
-"""dt=0 extrapolation of the five DT_BASE-line framabilities -> 5 colormaps/model.
+"""dt=0 extrapolation of the seven DT_BASE-line framabilities -> N colormaps/model.
 
 For every (gamma, gamma') grid point of a model (the same 51x51 grid
 trotter_lindbladian_scan scans), trotter_dtbase_line swept the Trotter control
-DT_BASE over 99 values and stored the five framabilities
+DT_BASE over its bottom 10 values (see trotter_dtbase_line_worker.base_grid) and
+stored the seven framabilities
 
-    stab_fra   pauli_fra   opt_fra_4   opt_fra_6   gamma_ch1
+    stab_fra   pauli_fra   opt_fra_4   opt_fra_6   gamma_ch1   sch_fra_6   prod_fra_10
 
 together with the adaptive step  dt = DT_BASE / max(||H||_1, {gamma_k})  at each
 DT_BASE.  Raw framability tends trivially to 1 as dt -> 0 (the gate -> identity);
@@ -54,6 +55,8 @@ def _load_point_raw(model: str, p1: float, p2: float, in_dir: Path):
     arrs = {k: np.full(N_BASE, np.nan) for k, _ in MEASURES}
     dt_vals = np.full(N_BASE, np.nan)
     for f in pt_dir.glob('base_*.npz'):
+        if '_qrefine_' in f.stem:          # item 5 refine files: not a source
+            continue                       # of dt (merged in separately below)
         try:
             d = np.load(f, allow_pickle=True)
             idx = int(d['base_idx'])
@@ -63,9 +66,26 @@ def _load_point_raw(model: str, p1: float, p2: float, in_dir: Path):
             continue
         dt_vals[idx] = float(d['dt'])
         for k, _ in MEASURES:
-            arrs[k][idx] = float(d[k])
+            if k in d.files:
+                arrs[k][idx] = float(d[k])
     if not np.isfinite(dt_vals).any():
         return None
+
+    # item 5: elementwise-minimum merge of every quick-refine round for
+    # opt_fra_4/opt_fra_6 (same convention as trotter_dtbase_line_collect.py).
+    for f in pt_dir.glob('base_*_qrefine_r*.npz'):
+        try:
+            d = np.load(f, allow_pickle=True)
+            idx = int(d['base_idx']) if 'base_idx' in d.files else int(f.stem.split('_')[1])
+        except Exception:
+            continue
+        if not (0 <= idx < N_BASE):
+            continue
+        for k in ('opt_fra_4', 'opt_fra_6'):
+            if k in d.files:
+                v = float(d[k])
+                if np.isfinite(v) and (not np.isfinite(arrs[k][idx]) or v < arrs[k][idx]):
+                    arrs[k][idx] = v
     return dt_vals, arrs
 
 
@@ -80,7 +100,8 @@ def _load_point_collected(model: str, p1: float, p2: float, in_dir: Path):
     try:
         d = np.load(npz, allow_pickle=True)
         dt_vals = np.asarray(d['dt_vals'], dtype=float)
-        arrs = {k: np.asarray(d[k], dtype=float) for k, _ in MEASURES}
+        arrs = {k: (np.asarray(d[k], dtype=float) if k in d.files
+                   else np.full(dt_vals.shape, np.nan)) for k, _ in MEASURES}
     except Exception:
         return None
     if not np.isfinite(dt_vals).any():
@@ -137,11 +158,17 @@ def extrapolate(dt_vals: np.ndarray, fra_vals: np.ndarray, *,
 #  Per-model grid extrapolation
 # ---------------------------------------------------------------------------
 def extrapolate_model(model: str, in_dir: Path, *, fit_n: int, deg: int,
-                      raw: bool, stride: int = 1) -> dict:
+                      raw: bool, stride: int = 1,
+                      max_dt_base: float = 0.10) -> dict:
     m = MODELS[model]
     p1_vals = np.asarray(m.p1_vals[::stride], float)     # gamma  (x-axis)
     p2_vals = np.asarray(m.p2_vals[::stride], float)     # gamma' (y-axis)
     nx, ny = len(p1_vals), len(p2_vals)
+
+    # base_grid() indexes align 1:1 with dt_vals/arrs (both loaders preserve
+    # base_idx position), so this mask restricts the fit pool to DT_BASE <=
+    # max_dt_base regardless of fit_n.
+    base_mask = base_grid() <= max_dt_base
 
     grids = {k: np.full((nx, ny), np.nan) for k, _ in MEASURES}
     found = 0
@@ -154,7 +181,8 @@ def extrapolate_model(model: str, in_dir: Path, *, fit_n: int, deg: int,
             dt_vals, arrs = pt
             for key, _ in MEASURES:
                 grids[key][ix, iy] = extrapolate(
-                    dt_vals, arrs[key], fit_n=fit_n, deg=deg, raw=raw)
+                    dt_vals[base_mask], arrs[key][base_mask],
+                    fit_n=fit_n, deg=deg, raw=raw)
     print(f'[extrap] {model}: {found}/{nx * ny} grid points had data', flush=True)
     return dict(p1_vals=p1_vals, p2_vals=p2_vals, found=found, **grids)
 
@@ -178,8 +206,11 @@ def plot_model(model: str, data: dict, png: Path, *, raw: bool,
         return np.concatenate([[2 * v[0] - mid[0]], mid, [2 * v[-1] - mid[-1]]])
     ex, ey = edges(p1_vals), edges(p2_vals)
 
-    fig, axes = plt.subplots(2, 3, figsize=(18, 10), constrained_layout=True,
-                             squeeze=False)
+    n = len(MEASURES)
+    ncol = min(4, n) if n > 1 else 1
+    nrow = int(np.ceil(n / ncol))
+    fig, axes = plt.subplots(nrow, ncol, figsize=(6 * ncol, 5 * nrow),
+                             constrained_layout=True, squeeze=False)
     qty = 'framability' if raw else r'framability$^{1/dt}$'
     fig.suptitle(f'{m.title}\n' + r'$dt\to0$ extrapolation of ' + qty
                  + r'   ($dt=\mathrm{DT\_BASE}/\max(\|H\|_1,\{\gamma_k\})$)',
@@ -224,6 +255,9 @@ def main() -> None:
                     help='number of points nearest dt=0 used in the fit')
     ap.add_argument('--deg', type=int, default=1,
                     help='polynomial degree of the dt-extrapolation fit')
+    ap.add_argument('--max_dt_base', type=float, default=0.10,
+                    help='only DT_BASE values <= this are eligible for the fit '
+                         '(default 0.10 = the bottom N_BASE_KEEP=10 values)')
     ap.add_argument('--raw', action='store_true',
                     help='extrapolate raw framability instead of framability**(1/dt)')
     ap.add_argument('--fra_tol', type=float, default=1e-3)
@@ -236,7 +270,8 @@ def main() -> None:
 
     for model in args.models:
         data = extrapolate_model(model, in_dir, fit_n=args.fit_n, deg=args.deg,
-                                 raw=args.raw, stride=args.stride)
+                                 raw=args.raw, stride=args.stride,
+                                 max_dt_base=args.max_dt_base)
         npz = out_dir / f'{model}_dtbase_{suffix}.npz'
         png = out_dir / f'{model}_dtbase_{suffix}.png'
         np.savez(npz, model=model, fit_n=args.fit_n, deg=args.deg,

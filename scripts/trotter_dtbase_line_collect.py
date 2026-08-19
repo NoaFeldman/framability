@@ -39,14 +39,39 @@ def load(model: str, p1: float, p2: float, in_dir: Path) -> dict:
     dt_vals = np.full(N_BASE, np.nan)
     found = 0
     for f in sorted(pt_dir.glob('base_*.npz')):
+        # base_<idx>_qrefine_r*.npz (item 5) are read separately by the refine
+        # merge step, not here -- only plain base_<idx:03d>.npz files.
+        if '_qrefine_' in f.stem:
+            continue
         d = np.load(f, allow_pickle=True)
         idx = int(d['base_idx'])
         if not (0 <= idx < N_BASE):
             continue
         for k, _ in MEASURES:
-            arrs[k][idx] = float(d[k])
+            if k in d.files:                    # key may not be backfilled yet
+                arrs[k][idx] = float(d[k])
         dt_vals[idx] = float(d['dt'])
         found += 1
+
+    # item 5: fold in every quick-refine round for opt_fra_4/opt_fra_6 -- the
+    # refined value can only be <= the base value (optimise_framability with
+    # extra warm-start seeds never does worse than not seeding), so take the
+    # elementwise minimum, matching model3_framability_line.py's refine-merge
+    # convention for the analogous results_trotter_v3 pipeline.
+    REFINE_KEYS = ('opt_fra_4', 'opt_fra_6')
+    for f in sorted(pt_dir.glob('base_*_qrefine_r*.npz')):
+        try:
+            d = np.load(f, allow_pickle=True)
+            idx = int(d['base_idx']) if 'base_idx' in d.files else int(f.stem.split('_')[1])
+        except Exception:
+            continue
+        if not (0 <= idx < N_BASE):
+            continue
+        for k in REFINE_KEYS:
+            if k in d.files:
+                v = float(d[k])
+                if np.isfinite(v) and (not np.isfinite(arrs[k][idx]) or v < arrs[k][idx]):
+                    arrs[k][idx] = v
 
     missing = int(np.sum(~np.isfinite(arrs[MEASURES[0][0]])))
     print(f'[collect] {tag}: {found}/{N_BASE} base points loaded '

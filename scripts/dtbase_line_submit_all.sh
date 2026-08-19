@@ -7,9 +7,13 @@
 #
 #  For each point this fires the existing per-point job array
 #      MODEL=<m> P1=<gamma> P2=<gamma'> sbatch scripts/trotter_dtbase_line.slurm.sh
-#  whose 0-98 array sweeps the 99 DT_BASE values.  The worker is idempotent
-#  (skips any base_<idx>.npz already at the current code version), so the driver
-#  is safe to re-run to fill gaps.
+#  whose 0-9 array sweeps the bottom 10 DT_BASE values (item 1 of the
+#  dt-extrapolation pipeline redesign).  The worker is idempotent per-KEY (it
+#  loads any existing base_<idx>.npz and computes only the MEASURES entries
+#  still missing from it -- see trotter_dtbase_line_worker._missing_keys), so
+#  the driver is safe to re-run both to fill grid gaps AND to backfill newly
+#  added measures (e.g. sch_fra_6/prod_fra_10) onto already-swept points
+#  without recomputing anything already stored.
 #
 #  200-job cap: before each per-point submission the driver blocks until the
 #  user's queued+running task count drops below MAXJOBS, so no more than ~MAXJOBS
