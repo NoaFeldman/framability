@@ -48,7 +48,7 @@ python scripts/eight_qubit_gap_worker.py \
     --stride      "$STRIDE" \
     --out_dir     "$OUT_DIR" \
     --k           "$K" \
-    --sigma       "$SIGMA" \
+    "--sigma=$SIGMA" \
     --noise_floor "$NOISE_FLOOR"
 
 echo "[$TOPOLOGY] point ${SLURM_ARRAY_TASK_ID}: done"
