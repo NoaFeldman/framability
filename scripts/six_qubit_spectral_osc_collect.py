@@ -57,7 +57,7 @@ def plot(data: dict, png: Path) -> None:
                              squeeze=False)
     fig.suptitle(fr'{N_QUBITS}-qubit ring spectral-oscillation measures  '
                  r'($H=J\sum_{\langle ij\rangle}Z_iZ_j$, '
-                 r"jumps $\sqrt\gamma|-\rangle\langle+|_i,\ \sqrt{\gamma'}Z_i$)",
+                 r"jumps $\sqrt{\gamma}|-\rangle\langle+|_i,\ \sqrt{\gamma'}Z_i$)",
                  fontsize=13)
 
     def edges(v):
