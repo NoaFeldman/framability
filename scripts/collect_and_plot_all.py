@@ -31,10 +31,19 @@ import eight_qubit_gap_collect as gap8_collect
 import six_qubit_spectral_osc_collect as specosc6_collect
 
 
-def collect_dtbase_lines(models, stride, in_dir, out_dir, fra_tol):
+def collect_dtbase_lines(models, stride, in_dir, out_dir, fra_tol, force=False):
     """Step 1: per-point F(dt) line figures (items 1-3's 7 measures + item 5's
-    refine-merge, both already wired into trotter_dtbase_line_collect.load)."""
-    total = done = incomplete = missing = 0
+    refine-merge, both already wired into trotter_dtbase_line_collect.load).
+
+    Skips a point entirely (no load, no replot) when its <tag>_dtbase_line.npz
+    and .png already exist, unless force=True -- both because it's wasted work
+    (this driver may be re-run many times as the cluster sweep fills in) and
+    because re-plotting hundreds of points in one process without ever closing
+    the resulting matplotlib figures is what caused this step to stall/hang
+    (accumulated Figure objects; see trotter_dtbase_line_collect.plot's now-
+    added plt.close(fig)).  Delete the specific npz/png (or pass --force) to
+    force a point to be regenerated, e.g. after backfilling new measures."""
+    total = done = incomplete = missing = skipped = 0
     for model in models:
         m = MODELS[model]
         for p1 in m.p1_vals[::stride]:
@@ -45,18 +54,22 @@ def collect_dtbase_lines(models, stride, in_dir, out_dir, fra_tol):
                 if not (in_dir / tag).is_dir():
                     missing += 1
                     continue
-                data = collect.load(model, p1, p2, in_dir)
-                found = int(np.sum(np.isfinite(data[collect.MEASURES[0][0]])))
                 npz = out_dir / f'{tag}_dtbase_line.npz'
                 png = out_dir / f'{tag}_dtbase_line.png'
+                if not force and npz.exists() and png.exists():
+                    skipped += 1
+                    continue
+                data = collect.load(model, p1, p2, in_dir)
+                found = int(np.sum(np.isfinite(data[collect.MEASURES[0][0]])))
                 np.savez(npz, model=model, p1=p1, p2=p2, **data)
                 collect.plot(model, p1, p2, data, png, fra_tol=fra_tol)
                 if found < collect.N_BASE:
                     incomplete += 1
                 else:
                     done += 1
-    print(f'[collect_and_plot_all] dtbase lines: {done} complete, {incomplete} '
-          f'partial, {missing} not started (of {total} points)', flush=True)
+    print(f'[collect_and_plot_all] dtbase lines: {done} (re)plotted complete, '
+          f'{incomplete} (re)plotted partial, {skipped} already up to date '
+          f'(skipped), {missing} not started (of {total} points)', flush=True)
 
 
 def extrapolate_and_plot(models, in_dir, out_dir, *, stride, fit_n, deg,
@@ -94,6 +107,9 @@ def main() -> None:
     ap.add_argument('--skip_lines', action='store_true',
                     help='skip the (slow, many-file) per-point line replot and '
                          'only redo the extrapolated colormaps + item 4/6 figures')
+    ap.add_argument('--force', action='store_true',
+                    help='regenerate <tag>_dtbase_line.npz/.png even if they '
+                         'already exist (default: skip points already up to date)')
     args = ap.parse_args()
 
     in_dir = Path(args.in_dir)
@@ -102,7 +118,8 @@ def main() -> None:
 
     # 1+2: every existing dtbase-line figure (items 1-3 + item 5 refine-merge)
     if not args.skip_lines:
-        collect_dtbase_lines(args.models, args.stride, in_dir, out_dir, args.fra_tol)
+        collect_dtbase_lines(args.models, args.stride, in_dir, out_dir, args.fra_tol,
+                             force=args.force)
     extrapolate_and_plot(args.models, in_dir, out_dir, stride=args.stride,
                         fit_n=args.fit_n, deg=args.deg,
                         max_dt_base=args.max_dt_base, fra_tol=args.fra_tol)

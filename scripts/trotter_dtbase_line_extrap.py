@@ -238,6 +238,7 @@ def plot_model(model: str, data: dict, png: Path, *, raw: bool,
         ax.axis('off')
 
     fig.savefig(png, dpi=150)
+    plt.close(fig)
     print(f'[extrap] wrote {png}', flush=True)
 
 

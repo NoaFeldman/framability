@@ -80,6 +80,7 @@ def plot(data: dict, png: Path) -> None:
         fig.colorbar(pcm, ax=ax)
 
     fig.savefig(png, dpi=150)
+    plt.close(fig)
     print(f'[6q-specosc] wrote {png}', flush=True)
 
 

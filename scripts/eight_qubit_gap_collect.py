@@ -73,6 +73,7 @@ def plot(data_by_topology: dict, png: Path) -> None:
         fig.colorbar(pcm, ax=ax, label='Lindbladian gap')
 
     fig.savefig(png, dpi=150)
+    plt.close(fig)
     print(f'[8q-gap] wrote {png}', flush=True)
 
 

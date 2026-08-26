@@ -110,6 +110,7 @@ def plot(model: str, p1: float, p2: float, data: dict, png: Path,
     ax.legend(fontsize=9, loc='best')
 
     fig.savefig(png, dpi=150)
+    plt.close(fig)
     print(f'[collect] wrote {png}', flush=True)
 
 
