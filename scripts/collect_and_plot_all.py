@@ -31,18 +31,36 @@ import eight_qubit_gap_collect as gap8_collect
 import six_qubit_spectral_osc_collect as specosc6_collect
 
 
+def _is_up_to_date(pt_dir: Path, npz: Path, png: Path) -> bool:
+    """True iff the collected npz/png both exist AND are newer than every source
+    file feeding them (the point's base_*.npz and base_*_qrefine_r*.npz).
+
+    A pure existence check is not enough: backfilling a new measure
+    (sch_fra_6/prod_fra_10) or landing a quick-refine round rewrites the source
+    files while leaving the old collected npz/png in place, so an
+    existence-only skip would silently keep stale figures.  Comparing mtimes
+    makes the skip self-correcting -- a point is replotted exactly when its
+    inputs have moved on."""
+    if not (npz.exists() and png.exists()):
+        return False
+    out_mtime = min(npz.stat().st_mtime, png.stat().st_mtime)
+    for src in pt_dir.glob('base_*.npz'):
+        if src.stat().st_mtime > out_mtime:
+            return False
+    return True
+
+
 def collect_dtbase_lines(models, stride, in_dir, out_dir, fra_tol, force=False):
     """Step 1: per-point F(dt) line figures (items 1-3's 7 measures + item 5's
     refine-merge, both already wired into trotter_dtbase_line_collect.load).
 
-    Skips a point entirely (no load, no replot) when its <tag>_dtbase_line.npz
-    and .png already exist, unless force=True -- both because it's wasted work
-    (this driver may be re-run many times as the cluster sweep fills in) and
-    because re-plotting hundreds of points in one process without ever closing
-    the resulting matplotlib figures is what caused this step to stall/hang
-    (accumulated Figure objects; see trotter_dtbase_line_collect.plot's now-
-    added plt.close(fig)).  Delete the specific npz/png (or pass --force) to
-    force a point to be regenerated, e.g. after backfilling new measures."""
+    Skips a point (no load, no replot) only when its collected npz/png are
+    present AND newer than all of its source files (see _is_up_to_date), unless
+    force=True.  Skipping matters both because this driver is re-run repeatedly
+    as the cluster sweep fills in, and because re-plotting hundreds of points in
+    one process without closing the figures is what made this step stall
+    (accumulated Figure objects; see trotter_dtbase_line_collect.plot's now-added
+    plt.close(fig))."""
     total = done = incomplete = missing = skipped = 0
     for model in models:
         m = MODELS[model]
@@ -51,12 +69,13 @@ def collect_dtbase_lines(models, stride, in_dir, out_dir, fra_tol, force=False):
                 p1, p2 = float(p1), float(p2)
                 total += 1
                 tag = collect.point_tag(model, p1, p2)
-                if not (in_dir / tag).is_dir():
+                pt_dir = in_dir / tag
+                if not pt_dir.is_dir():
                     missing += 1
                     continue
                 npz = out_dir / f'{tag}_dtbase_line.npz'
                 png = out_dir / f'{tag}_dtbase_line.png'
-                if not force and npz.exists() and png.exists():
+                if not force and _is_up_to_date(pt_dir, npz, png):
                     skipped += 1
                     continue
                 data = collect.load(model, p1, p2, in_dir)
