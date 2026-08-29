@@ -67,7 +67,9 @@ from trotter_lindbladian_scan import (
     PROD_FRAME_SEED,
 )
 from framability import stabilizer_3_framability, product_state_framability
-from dissipative_PT import pauli_framability, optimise_framability
+from dissipative_PT import (
+    pauli_framability, optimise_framability, embed_frame_params,
+)
 from optimize_framability import minimize_schroedinger_framability
 
 # Bump for provenance whenever the *definition* of an existing key changes (a
@@ -160,9 +162,15 @@ def _missing_keys(existing: dict | None) -> list[str]:
 def compute_base(model_name: str, p1: float, p2: float, base: float, *,
                  dim: int, needed_keys: list[str], fra_restarts: int,
                  fra_maxfev_4: int, fra_maxfev_6: int, ch1_restarts: int,
-                 sch_restarts: int, sch_maxfev_6: int, seed: int) -> dict:
+                 sch_restarts: int, sch_maxfev_6: int, seed: int,
+                 existing_x: dict | None = None) -> dict:
     """Only the requested `needed_keys` subset of the seven framabilities of the
-    model's bond Trotter gate at DT_BASE=base (plus dt, always)."""
+    model's bond Trotter gate at DT_BASE=base (plus dt, always).
+
+    existing_x : optional {opt_x_4/opt_x_6: flat params} already stored for this
+        point, used to warm-start (only read, never recomputed) -- notably so a
+        d=6 recompute can still embed an earlier d=4 frame when opt_fra_4 is not
+        itself being recomputed this run."""
     m = MODELS[model_name]
     H1, H2, j1, j2 = m.build(p1, p2)
     dt = choose_dt(H1, H2, j1, j2, base=base)      # base / max(||H||_1, {gamma_k})
@@ -180,8 +188,24 @@ def compute_base(model_name: str, p1: float, p2: float, base: float, *,
         out['opt_fra_4'] = f4
         out['opt_x_4'] = x4
     if 'opt_fra_6' in need:
+        # Seed the d=6 search with the d=4 optimum embedded into d=6.
+        # embed_frame_params pads by replicating the last column, so
+        # kron(S6,S6) contains every column of kron(S4,S4) and the duplicates
+        # add no new LP targets -- the embedded frame therefore evaluates to
+        # exactly the d=4 value, making the d=6 optimum provably <= the d=4 one.
+        # Without this the only structured seed is _ixyz_init(6) (the extended-
+        # Pauli frame), whose Powell basin can sit ABOVE the plain Pauli value,
+        # which is how opt_fra_6 ended up looking worse than pauli_fra.
+        seeds_6 = []
+        x4_seed = out.get('opt_x_4')
+        if x4_seed is None and 'opt_x_4' in (existing_x or {}):
+            x4_seed = np.asarray((existing_x or {})['opt_x_4'], dtype=float)
+        if x4_seed is not None:
+            seeds_6.append(embed_frame_params(np.asarray(x4_seed, float), 4, 6))
         f6, x6 = optimise_framability(gate, 6, fra_restarts, fra_maxfev_6,
-                                      seed + 1, return_x=True)              # d (H, d=6)
+                                      seed + 1,
+                                      extra_init_xs=seeds_6 or None,
+                                      return_x=True)                        # d (H, d=6)
         out['opt_fra_6'] = f6
         out['opt_x_6'] = x6
     if 'gamma_ch1' in need:
@@ -231,11 +255,20 @@ def run_point(args, base_idx: int) -> None:
                        ch1_restarts=args.ch1_restarts,
                        sch_restarts=args.sch_restarts,
                        sch_maxfev_6=args.sch_maxfev_6,
-                       seed=args.seed)
+                       seed=args.seed,
+                       existing_x=existing)
 
     save = dict(existing) if existing is not None else {}
     for k in needed:
         save[k] = np.array(res[k])
+    # Persist the optimal frames too.  These are NOT in MEASURES (so never in
+    # `needed`), and an earlier version dropped them here -- which silently
+    # disabled the neighbour seeding in
+    # scripts/trotter_dtbase_line_quick_refine_worker.py, since _best_known
+    # only returns a warm-start frame when its x_key is present in the npz.
+    for _key, (_x_key, _d) in FRAME_KEYS.items():
+        if _x_key in res:
+            save[_x_key] = np.asarray(res[_x_key], dtype=float)
     save.update(
         base=np.array(base), dt=np.array(res['dt']),
         base_idx=np.array(base_idx),
