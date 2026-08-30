@@ -103,6 +103,23 @@ MEASURES = [
 # can warm-start from it instead of re-optimising from scratch.
 FRAME_KEYS = {'opt_fra_4': ('opt_x_4', 4), 'opt_fra_6': ('opt_x_6', 6)}
 
+# Per-measure "generation".  Bump a key here when its DEFINITION or its
+# optimisation quality changes such that every already-stored value of it is
+# stale and must be recomputed.  Each saved npz records gen_<key>; a stored
+# generation below the current one marks that key stale exactly like an absent
+# one, so the normal (idempotent) sweep upgrades it automatically -- no manual
+# bookkeeping about which points are old.
+#
+#   gen 2, opt_fra_4/opt_fra_6:  the optimal frames opt_x_* are now persisted
+#     (they were previously computed and silently dropped, which disabled the
+#     neighbour seeding in the quick-refine pass), and the d=6 search is seeded
+#     with the d=4 optimum embedded into d=6 -- that seed evaluates to exactly
+#     the d=4 value, so opt_fra_6 <= opt_fra_4 <= pauli_fra now holds by
+#     construction.  Values stored before this are under-optimised (opt_fra_6
+#     could exceed pauli_fra) and frameless, hence stale.
+MEASURE_GEN = {'opt_fra_4': 2, 'opt_fra_6': 2}
+DEFAULT_GEN = 1
+
 N_BASE_FULL = 99                   # historical full sweep length (0.01 .. 0.99)
 N_BASE_KEEP = 10                   # item 1: keep only the bottom 10 DT_BASE values
 
@@ -132,6 +149,17 @@ def point_tag(model: str, p1: float, p2: float) -> str:
     return f'{model}_p1_{f(p1)}_p2_{f(p2)}'
 
 
+def _recompute_set(values) -> set[str]:
+    """Normalise a --recompute argument into a set of MEASURES keys.
+    'all' expands to every measure; None/empty means recompute nothing."""
+    if not values:
+        return set()
+    keys = {k for k, _ in MEASURES}
+    if 'all' in values:
+        return set(keys)
+    return {v for v in values if v in keys}
+
+
 def _load_existing(out: Path) -> dict | None:
     """Return {key: value} of everything stored in `out`, or None if absent/
     unreadable."""
@@ -144,19 +172,49 @@ def _load_existing(out: Path) -> dict | None:
         return None
 
 
-def _missing_keys(existing: dict | None) -> list[str]:
-    """MEASURES keys not yet present (or non-finite) in `existing` -- i.e. the
-    keys a worker run still needs to compute.  This (not a version stamp) is
-    what gates recomputation, so adding a new measure only ever computes that
-    new measure for already-processed points and never touches the keys that
-    were already there (item: "do not regenerate data that already exists")."""
+def _stored_gen(existing: dict, key: str) -> int:
+    """Generation of `key` as recorded in a saved npz.  Files written before the
+    stamp existed carry no gen_<key> and count as DEFAULT_GEN."""
+    gk = f'gen_{key}'
+    if gk in existing:
+        try:
+            return int(np.asarray(existing[gk]))
+        except Exception:
+            return DEFAULT_GEN
+    return DEFAULT_GEN
+
+
+def _missing_keys(existing: dict | None,
+                  recompute: set[str] | None = None) -> list[str]:
+    """MEASURES keys a worker run still needs to compute for this base point.
+
+    A key is due when it is absent, non-finite, superseded (its stored
+    generation is below MEASURE_GEN), or explicitly named in `recompute`.
+    Everything else is left exactly as stored, so a normal sweep still never
+    regenerates data that already exists -- it only fills gaps and upgrades
+    genuinely stale measures."""
     if existing is None:
         return [k for k, _ in MEASURES]
+    recompute = recompute or set()
     missing = []
     for k, _ in MEASURES:
         if k not in existing or not np.isfinite(np.asarray(existing[k])):
             missing.append(k)
+        elif k in recompute:
+            missing.append(k)
+        elif _stored_gen(existing, k) < MEASURE_GEN.get(k, DEFAULT_GEN):
+            missing.append(k)
     return missing
+
+
+def point_needs_work(pt_dir: Path, recompute: set[str] | None = None) -> bool:
+    """True iff any of the point's N_BASE base files still has a key due.
+    Shared by scripts/dtbase_line_submit_all.sh's resume scan so the driver and
+    the worker cannot disagree about what counts as already done."""
+    for i in range(N_BASE):
+        if _missing_keys(_load_existing(pt_dir / f'base_{i:03d}.npz'), recompute):
+            return True
+    return False
 
 
 def compute_base(model_name: str, p1: float, p2: float, base: float, *,
@@ -234,7 +292,8 @@ def run_point(args, base_idx: int) -> None:
     out = out_dir / f'base_{base_idx:03d}.npz'
 
     existing = _load_existing(out)
-    needed = _missing_keys(existing)
+    recompute = _recompute_set(getattr(args, 'recompute', None))
+    needed = _missing_keys(existing, recompute)
     if not needed:
         print(f'[skip] {tag}/{out.name} already has all {len(MEASURES)} measures',
               flush=True)
@@ -269,6 +328,10 @@ def run_point(args, base_idx: int) -> None:
     for _key, (_x_key, _d) in FRAME_KEYS.items():
         if _x_key in res:
             save[_x_key] = np.asarray(res[_x_key], dtype=float)
+    # Stamp the generation of everything just computed, so a later run knows
+    # these values are current (see MEASURE_GEN / _missing_keys).
+    for k in needed:
+        save[f'gen_{k}'] = np.array(MEASURE_GEN.get(k, DEFAULT_GEN))
     save.update(
         base=np.array(base), dt=np.array(res['dt']),
         base_idx=np.array(base_idx),
@@ -305,6 +368,13 @@ def main() -> None:
     p.add_argument('--sch_maxfev_6', type=int, default=500)
     p.add_argument('--seed',     type=int, default=0,
                    help='optimiser seed, held fixed across the base sweep')
+    p.add_argument('--recompute', nargs='+', default=None,
+                   choices=[k for k, _ in MEASURES] + ['all'],
+                   help='force these measures to be recomputed even when a '
+                        'finite up-to-date value is already stored (use "all" '
+                        'for every measure).  Superseded measures -- those whose '
+                        'stored generation is below MEASURE_GEN -- are already '
+                        'recomputed automatically without this flag.')
     args = p.parse_args()
 
     if args.n_chunks <= 1:

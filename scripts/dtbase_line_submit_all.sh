@@ -23,12 +23,34 @@
 #      bash scripts/dtbase_line_submit_all.sh
 #      MODELS="model3" MAXJOBS=150 bash scripts/dtbase_line_submit_all.sh
 #      MODELS="model3" STRIDE=2 bash scripts/dtbase_line_submit_all.sh   # half res
+#      MODELS="model3" RECOMPUTE="opt_fra_6" bash scripts/dtbase_line_submit_all.sh
+#      MODELS="model3" RECOMPUTE="all"       bash scripts/dtbase_line_submit_all.sh
+#
+#  RECOMPUTE forces the named measures to be recomputed even where a finite
+#  up-to-date value is already stored (both the resume scan and the worker
+#  honour it).  It is NOT needed for measures whose stored generation is below
+#  MEASURE_GEN -- those are detected and upgraded automatically.
+#
+#  Long-running: submits over hours, so run it detached, e.g.
+#      nohup bash -c 'MODELS="model3" bash scripts/dtbase_line_submit_all.sh' \
+#            > logs/submit_driver.log 2>&1 &
 # ============================================================
-set -euo pipefail
+# NOTE: deliberately NOT 'set -e'.  An earlier version used 'set -euo pipefail',
+# which made a single transient sbatch/squeue failure abort the whole submission
+# loop silently (sbatch's output went to /dev/null, so the driver just returned
+# to the prompt looking like it had finished) -- that is how a full-grid run
+# ended up submitting only ~10% of its points.  Failures are now retried and
+# tallied instead of being fatal.
+set -uo pipefail
 
 MODELS="${MODELS:-model3 model4}"     # models to sweep, in order
 MAXJOBS="${MAXJOBS:-200}"             # cap on in-flight tasks (see COUNT_STATES)
 POLL="${POLL:-30}"                    # seconds between throttle polls
+# Must match the slurm script's own OUT_DIR default; exported so each sbatch
+# writes where the resume scan looks.
+OUT_DIR="${OUT_DIR:-results_dtbase_line}"
+export OUT_DIR
+SBATCH_RETRIES="${SBATCH_RETRIES:-5}"  # per-point sbatch retry budget
 # States counted toward MAXJOBS.  'pending,running' (default) caps the total in
 # the queue -- use it when the cluster limits *submitted* jobs.  'running' caps
 # only what is executing and lets a backlog sit pending -- use it when the
@@ -86,22 +108,78 @@ throttle() {
     done
 }
 
+# Points still needing work, as "<p1> <p2>" lines: any point with a missing
+# base_<idx>.npz or a missing/non-finite MEASURES key.  Computed in ONE python
+# pass (not one per point) so re-running the driver to fill gaps is fast, and
+# so an already-complete grid costs a single scan instead of thousands of
+# no-op array submissions.
+incomplete_points() {
+    OUT_DIR="$OUT_DIR" STRIDE="$STRIDE" RECOMPUTE="${RECOMPUTE:-}" \
+        python - "$1" <<'PY'
+import os, sys
+from pathlib import Path
+sys.path.insert(0, 'scripts')
+from trotter_lindbladian_scan import MODELS
+# point_needs_work applies exactly the worker's own rule (absent / non-finite /
+# superseded generation / explicitly recomputed), so the driver and the worker
+# can never disagree about which points still have work to do.
+from trotter_dtbase_line_worker import point_tag, point_needs_work, _recompute_set
+
+model = sys.argv[1]
+stride = int(os.environ.get('STRIDE', '1'))
+out_dir = Path(os.environ.get('OUT_DIR', 'results_dtbase_line'))
+recompute = _recompute_set((os.environ.get('RECOMPUTE') or '').split())
+m = MODELS[model]
+for p1 in m.p1_vals[::stride]:
+    for p2 in m.p2_vals[::stride]:
+        p1f, p2f = float(p1), float(p2)
+        if point_needs_work(out_dir / point_tag(model, p1f, p2f), recompute):
+            print(f'{p1f:g} {p2f:g}')
+PY
+}
+
+# sbatch with retries: a transient scheduler error must not abort the campaign.
+n_failed=0
+submit_point() {
+    local model=$1 p1=$2 p2=$3 tries=0
+    while [ "$tries" -lt "$SBATCH_RETRIES" ]; do
+        if MODEL="$model" P1="$p1" P2="$p2" RECOMPUTE="${RECOMPUTE:-}" \
+                sbatch "$SLURM_SCRIPT" >/dev/null 2>>logs/submit_errors.log; then
+            return 0
+        fi
+        tries=$(( tries + 1 ))
+        echo "" >&2
+        echo "  [warn] sbatch failed for $model (p1=$p1 p2=$p2); retry ${tries}/${SBATCH_RETRIES} in ${POLL}s (see logs/submit_errors.log)" >&2
+        sleep "$POLL"
+    done
+    echo "  [ERROR] giving up on $model (p1=$p1 p2=$p2) after ${SBATCH_RETRIES} attempts" >&2
+    n_failed=$(( n_failed + 1 ))
+    return 1
+}
+
 n_sub=0
 for MODEL in $MODELS; do
-    P1S=$(grid_vals "$MODEL" p1)
-    P2S=$(grid_vals "$MODEL" p2)
-    n_p1=$(wc -w <<< "$P1S"); n_p2=$(wc -w <<< "$P2S")
-    echo "[$MODEL] submitting ${n_p1} x ${n_p2} = $(( n_p1 * n_p2 )) point sweeps"\
+    echo "[$MODEL] scanning ${OUT_DIR} for points still needing work..."
+    TODO=$(incomplete_points "$MODEL")
+    if [ -z "$TODO" ]; then
+        echo "[$MODEL] nothing to do -- every point already has all measures."
+        continue
+    fi
+    n_todo=$(wc -l <<< "$TODO")
+    echo "[$MODEL] ${n_todo} point sweeps to submit"\
          "(${TASKS_PER_POINT} base tasks each; gate <= ${GATE}, cap ${MAXJOBS}, counting ${COUNT_STATES})"
-    for P1 in $P1S; do
-        for P2 in $P2S; do
-            throttle
-            MODEL="$MODEL" P1="$P1" P2="$P2" sbatch "$SLURM_SCRIPT" >/dev/null
-            n_sub=$(( n_sub + 1 ))
-            printf '\r  [%s] submitted %d sweeps (last gamma=%s gamma_p=%s)      ' \
-                   "$MODEL" "$n_sub" "$P1" "$P2"
-        done
-    done
+    while read -r P1 P2; do
+        [ -z "${P1:-}" ] && continue
+        throttle
+        submit_point "$MODEL" "$P1" "$P2"
+        n_sub=$(( n_sub + 1 ))
+        printf '\r  [%s] submitted %d/%d sweeps (last gamma=%s gamma_p=%s)      ' \
+               "$MODEL" "$n_sub" "$n_todo" "$P1" "$P2"
+    done <<< "$TODO"
     echo
 done
 echo "[done] submitted $n_sub per-point DT_BASE sweeps across: $MODELS"
+if [ "$n_failed" -gt 0 ]; then
+    echo "[WARNING] ${n_failed} point(s) could not be submitted -- see logs/submit_errors.log."
+    echo "          Re-run this driver to retry them (it resumes automatically)."
+fi

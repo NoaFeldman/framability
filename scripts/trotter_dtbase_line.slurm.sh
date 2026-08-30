@@ -49,6 +49,10 @@ CH1_RESTARTS=${CH1_RESTARTS:-15}
 SCH_RESTARTS=${SCH_RESTARTS:-5}
 SCH_MAXFEV_6=${SCH_MAXFEV_6:-500}
 SEED=${SEED:-0}
+# Optional: force specific measures to be recomputed even when already stored,
+# e.g. RECOMPUTE="opt_fra_6" or RECOMPUTE="all".  Empty = normal behaviour
+# (fill gaps + auto-upgrade superseded measures only).
+RECOMPUTE=${RECOMPUTE:-}
 
 source "${SLURM_SUBMIT_DIR}/.venv/bin/activate"
 cd "${SLURM_SUBMIT_DIR}"
@@ -70,6 +74,7 @@ python scripts/trotter_dtbase_line_worker.py \
     --ch1_restarts  "$CH1_RESTARTS" \
     --sch_restarts  "$SCH_RESTARTS" \
     --sch_maxfev_6  "$SCH_MAXFEV_6" \
-    --seed          "$SEED"
+    --seed          "$SEED" \
+    ${RECOMPUTE:+--recompute $RECOMPUTE}
 
 echo "[$MODEL P1=$P1 P2=$P2] base ${SLURM_ARRAY_TASK_ID}: done"
