@@ -53,6 +53,142 @@ except ImportError:                       # pragma: no cover - scipy optional
 
 
 @dataclass
+class OscillationRateResult:
+    """Result of oscillation_rate(); see that function's docstring."""
+    rate: float                  # max |Im(lambda)/Re(lambda)| over the modes considered
+    lam: complex | None          # the eigenvalue attaining it
+    n_modes: int                 # how many nonzero modes entered the maximum
+    exact: bool                  # True = full spectrum, False = partial (lower bound)
+    warnings: list = field(default_factory=list)
+
+
+def oscillation_rate(L=None, *, H=None, c_ops=None,
+                     method: str = 'auto', k: int = 64, which: str = 'LR',
+                     sigma=None, dense_max_dim: int = 8192,
+                     tol_steady: float = 1e-8, min_abs_real: float = 1e-12,
+                     maxiter: int = 10000, tol: float = 0.0,
+                     ) -> OscillationRateResult:
+    """max_k |Im(lambda_k) / Re(lambda_k)| over the Liouvillian spectrum.
+
+    A dimensionless "how oscillatory is the relaxation" measure: each mode
+    decays like e^{Re(lambda) t} while ringing at frequency Im(lambda), so
+    |Im/Re| counts radians of oscillation per e-folding (it is 2*pi*N_k, and
+    2*Q_k, in the notation of spectral_oscillation()).
+
+    Inputs follow spectral_oscillation(): either a dense/sparse Liouvillian `L`
+    (column-stacking vec convention) or `H` with `c_ops` to build one.
+
+    method
+    ------
+    'dense'  : full spectrum via numpy eigvals -- EXACT maximum, but O(d^4)
+               memory in the Hilbert dimension.  Refused above `dense_max_dim`
+               (default 8192, so N<=6 qubits: 4096).  For N=8 the Liouvillian is
+               65536x65536 ~ 69 GB, which is why this is not the default.
+    'sparse' : partial spectrum via scipy eigs, `k` eigenvalues selected by
+               `which` (default 'LR' = largest real part = slowest-decaying,
+               closest to the imaginary axis).
+    'auto'   : dense when the dimension allows it, else sparse.
+
+    IMPORTANT -- what the sparse value means.  A maximum over a subset is a
+    LOWER BOUND on the true maximum over the full spectrum (`exact=False`
+    records this).  The bound is well-motivated rather than arbitrary: the ratio
+    diverges as Re(lambda) -> 0, so it is dominated by the rightmost modes,
+    which are exactly the ones 'LR' returns.  It can nevertheless be beaten by a
+    faster-decaying mode carrying a much larger |Im|, so treat a sparse value as
+    "the oscillation rate of the dominant modes", not a certified maximum.
+    Raise `k` to tighten it.
+
+    Steady-state and near-axis handling: modes with |lambda| <= tol_steady *
+    ||L|| are steady states (lambda = 0 gives an undefined 0/0) and are dropped.
+    A surviving mode with |Re(lambda)| < min_abs_real would give a divergent
+    ratio; it is reported as inf with a warning rather than silently clipped,
+    since that genuinely means undamped oscillation (a decoherence-free
+    oscillating subspace) and is a physical finding, not a numerical artifact.
+    """
+    import scipy.sparse as _sp
+
+    warnings: list[str] = []
+
+    if L is not None:
+        if H is not None or c_ops is not None:
+            raise ValueError('pass either L, or H (with c_ops), not both')
+    else:
+        if H is None:
+            raise ValueError('must pass either L or H (with c_ops)')
+        L = _build_liouvillian(np.asarray(H, dtype=complex), c_ops or [])
+
+    is_sparse = _sp.issparse(L)
+    dim = L.shape[0]
+
+    if method == 'auto':
+        method = 'dense' if dim <= dense_max_dim else 'sparse'
+    if method == 'dense' and dim > dense_max_dim:
+        raise ValueError(
+            f'dense diagonalization refused: dim={dim} exceeds dense_max_dim='
+            f'{dense_max_dim} (a dense {dim}x{dim} complex matrix is '
+            f'~{dim * dim * 16 / 2**30:.1f} GB before LAPACK workspace). '
+            f"Use method='sparse', or raise dense_max_dim if you really have "
+            f'the memory and time.')
+
+    if method == 'dense':
+        Ld = L.toarray() if is_sparse else np.asarray(L, dtype=complex)
+        vals = np.linalg.eigvals(Ld)
+        norm = float(np.linalg.norm(Ld, ord=2))
+        exact = True
+    elif method == 'sparse':
+        from scipy.sparse.linalg import eigs, ArpackNoConvergence
+        Ls = L.tocsc().astype(complex) if is_sparse else np.asarray(L, complex)
+        kk = int(min(k, dim - 2))
+        try:
+            vals = eigs(Ls, k=kk, which=which, sigma=sigma, maxiter=maxiter,
+                        tol=tol, return_eigenvectors=False)
+        except ArpackNoConvergence as e:
+            # Partial convergence is still usable here: the maximum is over
+            # whatever modes we got, and it was already only a lower bound.
+            vals = np.asarray(e.eigenvalues)
+            if vals.size == 0:
+                raise
+            warnings.append(
+                f'ARPACK reached maxiter={maxiter} without full convergence; '
+                f'using the {vals.size}/{kk} eigenvalues that did converge '
+                f'(the result remains a lower bound).')
+        # ||L||_2 is unavailable cheaply for the sparse operator; the largest
+        # |eigenvalue| found is an adequate scale for the steady-state cutoff.
+        norm = float(np.max(np.abs(vals))) if vals.size else 1.0
+        exact = False
+    else:
+        raise ValueError(f"method must be 'auto', 'dense' or 'sparse', got {method!r}")
+
+    vals = np.asarray(vals)
+    keep = np.abs(vals) > tol_steady * max(norm, 1e-300)
+    n_steady = int(np.sum(~keep))
+    if n_steady == 0:
+        warnings.append('no steady-state (lambda=0) mode found among the '
+                        'computed eigenvalues.')
+    nz = vals[keep]
+    if nz.size == 0:
+        warnings.append('no nonzero modes survived the steady-state cutoff; '
+                        'oscillation rate undefined.')
+        return OscillationRateResult(float('nan'), None, 0, exact, warnings)
+
+    re = nz.real
+    im = nz.imag
+    undamped = np.abs(re) < min_abs_real
+    if np.any(undamped & (np.abs(im) > min_abs_real)):
+        warnings.append(
+            f'{int(np.sum(undamped & (np.abs(im) > min_abs_real)))} mode(s) have '
+            f'|Re(lambda)| < min_abs_real={min_abs_real:g} with nonzero Im: the '
+            f'ratio diverges (undamped oscillation / decoherence-free subspace).')
+
+    with np.errstate(divide='ignore', invalid='ignore'):
+        ratio = np.abs(im / re)
+    ratio = np.where(np.isnan(ratio), 0.0, ratio)      # 0/0 -> no oscillation
+    idx = int(np.argmax(ratio))
+    return OscillationRateResult(float(ratio[idx]), complex(nz[idx]),
+                                 int(nz.size), exact, warnings)
+
+
+@dataclass
 class SpectralOscillationResult:
     """See spectral_oscillation()'s docstring for field definitions."""
     lam: np.ndarray             # nonzero-mode eigenvalues, sorted by increasing Gamma

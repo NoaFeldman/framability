@@ -190,8 +190,33 @@ def extrapolate_model(model: str, in_dir: Path, *, fit_n: int, deg: int,
 # ---------------------------------------------------------------------------
 #  Figure: 5 colormaps over (gamma, gamma')
 # ---------------------------------------------------------------------------
+def osc_rate_panels(model: str, osc_dir: Path, stride: int = 1) -> list:
+    """The oscillation-rate panel spec for `model`, or [] when no data exists
+    yet (so the figure simply keeps its framability panels).  Shared by this
+    script's main() and scripts/collect_and_plot_all.py so both build the panel
+    the same way."""
+    try:
+        import osc_rate_collect
+    except ImportError:
+        return []
+    d = osc_rate_collect.load(model, osc_dir, stride)
+    if d is None:
+        return []
+    n_q = 8
+    return [dict(p1_vals=d['p1_vals'], p2_vals=d['p2_vals'], Z=d['osc_rate'],
+                 label=f'{osc_rate_collect.OSC_LABEL}\n({n_q}-qubit ring '
+                       f'Lindbladian)',
+                 cbar_label=r'$\max_k |\mathrm{Im}\lambda_k/\mathrm{Re}\lambda_k|$',
+                 cmap='magma', vmin=0.0)]
+
+
 def plot_model(model: str, data: dict, png: Path, *, raw: bool,
-               fra_tol: float = 1e-3) -> None:
+               fra_tol: float = 1e-3, extra: list | None = None) -> None:
+    """`extra`: optional list of additional panels appended after the MEASURES
+    panels, each a dict with keys p1_vals, p2_vals, Z, label, cbar_label and
+    optionally cmap/vmin.  Used for quantities that are NOT dt-extrapolated
+    framabilities -- currently the 8-qubit-ring oscillation rate, which is a
+    property of the Lindbladian itself and so carries no dt dependence."""
     import matplotlib
     matplotlib.use('Agg')
     import matplotlib.pyplot as plt
@@ -206,7 +231,8 @@ def plot_model(model: str, data: dict, png: Path, *, raw: bool,
         return np.concatenate([[2 * v[0] - mid[0]], mid, [2 * v[-1] - mid[-1]]])
     ex, ey = edges(p1_vals), edges(p2_vals)
 
-    n = len(MEASURES)
+    extra = list(extra or [])
+    n = len(MEASURES) + len(extra)
     ncol = min(4, n) if n > 1 else 1
     nrow = int(np.ceil(n / ncol))
     fig, axes = plt.subplots(nrow, ncol, figsize=(6 * ncol, 5 * nrow),
@@ -234,7 +260,33 @@ def plot_model(model: str, data: dict, png: Path, *, raw: bool,
         ax.set_ylabel(m.p2_label)              # gamma'
         cb = fig.colorbar(pcm, ax=ax)
         cb.set_label(qty + r'  at $dt=0$')
-    for ax in axflat[len(MEASURES):]:          # hide the unused 6th panel
+    # Extra (non-framability) panels: own colour scale, own grid, vmin=0 rather
+    # than the framability floor of 1.
+    for ax, spec in zip(axflat[len(MEASURES):], extra):
+        ex2, ey2 = edges(spec['p1_vals']), edges(spec['p2_vals'])
+        Z = np.asarray(spec['Z'], float).T
+        # inf is a physically meaningful outcome here (an undamped oscillating
+        # mode), but it would collapse the colour scale, so render it as a gap
+        # and report how many points were affected.
+        n_inf = int(np.sum(np.isinf(Z)))
+        if n_inf:
+            print(f'[extrap] {spec["label"]}: {n_inf} point(s) with infinite '
+                  f'rate shown as blank', flush=True)
+        Z = np.where(np.isfinite(Z), Z, np.nan)
+        finite = np.isfinite(Z)
+        vmin = spec.get('vmin', 0.0)
+        vmax = float(np.nanmax(Z)) if finite.any() else vmin + 1e-6
+        if not np.isfinite(vmax) or vmax <= vmin:
+            vmax = vmin + 1e-6
+        pcm = ax.pcolormesh(ex2, ey2, Z, cmap=spec.get('cmap', 'magma'),
+                            vmin=vmin, vmax=vmax, shading='flat')
+        ax.set_title(spec['label'], fontsize=11)
+        ax.set_xlabel(m.p1_label)
+        ax.set_ylabel(m.p2_label)
+        cb = fig.colorbar(pcm, ax=ax)
+        cb.set_label(spec.get('cbar_label', ''))
+
+    for ax in axflat[len(MEASURES) + len(extra):]:   # hide unused panels
         ax.axis('off')
 
     fig.savefig(png, dpi=150)
@@ -262,6 +314,10 @@ def main() -> None:
     ap.add_argument('--raw', action='store_true',
                     help='extrapolate raw framability instead of framability**(1/dt)')
     ap.add_argument('--fra_tol', type=float, default=1e-3)
+    ap.add_argument('--osc_dir', type=str, default='results_osc_rate',
+                    help='directory of scripts/osc_rate_worker.py output; the '
+                         'oscillation-rate panel is appended when data exists '
+                         'there (silently omitted otherwise)')
     args = ap.parse_args()
 
     in_dir = Path(args.in_dir)
@@ -278,7 +334,8 @@ def main() -> None:
         np.savez(npz, model=model, fit_n=args.fit_n, deg=args.deg,
                  raw=args.raw, measures=[k for k, _ in MEASURES], **data)
         print(f'[extrap] saved {npz}', flush=True)
-        plot_model(model, data, png, raw=args.raw, fra_tol=args.fra_tol)
+        plot_model(model, data, png, raw=args.raw, fra_tol=args.fra_tol,
+                   extra=osc_rate_panels(model, Path(args.osc_dir), args.stride))
 
 
 if __name__ == '__main__':

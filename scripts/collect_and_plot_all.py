@@ -92,7 +92,7 @@ def collect_dtbase_lines(models, stride, in_dir, out_dir, fra_tol, force=False):
 
 
 def extrapolate_and_plot(models, in_dir, out_dir, *, stride, fit_n, deg,
-                         max_dt_base, fra_tol):
+                         max_dt_base, fra_tol, osc_dir=Path('results_osc_rate')):
     """Step 2: dt->0 colormaps (model3_dtbase_extrap.png / model4_...) -- the
     replot of the optimised-Heisenberg (opt_fra_4/opt_fra_6, refine-merged)
     and every other framability, now with 7 panels instead of 5."""
@@ -104,7 +104,8 @@ def extrapolate_and_plot(models, in_dir, out_dir, *, stride, fit_n, deg,
         png = out_dir / f'{model}_dtbase_extrap.png'
         np.savez(npz, model=model, fit_n=fit_n, deg=deg, raw=False,
                 measures=[k for k, _ in extrap.MEASURES], **data)
-        extrap.plot_model(model, data, png, raw=False, fra_tol=fra_tol)
+        extrap.plot_model(model, data, png, raw=False, fra_tol=fra_tol,
+                          extra=extrap.osc_rate_panels(model, osc_dir, stride))
         print(f'[collect_and_plot_all] extrapolated + plotted {png}', flush=True)
 
 
@@ -121,6 +122,10 @@ def main() -> None:
     ap.add_argument('--fit_n', type=int, default=15)
     ap.add_argument('--deg', type=int, default=1)
     ap.add_argument('--max_dt_base', type=float, default=0.10)
+    ap.add_argument('--osc_dir', type=str, default='results_osc_rate',
+                    help='oscillation-rate data (scripts/osc_rate_worker.py); '
+                         'that panel is appended to the framability figure when '
+                         'present, and omitted when absent')
     ap.add_argument('--eightq_in_dir', type=str, default='results_8q')
     ap.add_argument('--eightq_stride', type=int, default=5)
     ap.add_argument('--skip_lines', action='store_true',
@@ -141,7 +146,8 @@ def main() -> None:
                              force=args.force)
     extrapolate_and_plot(args.models, in_dir, out_dir, stride=args.stride,
                         fit_n=args.fit_n, deg=args.deg,
-                        max_dt_base=args.max_dt_base, fra_tol=args.fra_tol)
+                        max_dt_base=args.max_dt_base, fra_tol=args.fra_tol,
+                        osc_dir=Path(args.osc_dir))
 
     # 3: item 4 -- 8-qubit ring/lattice Lindbladian gap
     eightq_in = Path(args.eightq_in_dir)
