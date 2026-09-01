@@ -52,7 +52,7 @@ def grid_vals(stride: int) -> np.ndarray:
 
 
 def run_point(topology: str, ig: int, igp: int, *, stride: int, out_dir: Path,
-             k: int, sigma: float, noise_floor: float) -> None:
+             k: int, sigma, which: str, noise_floor: float) -> None:
     vals = grid_vals(stride)
     gamma, gamma_p = float(vals[ig]), float(vals[igp])
 
@@ -70,14 +70,16 @@ def run_point(topology: str, ig: int, igp: int, *, stride: int, out_dir: Path,
     edges = topology_edges(topology)
     L = build_lindbladian_comp(J, gamma, gamma_p, N_QUBITS, edges)
     try:
-        gap, evals = lindbladian_gap(L, k=k, sigma=sigma, noise_floor=noise_floor)
+        gap, evals = lindbladian_gap(L, k=k, sigma=sigma, which=which,
+                                     noise_floor=noise_floor)
     except RuntimeError as e:
         print(f'  WARNING: {e}', flush=True)
         gap, evals = np.nan, np.full(k, np.nan, dtype=complex)
 
     pt_dir.mkdir(parents=True, exist_ok=True)
     np.savez(out, topology=topology, ig=ig, igp=igp, gamma=gamma, gamma_p=gamma_p,
-             J=J, N=N_QUBITS, gap=gap, evals=evals, k=k, sigma=sigma)
+             J=J, N=N_QUBITS, gap=gap, evals=evals, k=k,
+             sigma=(np.nan if sigma is None else sigma), which=which)
     print(f'  saved {topology}/{out.name}  gap={gap:.6g}  '
           f'({time.perf_counter() - t0:.0f}s)', flush=True)
 
@@ -91,9 +93,17 @@ def main() -> None:
     p.add_argument('--stride',   type=int, default=5,
                    help='stride on model3 p1_vals/p2_vals (default 5 -> 11x11 grid)')
     p.add_argument('--out_dir',  type=str, default='results_8q')
-    p.add_argument('--k',        type=int, default=6,
-                   help='number of eigenvalues requested near sigma (shift-invert)')
-    p.add_argument('--sigma',    type=float, default=-1e-3)
+    p.add_argument('--k',        type=int, default=12,
+                   help='number of rightmost eigenvalues requested')
+    p.add_argument('--sigma',    type=float, default=None,
+                   help='shift-invert target.  Default None = ARPACK regular '
+                        'mode (matvec only), which is the only tractable option '
+                        'at N=8: shift-invert needs a sparse LU of the '
+                        '65536x65536 operator, whose fill-in did not factor in '
+                        '110s and exhausts job memory.  Set only for small N.')
+    p.add_argument('--which',    type=str, default='LR',
+                   help="'LR' (largest real part) targets the slowest-decaying "
+                        'modes, which is exactly what the gap needs')
     p.add_argument('--noise_floor', type=float, default=1e-6)
     args = p.parse_args()
 
@@ -105,7 +115,8 @@ def main() -> None:
     ig, igp = divmod(args.task_id, n_grid)
 
     run_point(args.topology, ig, igp, stride=args.stride, out_dir=Path(args.out_dir),
-             k=args.k, sigma=args.sigma, noise_floor=args.noise_floor)
+             k=args.k, sigma=args.sigma, which=args.which,
+             noise_floor=args.noise_floor)
 
 
 if __name__ == '__main__':

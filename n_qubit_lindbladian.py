@@ -125,32 +125,54 @@ def build_lindbladian_comp(J: float, gamma: float, gamma_p: float, N: int,
 #  Gap via sparse shift-invert eigs (six_qubit_lindbladian.steady_state /
 #  scripts/six_qubit_starplaq_worker._steady_state_and_decay pattern)
 # ---------------------------------------------------------------------------
-def lindbladian_gap(L_comp: sp.csr_matrix, *, k: int = 6, sigma: float = -1e-3,
-                    which: str = 'LM', maxiter: int = 5000, tol: float = 1e-10,
+def lindbladian_gap(L_comp: sp.csr_matrix, *, k: int = 12, sigma=None,
+                    which: str = 'LR', maxiter: int = 10000, tol: float = 0.0,
                     noise_floor: float = 1e-6):
     """Gap between the two minimal-|Re(lambda)| eigenvalues of L_comp: the
     steady-state eigenvalue (Re ~ 0) and the slowest-decaying nonzero mode.
 
-    Finds the `k` eigenvalues nearest `sigma` (shift-invert), decay rates
-    Gamma_j = -Re(lambda_j); the gap is the smallest Gamma_j above
-    `noise_floor` (Gamma_j <= noise_floor is treated as a steady-state mode,
-    matching scripts/six_qubit_starplaq_worker.py's decay-rate convention).
-    Raises RuntimeError if fewer than 2 modes are resolved or none clear the
-    noise floor (increase k or move sigma).
+    Finds the `k` rightmost eigenvalues (which='LR'), takes decay rates
+    Gamma_j = -Re(lambda_j), and returns the smallest Gamma_j above
+    `noise_floor` (Gamma_j <= noise_floor is a steady-state mode, matching
+    scripts/six_qubit_starplaq_worker.py's decay-rate convention).  Raises
+    RuntimeError if no mode clears the noise floor (increase k).
+
+    Why which='LR' with sigma=None and NOT shift-invert
+    ----------------------------------------------------
+    sigma=None keeps ARPACK in regular mode, where the only operation on
+    L_comp is a matrix-vector product -- so the operator's sparsity is used
+    directly (an 8-qubit Liouvillian is 65536x65536 with ~1.1e6 nonzeros, 22 MB
+    and ~3 ms per matvec, versus 64 GB dense).
+
+    Shift-invert (sigma set) instead requires solving (L - sigma I)x = b, which
+    scipy implements via a sparse LU factorization.  That factorization suffers
+    catastrophic fill-in on this operator: at N=8 splu did not complete in 110 s
+    locally and its factors do not fit in a typical job's memory, so the gap
+    workers stalled or were OOM-killed at all but the near-trivial (small-gamma,
+    nearly diagonal) grid points.  The rightmost eigenvalues are exactly the
+    ones the gap needs, and regular mode finds them from matvecs alone, so
+    shift-invert buys nothing here.  sigma is kept as an option for small
+    systems where the factorization is cheap and its faster convergence helps.
 
     Returns (gap, evals) with evals the k eigenvalues found (unsorted, as
     returned by eigs).
     """
-    from scipy.sparse.linalg import eigs
+    from scipy.sparse.linalg import eigs, ArpackNoConvergence
 
-    vals = eigs(L_comp.astype(complex), k=k, sigma=sigma, which=which,
-               maxiter=maxiter, tol=tol, return_eigenvectors=False)
+    try:
+        vals = eigs(L_comp.astype(complex), k=k, sigma=sigma, which=which,
+                    maxiter=maxiter, tol=tol, return_eigenvectors=False)
+    except ArpackNoConvergence as e:
+        vals = np.asarray(e.eigenvalues)
+        if vals.size == 0:
+            raise
     gammas = np.sort(-vals.real)
     nz = gammas[gammas > noise_floor]
     if nz.size == 0:
         raise RuntimeError(
             f'lindbladian_gap: no eigenvalue cleared noise_floor={noise_floor:g} '
-            f'among k={k} modes near sigma={sigma:g}; increase k or move sigma')
+            f'among the k={k} rightmost modes (which={which!r}, sigma={sigma}); '
+            f'increase k -- a degenerate steady-state manifold can occupy all k')
     return float(nz[0]), vals
 
 

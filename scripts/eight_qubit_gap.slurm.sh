@@ -32,8 +32,16 @@ OUT_DIR=${OUT_DIR:-results_8q}
 # array size = n_grid**2 - 1); STRIDE=5 -> 11x11=121 -> array=0-120 (the default).
 # If you override STRIDE, edit --array= to match n_grid**2 - 1 first.
 STRIDE=${STRIDE:-5}
-K=${K:-6}
-SIGMA=${SIGMA:--1e-3}
+K=${K:-12}
+WHICH=${WHICH:-LR}
+# SIGMA is intentionally EMPTY by default: empty => ARPACK regular mode, which
+# touches the operator only through matrix-vector products and so exploits its
+# sparsity (65536x65536, 1.1e6 nnz, 22 MB, ~3 ms/matvec).  Setting SIGMA turns
+# on shift-invert, which needs a sparse LU of the shifted operator -- that
+# fill-in did not factor in 110s at N=8 and blows past the job's memory, which
+# is why an earlier run of this array completed only its near-trivial
+# (small-gamma, nearly diagonal) points.  Set it only for small N.
+SIGMA=${SIGMA:-}
 NOISE_FLOOR=${NOISE_FLOOR:-1e-6}
 
 source "${SLURM_SUBMIT_DIR}/.venv/bin/activate"
@@ -48,7 +56,8 @@ python scripts/eight_qubit_gap_worker.py \
     --stride      "$STRIDE" \
     --out_dir     "$OUT_DIR" \
     --k           "$K" \
-    "--sigma=$SIGMA" \
+    --which       "$WHICH" \
+    ${SIGMA:+"--sigma=$SIGMA"} \
     --noise_floor "$NOISE_FLOOR"
 
 echo "[$TOPOLOGY] point ${SLURM_ARRAY_TASK_ID}: done"
