@@ -94,6 +94,7 @@ def main() -> None:
         n1 = 0
         pt_dirs = sorted(d for d in in_dir.glob(f'{model}_p1_*') if d.is_dir())
         print(f'raw point directories present: {len(pt_dirs)}')
+        n_legacy = 0
         for pt in pt_dirs[:args.max_points]:
             for f in pt.glob('base_*.npz'):
                 if '_qrefine_' in f.stem:
@@ -102,9 +103,27 @@ def main() -> None:
                     d = np.load(f, allow_pickle=True)
                 except Exception:
                     continue
+                # Only base indices inside the CURRENT bottom-N_BASE range are
+                # read by collect/extrap.  Older directories still hold the
+                # original 99-value sweep (base_010..base_098); counting those
+                # made every measure look massively "absent" when it was simply
+                # out of range, so they are excluded and reported separately.
+                try:
+                    idx = int(d['base_idx'])
+                except Exception:
+                    idx = -1
+                if not (0 <= idx < N_BASE):
+                    n_legacy += 1
+                    continue
                 n1 += 1
                 for k in all_keys:
                     c1[k][_classify(d, k)] += 1
+        if n_legacy:
+            print(f'(ignored {n_legacy} out-of-range legacy base files with '
+                  f'base_idx >= {N_BASE}; they are not read by collect/extrap)')
+        if len(pt_dirs) > args.max_points:
+            print(f'NOTE: sampled {args.max_points} of {len(pt_dirs)} point '
+                  f'directories -- pass --max_points {len(pt_dirs)} for a full scan')
         _report('stage 1: base_<idx>.npz (worker output)', c1, n1)
 
         # ---- stage 2: collected per-point summaries ------------------------
