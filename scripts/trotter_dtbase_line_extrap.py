@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+import time
 from pathlib import Path
 
 import numpy as np
@@ -172,8 +173,21 @@ def extrapolate_model(model: str, in_dir: Path, *, fit_n: int, deg: int,
 
     grids = {k: np.full((nx, ny), np.nan) for k, _ in MEASURES}
     found = 0
+    # This loop opens ~10-20 npz files per grid point and used to run completely
+    # silently for its whole duration, which is indistinguishable from a hang
+    # (especially on networked scratch, where thousands of small reads are slow).
+    n_total = nx * ny
+    t_start = time.perf_counter()
+    seen = 0
     for ix, p1 in enumerate(p1_vals):
         for iy, p2 in enumerate(p2_vals):
+            seen += 1
+            if seen % 200 == 0:
+                el = time.perf_counter() - t_start
+                eta = el / seen * (n_total - seen)
+                print(f'[extrap] {model}: scanned {seen}/{n_total} points '
+                      f'({found} with data)  elapsed {el:.0f}s  eta {eta:.0f}s',
+                      flush=True)
             pt = load_point(model, float(p1), float(p2), in_dir)
             if pt is None:
                 continue

@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+import time
 from pathlib import Path
 
 import numpy as np
@@ -62,6 +63,10 @@ def collect_dtbase_lines(models, stride, in_dir, out_dir, fra_tol, force=False):
     (accumulated Figure objects; see trotter_dtbase_line_collect.plot's now-added
     plt.close(fig))."""
     total = done = incomplete = missing = skipped = 0
+
+    # Pass 1 (cheap: stat calls only, no npz reads) -- decide what needs work,
+    # so the expensive pass can report a real ETA instead of running silently.
+    todo = []
     for model in models:
         m = MODELS[model]
         for p1 in m.p1_vals[::stride]:
@@ -78,14 +83,31 @@ def collect_dtbase_lines(models, stride, in_dir, out_dir, fra_tol, force=False):
                 if not force and _is_up_to_date(pt_dir, npz, png):
                     skipped += 1
                     continue
-                data = collect.load(model, p1, p2, in_dir)
-                found = int(np.sum(np.isfinite(data[collect.MEASURES[0][0]])))
-                np.savez(npz, model=model, p1=p1, p2=p2, **data)
-                collect.plot(model, p1, p2, data, png, fra_tol=fra_tol)
-                if found < collect.N_BASE:
-                    incomplete += 1
-                else:
-                    done += 1
+                todo.append((model, p1, p2, npz, png))
+
+    n_todo = len(todo)
+    print(f'[collect_and_plot_all] dtbase lines: {n_todo} point(s) to (re)plot, '
+          f'{skipped} already up to date, {missing} not started (of {total}); '
+          f'roughly {n_todo * 0.2 / 60:.1f} min on local disk, longer on '
+          f'networked scratch', flush=True)
+
+    # Pass 2: the actual work, with progress so slow != hung.
+    t_start = time.perf_counter()
+    for i, (model, p1, p2, npz, png) in enumerate(todo, start=1):
+        data = collect.load(model, p1, p2, in_dir)
+        found = int(np.sum(np.isfinite(data[collect.MEASURES[0][0]])))
+        np.savez(npz, model=model, p1=p1, p2=p2, **data)
+        collect.plot(model, p1, p2, data, png, fra_tol=fra_tol)
+        if found < collect.N_BASE:
+            incomplete += 1
+        else:
+            done += 1
+        if i % 50 == 0 or i == n_todo:
+            el = time.perf_counter() - t_start
+            eta = el / i * (n_todo - i)
+            print(f'[collect_and_plot_all]   {i}/{n_todo} replotted  '
+                  f'elapsed {el:.0f}s  eta {eta:.0f}s', flush=True)
+
     print(f'[collect_and_plot_all] dtbase lines: {done} (re)plotted complete, '
           f'{incomplete} (re)plotted partial, {skipped} already up to date '
           f'(skipped), {missing} not started (of {total} points)', flush=True)

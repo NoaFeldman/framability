@@ -15,7 +15,7 @@ two-qubit bond Trotter gate is expm(L_bond * dt) with the per-point adaptive ste
 
     dt = base / max(||H||_1, {gamma_k})              # choose_dt(..., base=base)
 
-and the following seven framabilities are evaluated on that 16x16 gate:
+and the following eight framabilities are evaluated on that 16x16 gate:
 
     stab_fra    stabilizer-3 framability                framability.stabilizer_3_framability
     pauli_fra   Pauli framability                        dissipative_PT.pauli_framability
@@ -24,6 +24,7 @@ and the following seven framabilities are evaluated on that 16x16 gate:
     gamma_ch1   max Janek (product-frame gauge)          trotter_lindbladian_scan.gamma_ch1_framability
     sch_fra_6   optimal-Schroedinger framability, d_ext=6 optimize_framability.minimize_schroedinger_framability
     prod_fra_10 product-state framability, chi=10        framability.product_state_framability
+    prod_fra_40 product-state framability, chi=40        framability.product_state_framability
 
 The optimiser seed is held fixed across the whole base sweep (identical restart
 set at every base) so the resulting curves are smooth.
@@ -82,6 +83,7 @@ DTBASE_LINE_VERSION = '1.1'
 # "product-state-framability" (item 3), per spec.
 SCH_D_EXT = 6
 PROD_CHI = 10
+PROD_CHI_40 = 40      # second product-state frame size, same evaluator as chi=10
 
 # (key, human label) in figure order.  Shared by the collect/plot script.
 # sch_fra_6 and prod_fra_10 were added alongside the original five; existing
@@ -95,6 +97,7 @@ MEASURES = [
     ('gamma_ch1',  'max Janek'),
     ('sch_fra_6',  'Optimal Schrödinger framability (d=6)'),
     ('prod_fra_10', r'Product-state framability ($\chi=10$)'),
+    ('prod_fra_40', r'Product-state framability ($\chi=40$)'),
 ]
 
 # Keys whose optimal frame (as a flat param vector, see dissipative_PT.
@@ -279,6 +282,13 @@ def compute_base(model_name: str, p1: float, p2: float, base: float, *,
         # so the same Haar-random product frame is drawn at every point.
         np.random.seed(PROD_FRAME_SEED)
         out['prod_fra_10'] = product_state_framability(PROD_CHI, gate)
+    if 'prod_fra_40' in need:
+        # Identical evaluator and identical reseed-then-call convention as
+        # prod_fra_10 above, only chi differs -- reseeding immediately before
+        # the call (rather than once for both) is what makes each chi's frame
+        # reproducible per point regardless of which keys a run computes.
+        np.random.seed(PROD_FRAME_SEED)
+        out['prod_fra_40'] = product_state_framability(PROD_CHI_40, gate)
     return out
 
 
