@@ -67,6 +67,11 @@ TASKS_PER_POINT="${TASKS_PER_POINT:-$(
 TASKS_PER_POINT="${TASKS_PER_POINT:-99}"
 GATE=$(( MAXJOBS - TASKS_PER_POINT ))          # submit only when in-flight <= GATE
 [ "$GATE" -lt 0 ] && GATE=0
+# Job name of the arrays this driver submits, read from the slurm script so the
+# throttle can count this campaign only (see inflight()).
+SELF_JOBNAME="${SELF_JOBNAME:-$(
+    awk -F= '/^#SBATCH --job-name=/{print $2; exit}' "$SLURM_SCRIPT" \
+        | tr -d '[:space:]')}"
 
 cd "$(dirname "$0")/.."               # repo root
 [ -f .venv/bin/activate ] && source .venv/bin/activate
@@ -92,17 +97,38 @@ print(' '.join(f'{float(v):g}' for v in vals[::stride]))
 PY
 }
 
-# In-flight task count for this user in the counted states (all jobs, so the cap
-# is genuinely global across every per-point array we submit).
-inflight() { squeue -u "$USER" -h -r -t "$COUNT_STATES" | wc -l; }
+# In-flight task count in the counted states.
+#
+# By default this counts only THIS campaign's tasks (matched by the slurm
+# script's own --job-name).  Counting *every* job of the user instead is what
+# deadlocked a real run: unrelated arrays already in the queue (osc_rate,
+# eight_qubit_gap, ...) held the total at 486 while the gate wanted <= 190, so
+# the driver waited indefinitely without ever submitting a single point, even
+# though the scheduler was perfectly willing to accept more work.
+# Set COUNT_ALL_JOBS=1 to restore the old global behaviour (appropriate only if
+# your cluster caps total submitted jobs and nothing else of yours is queued).
+inflight() {
+    if [ "${COUNT_ALL_JOBS:-0}" = "1" ] || [ -z "$SELF_JOBNAME" ]; then
+        squeue -u "$USER" -h -r -t "$COUNT_STATES" | wc -l
+    else
+        squeue -u "$USER" -h -r -t "$COUNT_STATES" -n "$SELF_JOBNAME" | wc -l
+    fi
+}
 
 # Block until there is room for another full array (in-flight <= GATE), so the
 # next submission lands at or below MAXJOBS instead of overshooting by an array.
 throttle() {
     local n
     n=$(inflight)
+    local scope
+    if [ "${COUNT_ALL_JOBS:-0}" = "1" ] || [ -z "$SELF_JOBNAME" ]; then
+        scope="ALL your jobs"
+    else
+        scope="job-name=${SELF_JOBNAME}"
+    fi
     while [ "$n" -gt "$GATE" ]; do
-        echo "  [throttle] ${n} ${COUNT_STATES} tasks; need <= ${GATE} (cap ${MAXJOBS}); waiting ${POLL}s..."
+        echo "  [throttle] ${n} ${COUNT_STATES} tasks (${scope}); need <= ${GATE}"\
+             "(cap ${MAXJOBS}); waiting ${POLL}s..."
         sleep "$POLL"
         n=$(inflight)
     done
@@ -168,6 +194,9 @@ for MODEL in $MODELS; do
     n_todo=$(wc -l <<< "$TODO")
     echo "[$MODEL] ${n_todo} point sweeps to submit"\
          "(${TASKS_PER_POINT} base tasks each; gate <= ${GATE}, cap ${MAXJOBS}, counting ${COUNT_STATES})"
+    echo "[$MODEL] throttle counts $( [ "${COUNT_ALL_JOBS:-0}" = "1" ] \
+         && echo 'ALL your jobs' || echo "only job-name=${SELF_JOBNAME}" ):"\
+         "$(inflight) in flight now; all your jobs: $(squeue -u "$USER" -h -r -t "$COUNT_STATES" | wc -l)"
     while read -r P1 P2; do
         [ -z "${P1:-}" ] && continue
         throttle
