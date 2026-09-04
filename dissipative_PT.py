@@ -26,6 +26,8 @@ from scipy.sparse import csc_matrix, eye as sp_eye, hstack as sp_hstack, vstack 
 from scipy.optimize._linprog_highs import _linprog_highs
 from scipy.optimize._linprog_util import _LPProblem, _clean_inputs
 
+from analysis import decay_rate
+
 # Version stamp for cached dissipative-PT results.  Bumped when the framability
 # optimisation (or the set of stored quantities) changes so that workers re-run
 # points whose cached npz predates the change.
@@ -163,20 +165,19 @@ def bond_trotter_gate(J: float, h: float, gamma: float, dt: float) -> np.ndarray
 
 # ── NESS ──────────────────────────────────────────────────────────────────────
 def steady_state_and_decay(L: np.ndarray, N: int) -> tuple:
-    """Return (c_ss, decay_rate).
+    """Return (c_ss, gap).
 
     c_ss is the Pauli-coefficient vector of the NESS (unit-trace), or None if
     the null space is degenerate (e.g. gamma=0 gives no unique NESS).
+
+    gap is analysis.decay_rate(L), the slowest non-zero decay rate; it is nan
+    where L has no decaying mode at all (again gamma=0, where L = -i[H, .] has a
+    purely imaginary spectrum).  The two are independent: a degenerate null
+    space still has a well-defined gap, so c_ss is None while gap is finite.
     """
     d_hilbert = 2 ** N
     ns = null_space(L, rcond=1e-9)
-    evals = np.linalg.eigvals(L)
-    re_sorted = np.sort(evals.real)[::-1]
-    decay = float('nan')
-    for r in re_sorted:
-        if r < -1e-9:
-            decay = float(-r)
-            break
+    decay = decay_rate(L)
 
     if ns.shape[1] != 1:
         return None, decay
@@ -291,9 +292,27 @@ _HIGHS_ATTEMPTS = (
 )
 
 
+def _has_full_support(D: np.ndarray, rtol: float = 1e-6) -> bool:
+    """True iff D (nrows x d_ext) has numerical rank == nrows, i.e. the frame
+    S (with D = S(x)S) spans every Pauli direction.  A frame missing any Pauli
+    (e.g. no X/Y support) collapses D onto a gate-invariant subspace and yields
+    a vacuous framability certificate, so such frames must be rejected."""
+    D = np.asarray(D, dtype=float)
+    nrows = D.shape[0]
+    if D.shape[1] < nrows:
+        return False
+    sig = np.linalg.svd(D, compute_uv=False)
+    return bool(sig[nrows - 1] > rtol * sig[0])
+
+
 def _framability_lp(D: np.ndarray, gate: np.ndarray) -> float:
     D = np.asarray(D, dtype=float)
     nrows, d_ext = D.shape
+    # A frame that does not span all nrows Pauli directions is not a valid
+    # frame -- its polytope is not full-dimensional and its framability
+    # certificate is vacuous.  Reject it (framability +inf).
+    if not _has_full_support(D):
+        return float('inf')
     Y = gate.real.T @ D
     c_obj = np.concatenate([np.zeros(d_ext), np.ones(d_ext)])
     A_eq  = csc_matrix(np.hstack([D, np.zeros((nrows, d_ext))]))

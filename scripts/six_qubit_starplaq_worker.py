@@ -41,11 +41,12 @@ from pathlib import Path
 import numpy as np
 from scipy.linalg import expm
 from scipy.sparse import csc_matrix, eye as sp_eye, hstack as sp_hstack, vstack as sp_vstack
-from scipy.sparse.linalg import eigs, expm_multiply
+from scipy.sparse.linalg import expm_multiply
 from scipy.optimize import linprog, minimize
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from analysis import decay_rate
 from two_d_lindbladian import (
     six_qubit_lindbladian, N_QUBITS_6Q, DIM_6Q, _index_to_string_n,
     four_qubit_lindbladian_star, four_qubit_lindbladian_plaquette,
@@ -152,26 +153,27 @@ def _steady_state_and_decay(L):
     dynamics).  This is well-defined and consistent with the OTOC initial
     state.
 
-    decay_rate: magnitude of the slowest non-zero eigenvalue of L, used to
-    pick an evolution time long enough to converge.
+    decay_rate: the Liouvillian gap, min over modes of -Re(lambda) above the
+    noise floor (analysis.decay_rate), used to pick an evolution time long
+    enough to converge.
     """
     global _C0_ZERO_STATE
     L_sp = csc_matrix(L.astype(float))
 
-    # --- decay rate: spectral gap (slowest non-zero relaxation mode) ---
+    # --- decay rate: Liouvillian gap (slowest non-zero relaxation mode) ---
     # The null space is ~128-dim, so a shift-invert near 0 returns mostly the
-    # zero eigenvalues.  Request k well above the null dimension and take the
-    # eigenvalue with the smallest non-zero |.| as the gap.
-    decay = float('nan')
+    # zero eigenvalues.  Request k well above the null dimension so the
+    # relaxation modes are in the returned window too.
+    #
+    # noise_floor=1e-4 rather than analysis.GAP_NOISE_FLOOR_SPARSE: shift-invert
+    # at tol=1e-8 over a 128-dim null space returns its zeros far sloppier than
+    # regular-mode ARPACK does, and a numerical zero mistaken for a relaxation
+    # mode would report a spuriously small gap.
     try:
-        evals, _ = eigs(L_sp.astype(complex), k=160, sigma=-0.01, which='LM',
-                        tol=1e-8, maxiter=10000)
-        for e in sorted(np.abs(evals)):
-            if e > 1e-4:
-                decay = float(e)
-                break
+        decay = decay_rate(L_sp, k=160, sigma=-0.01, which='LM', tol=1e-8,
+                           maxiter=10000, noise_floor=1e-4)
     except Exception:
-        pass
+        decay = float('nan')
 
     # --- steady state: relax |0>^6 to t -> infinity ---
     if _C0_ZERO_STATE is None:

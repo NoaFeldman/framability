@@ -20,7 +20,7 @@ Output:
         [ 2] max_bond_entropy     Max LPDO bond entropy along trajectory (6q)
         [ 3] operator_bond        Operator bond entropy of exp(dt*L_2q)
         [ 4] mag_x                <X_1+...+X_6> in rho_ss
-        [ 5] decay_rate           |Re(slowest non-zero eig of L_2q)|
+        [ 5] decay_rate           Liouvillian gap of L_2q (analysis.decay_rate)
         [ 6] otoc_small           OTOC at t = 0.1 * min(gamma, gamma') (2q)
         [ 7] otoc_large           OTOC at t = 10  * max(gamma, gamma') (2q)
         [ 8] channel_stab_purity  log2( d^2 sum_i E_ii^2 / (d+1) ) (2q)
@@ -49,6 +49,7 @@ from scipy.sparse.linalg import expm_multiply
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from analysis import decay_rate
 from two_qubit_lindbladian import numeric_two_qubit_lindbladian
 from framability import (
     extended_pauli_D, heisenberg_framability, dyadic_stabilizer_framability,
@@ -180,18 +181,6 @@ def _operator_bond_entropy(gate16: np.ndarray) -> float:
     p = p / s
     p = p[p > 1e-30]
     return float(-np.sum(p * np.log(p)))
-
-
-def _decay_rate(L: np.ndarray) -> float:
-    evals = np.linalg.eigvals(L)
-    # Kill the unique zero eigenvalue (the steady state) and pick the
-    # slowest-decaying mode (largest non-zero real part, most negative).
-    abs_eigs = np.abs(evals)
-    order = np.argsort(abs_eigs)
-    # smallest is ~0 (steady state); next is the slowest decay mode
-    if len(order) < 2:
-        return 0.0
-    return float(abs(evals[order[1]].real))
 
 
 def _otoc_2q(L_2q: np.ndarray, gamma: float, gamma_p: float):
@@ -342,7 +331,7 @@ def main() -> None:
     gate = expm(dt * L_2q).real
 
     op_bond = _operator_bond_entropy(gate)
-    decay   = _decay_rate(L_2q)
+    decay   = decay_rate(L_2q)
     otoc_s, otoc_l = _otoc_2q(L_2q, gamma, gp)
     chan_M  = _channel_stabilizer_purity(L_2q, dt_stab=args.dt_stabilizer)
     pauli_fra, min_fra, dyadic, product30 = _two_qubit_framabilities(gate)

@@ -32,12 +32,13 @@ import time
 from pathlib import Path
 
 import numpy as np
-from scipy.linalg import expm, null_space
+from scipy.linalg import expm
 from scipy.optimize import minimize
 from scipy.sparse import csc_matrix, eye as sp_eye, hstack as sp_hstack, vstack as sp_vstack
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from dissipative_PT import steady_state_and_decay
 from one_d_xyz_lindbladian import (
     build_lindbladian_pauli, hamiltonian_xyz, index_to_string, string_to_index,
     _pauli_tensor, _pauli_string_op, _PAULI, I_, X_, Y_, Z_,
@@ -69,29 +70,11 @@ _FIXED_S_COL = np.array([[1.0], [0.0], [0.0], [0.0]])  # identity Pauli column
 
 
 # ── steady state + decay rate ────────────────────────────────────────────────
-def _steady_state_and_decay(L):
-    """NESS (Pauli coeffs, trace 1) and Liouvillian gap.
-
-    For gamma>0 the boundary drive makes the NESS unique (1-dim null space).
-    At gamma=0 the chain is closed and the steady state is degenerate; then the
-    NESS quantities are returned as NaN.
-    """
-    ns = null_space(L, rcond=1e-9)          # columns span ker(L)
-    decay = float('nan')
-    evals = np.linalg.eigvals(L)
-    re = np.sort(evals.real)[::-1]          # descending
-    for r in re:
-        if r < -1e-9:
-            decay = float(-r)
-            break
-
-    if ns.shape[1] != 1:
-        return None, decay                  # degenerate (gamma=0) -> no NESS
-    c = ns[:, 0].real
-    if abs(c[0]) < 1e-12:
-        return None, decay
-    c = c / (c[0] * D_HILBERT)              # normalise to unit trace
-    return c, decay
+# NESS (Pauli coeffs, trace 1) and Liouvillian gap come from
+# dissipative_PT.steady_state_and_decay, which does exactly this for any N: for
+# gamma>0 the boundary drive makes the NESS unique (1-dim null space); at
+# gamma=0 the chain is closed, the steady state is degenerate and the NESS
+# quantities come back None -> NaN.
 
 
 def _pauli_vec_to_rho(c, n=N_QUBITS):
@@ -329,7 +312,7 @@ def _process_point(idx, args):
     L = build_lindbladian_pauli(JX, JY, JZ, gamma, gamma_R, N_QUBITS)
 
     # --- steady state ---
-    c_ss, decay = _steady_state_and_decay(L)
+    c_ss, decay = steady_state_and_decay(L, N=N_QUBITS)
     if c_ss is not None:
         rho = _pauli_vec_to_rho(c_ss)
         ss_vn = _vn_entropy(rho)

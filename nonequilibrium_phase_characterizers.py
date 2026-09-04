@@ -412,6 +412,12 @@ def spectral_oscillation(L: np.ndarray | None = None, *,
     # ---- step 4: gap + dominant (slowest-decaying nonzero) mode -------------
     if Gamma.size == 0:
         raise RuntimeError('no nonzero modes found; cannot compute gap')
+    # Same quantity as analysis.decay_rate -- min over non-null modes of
+    # Gamma = -Re(lambda) -- read off the array this function has to build
+    # anyway, rather than re-diagonalizing.  The steady-mode mask above is the
+    # one difference: it is |lambda| <= tol_steady*||L||, which (unlike an
+    # absolute floor on Gamma) keeps an undamped oscillating mode, Re = 0 with
+    # Im != 0, in the spectrum where the Q/N analysis below needs it.
     gap = float(Gamma[0])
     dom = 0
     omega1 = abs(float(omega[dom]))

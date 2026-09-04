@@ -7,6 +7,7 @@ various properties of the two-qubit steady state.
 
 import numpy as np
 from scipy.linalg import expm
+from scipy.sparse import issparse
 
 from two_qubit_lindbladian import pauli_string_dim, numeric_two_qubit_lindbladian
 from lpdo import purification_sqrt, disentangle_ancilla, truncate_and_validate
@@ -14,25 +15,123 @@ from framability import heisenberg_framability, extended_pauli_D
 from optimize_framability import minimize_framability, DEFAULT_METHOD
 
 
-def decay_rate(L):
-    """Spectral gap of the Lindbladian: |Re(lambda)| for the second-smallest eigenvalue."""
-    eigenvalues = np.linalg.eigvals(L)
-    real_parts = eigenvalues.real
+# ---------------------------------------------------------------------------
+#  Liouvillian gap -- the single definition used everywhere in this repo
+# ---------------------------------------------------------------------------
+# Numerical zero for the decay rate Gamma = -Re(lambda): a mode below the floor
+# belongs to the steady-state manifold, not to the relaxation spectrum.  Two
+# values because the floor tracks the EIGENSOLVER's accuracy, not the physics --
+# dense LAPACK puts null eigenvalues at ~1e-15, while ARPACK on a large sparse L
+# with a degenerate null space returns them several orders of magnitude
+# sloppier.  The definition of the gap is identical on both paths.
+GAP_NOISE_FLOOR = 1e-9           # dense np.linalg.eigvals
+GAP_NOISE_FLOOR_SPARSE = 1e-6    # scipy.sparse.linalg.eigs
 
-    idx_sorted = np.argsort(np.abs(real_parts))
-    lam0 = real_parts[idx_sorted[0]]
-    if np.abs(lam0) > 1e-12:
-        raise ValueError(
-            f'Smallest eigenvalue real part is {lam0}, expected 0 (within 1e-12).'
-        )
 
-    lam1 = real_parts[idx_sorted[1]]
-    if lam1 > 1e-12:
-        raise ValueError(
-            f'Second-smallest eigenvalue real part is {lam1}, expected negative.'
-        )
+def gap_from_eigenvalues(evals, *, noise_floor=GAP_NOISE_FLOOR):
+    """Liouvillian gap from an already-computed spectrum.
 
-    return np.abs(lam1)
+        Delta = min_k Gamma_k   over modes with  Gamma_k = -Re(lambda_k) > noise_floor
+
+    i.e. the slowest non-zero decay rate, which sets the asymptotic relaxation
+    rho(t) - rho_ss ~ exp(-Delta t).
+
+    Only real parts enter.  Im(lambda) is the mode's oscillation frequency and
+    does not contribute to its decay rate -- ranking by |lambda| instead of
+    -Re(lambda) overestimates the gap of any strongly oscillating mode by
+    sqrt(Gamma^2 + omega^2) / Gamma.  (Use
+    nonequilibrium_phase_characterizers.spectral_oscillation when the
+    oscillation frequencies themselves are wanted.)
+
+    Modes at or below the floor are the steady-state manifold.  That manifold
+    may be degenerate -- several jump operators sharing a symmetry give a
+    many-dimensional null space -- which is not an error here: it just drops
+    more than one mode.  Whether a *unique* NESS exists is a separate question,
+    answered by the null-space rank, not by the gap.
+
+    Returns nan when no mode clears the floor, i.e. L has no decaying mode at
+    all.  That is a real physical case rather than a failure: at gamma = 0 the
+    generator is -i[H, .], its whole spectrum is imaginary, and there is no
+    relaxation to a steady state.
+
+    Raises RuntimeError if the spectrum contains no steady-state mode at all.
+    Every trace-preserving Liouvillian has lambda = 0, so its absence means the
+    operator is malformed or the eigensolver did not converge to the rightmost
+    modes -- either way the smallest surviving Gamma is not the gap.
+    """
+    Gamma = -np.asarray(evals).real
+    if not np.any(Gamma <= noise_floor):
+        raise RuntimeError(
+            f'no steady-state mode in the spectrum: every |Re(lambda)| exceeds '
+            f'noise_floor={noise_floor:g} (smallest is {np.min(np.abs(Gamma)):g}). '
+            f'A trace-preserving Liouvillian always has lambda = 0, so either L '
+            f'is malformed or the eigensolver missed the rightmost modes.')
+    decaying = Gamma[Gamma > noise_floor]
+    if decaying.size == 0:
+        return float('nan')
+    return float(np.min(decaying))
+
+
+def decay_rate(L, *, noise_floor=None, k=None, sigma=None, which='LR',
+               maxiter=10000, tol=0.0, return_eigenvalues=False):
+    """Liouvillian gap of L.  See gap_from_eigenvalues for the definition.
+
+    Dense path (k is None): the full spectrum via np.linalg.eigvals.
+
+    Sparse path (k set): the k eigenvalues selected by (which, sigma) via
+    ARPACK.  With the default which='LR', sigma=None those are the k rightmost,
+    which are exactly the slowest-decaying modes, so the smallest Gamma among
+    them above the floor is the gap.
+
+    Keep sigma=None (ARPACK regular mode) on large operators: the only thing
+    done to L is a matvec, so its sparsity is used directly -- an 8-qubit
+    Liouvillian is 65536x65536 with ~1.1e6 nonzeros, 22 MB and ~3 ms per matvec,
+    against 64 GB dense.  Shift-invert (sigma set) instead needs a sparse LU of
+    (L - sigma I), which suffers catastrophic fill-in here: at N=8 splu did not
+    finish in 110 s locally and its factors do not fit in a typical job's
+    memory.  Regular mode finds the modes the gap needs from matvecs alone, so
+    shift-invert buys nothing except on small systems where the factorization is
+    cheap and its faster convergence helps.
+
+    On the sparse path a nan gap is raised as RuntimeError rather than returned:
+    unlike a dense diagonalization, "no decaying mode among the k returned"
+    cannot distinguish a purely oscillatory L from a k that is simply too small
+    to see past a degenerate null space, and the latter is far more likely.
+
+    Returns the gap, or (gap, evals) if return_eigenvalues is set.
+    """
+    if k is None:
+        if issparse(L):
+            raise TypeError(
+                'decay_rate: L is sparse but no k was given; a dense '
+                'diagonalization would densify it (2^(2N) x 2^(2N)).  Pass k to '
+                'use the sparse path, or L.toarray() if it really is small.')
+        if noise_floor is None:
+            noise_floor = GAP_NOISE_FLOOR
+        evals = np.linalg.eigvals(np.asarray(L))
+        gap = gap_from_eigenvalues(evals, noise_floor=noise_floor)
+    else:
+        from scipy.sparse.linalg import eigs, ArpackNoConvergence
+        if noise_floor is None:
+            noise_floor = GAP_NOISE_FLOOR_SPARSE
+        try:
+            evals = eigs(L.astype(complex), k=k, sigma=sigma, which=which,
+                         maxiter=maxiter, tol=tol, return_eigenvectors=False)
+        except ArpackNoConvergence as e:
+            evals = np.asarray(e.eigenvalues)
+            if evals.size == 0:
+                raise
+        gap = gap_from_eigenvalues(evals, noise_floor=noise_floor)
+        if not np.isfinite(gap):
+            raise RuntimeError(
+                f'decay_rate: no eigenvalue cleared noise_floor={noise_floor:g} '
+                f'among the k={k} modes found (which={which!r}, sigma={sigma}); '
+                f'increase k -- a degenerate steady-state manifold can occupy '
+                f'all k.')
+
+    if return_eigenvalues:
+        return gap, evals
+    return gap
 
 
 def analyze_steady_state(J, gamma, gamma_p, gamma_step=0.01):
