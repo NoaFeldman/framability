@@ -10,9 +10,12 @@ vec convention, sparse computational-basis superoperator), generalized over N
 and the edge list instead of six_qubit_lindbladian.py's hardcoded N=6 / fixed
 2x3-lattice module constants, so the same code covers a ring of any size and
 reuses dissipative_PT.bonds_2d for open-boundary rectangular lattices.
+An optional transverse field h_x * sum_i X_i (keyword-only, default 0)
+extends the same builders to trotter_lindbladian_scan's model4, which is
+model3 plus h = MODEL4_H = 1.5 on every site.
 
 For N=8 the Liouvillian is 65536x65536: only sparse operations (build_lindbladian_
-comp + lindbladian_gap's shift-invert eigs) are tractable -- dense diagonalization
+comp + lindbladian_gap's ARPACK eigs) are tractable -- dense diagonalization
 of that size is infeasible (~34GB, O(65536^3) flops).  build_dense_H_jumps is
 provided only for small N (N<=6, used by nonequilibrium_phase_characterizers.
 spectral_oscillation's H/jump-operator input convention).
@@ -26,7 +29,10 @@ from typing import List, Sequence, Tuple
 import numpy as np
 import scipy.sparse as sp
 
+from analysis import decay_rate, GAP_NOISE_FLOOR_SPARSE
+
 _I2 = np.eye(2, dtype=complex)
+_SX = np.array([[0, 1], [1, 0]], dtype=complex)
 _SZ = np.array([[1, 0], [0, -1]], dtype=complex)
 _MP = 0.5 * np.array([[1, 1], [-1, -1]], dtype=complex)   # |-><+|  (X-basis lowering)
 
@@ -68,13 +74,25 @@ def _two_site_op(loc_a: np.ndarray, loc_b: np.ndarray, sa: int, sb: int,
 #  Hamiltonian and jump operators (model3 physics: H=J*sum ZZ, jumps
 #  sqrt(gamma)|-><+|_i, sqrt(gamma')Z_i on every site)
 # ---------------------------------------------------------------------------
-def build_hamiltonian(J: float, N: int, edges: Sequence[Tuple[int, int]]) -> sp.csr_matrix:
-    """H = J * sum_<i,j> Z_i Z_j over `edges` (sparse, 2^N x 2^N)."""
+def build_hamiltonian(J: float, N: int, edges: Sequence[Tuple[int, int]], *,
+                      h_x: float = 0.0) -> sp.csr_matrix:
+    """H = J * sum_<i,j> Z_i Z_j  +  h_x * sum_i X_i   (sparse, 2^N x 2^N).
+
+    h_x = 0 (the default) is model3's field-free Hamiltonian, so every existing
+    caller is unchanged; h_x = trotter_lindbladian_scan.MODEL4_H = 1.5 gives
+    model4's transverse field.  The field is applied at full strength on every
+    site, matching trotter_lindbladian_scan.build_full_lindbladian_model (the
+    1/(2*dim) bond share of build_bond_lindbladian is a Trotter-gate
+    convention, not part of the physical lattice generator).
+    """
     dim = 2 ** N
     H = sp.csr_matrix((dim, dim), dtype=complex)
     for (i, j) in edges:
         a, b = (i, j) if i < j else (j, i)
         H = H + J * _two_site_op(_SZ, _SZ, a, b, N)
+    if h_x != 0.0:
+        for k in range(N):
+            H = H + h_x * _site_op(_SX, k, N)
     return H.tocsr()
 
 
@@ -110,11 +128,15 @@ def _superop_dissipator(L: sp.csr_matrix) -> sp.csr_matrix:
 
 
 def build_lindbladian_comp(J: float, gamma: float, gamma_p: float, N: int,
-                           edges: Sequence[Tuple[int, int]]) -> sp.csr_matrix:
+                           edges: Sequence[Tuple[int, int]], *,
+                           h_x: float = 0.0) -> sp.csr_matrix:
     """Sparse Liouvillian in the computational basis, column-stacking vec
     convention.  Shape (2^N * 2^N, 2^N * 2^N) -- for N=8 this is 65536x65536
-    (sparse only; never densify this for N=8)."""
-    H = build_hamiltonian(J, N, edges)
+    (sparse only; never densify this for N=8).
+
+    h_x = 0 (default) -> model3 physics; h_x = 1.5 -> model4 (see
+    build_hamiltonian)."""
+    H = build_hamiltonian(J, N, edges, h_x=h_x)
     L = _superop_commutator(H)
     for A in build_jump_operators(gamma, gamma_p, N):
         L = L + _superop_dissipator(A)
@@ -122,58 +144,25 @@ def build_lindbladian_comp(J: float, gamma: float, gamma_p: float, N: int,
 
 
 # ---------------------------------------------------------------------------
-#  Gap via sparse shift-invert eigs (six_qubit_lindbladian.steady_state /
-#  scripts/six_qubit_starplaq_worker._steady_state_and_decay pattern)
+#  Gap via sparse ARPACK eigs -- thin wrapper over analysis.decay_rate, which
+#  holds the one definition of the Liouvillian gap used in this repo.
 # ---------------------------------------------------------------------------
 def lindbladian_gap(L_comp: sp.csr_matrix, *, k: int = 12, sigma=None,
                     which: str = 'LR', maxiter: int = 10000, tol: float = 0.0,
-                    noise_floor: float = 1e-6):
-    """Gap between the two minimal-|Re(lambda)| eigenvalues of L_comp: the
-    steady-state eigenvalue (Re ~ 0) and the slowest-decaying nonzero mode.
+                    noise_floor: float = GAP_NOISE_FLOOR_SPARSE):
+    """Liouvillian gap of the sparse L_comp: the slowest non-zero decay rate.
 
-    Finds the `k` rightmost eigenvalues (which='LR'), takes decay rates
-    Gamma_j = -Re(lambda_j), and returns the smallest Gamma_j above
-    `noise_floor` (Gamma_j <= noise_floor is a steady-state mode, matching
-    scripts/six_qubit_starplaq_worker.py's decay-rate convention).  Raises
-    RuntimeError if no mode clears the noise floor (increase k).
-
-    Why which='LR' with sigma=None and NOT shift-invert
-    ----------------------------------------------------
-    sigma=None keeps ARPACK in regular mode, where the only operation on
-    L_comp is a matrix-vector product -- so the operator's sparsity is used
-    directly (an 8-qubit Liouvillian is 65536x65536 with ~1.1e6 nonzeros, 22 MB
-    and ~3 ms per matvec, versus 64 GB dense).
-
-    Shift-invert (sigma set) instead requires solving (L - sigma I)x = b, which
-    scipy implements via a sparse LU factorization.  That factorization suffers
-    catastrophic fill-in on this operator: at N=8 splu did not complete in 110 s
-    locally and its factors do not fit in a typical job's memory, so the gap
-    workers stalled or were OOM-killed at all but the near-trivial (small-gamma,
-    nearly diagonal) grid points.  The rightmost eigenvalues are exactly the
-    ones the gap needs, and regular mode finds them from matvecs alone, so
-    shift-invert buys nothing here.  sigma is kept as an option for small
-    systems where the factorization is cheap and its faster convergence helps.
+    Sparse-path alias for analysis.decay_rate -- see there for the definition,
+    for why which='LR' with sigma=None (ARPACK regular mode) is the right
+    default on an operator this size, and for the RuntimeError raised when no
+    mode clears `noise_floor` (k too small).
 
     Returns (gap, evals) with evals the k eigenvalues found (unsorted, as
     returned by eigs).
     """
-    from scipy.sparse.linalg import eigs, ArpackNoConvergence
-
-    try:
-        vals = eigs(L_comp.astype(complex), k=k, sigma=sigma, which=which,
-                    maxiter=maxiter, tol=tol, return_eigenvectors=False)
-    except ArpackNoConvergence as e:
-        vals = np.asarray(e.eigenvalues)
-        if vals.size == 0:
-            raise
-    gammas = np.sort(-vals.real)
-    nz = gammas[gammas > noise_floor]
-    if nz.size == 0:
-        raise RuntimeError(
-            f'lindbladian_gap: no eigenvalue cleared noise_floor={noise_floor:g} '
-            f'among the k={k} rightmost modes (which={which!r}, sigma={sigma}); '
-            f'increase k -- a degenerate steady-state manifold can occupy all k')
-    return float(nz[0]), vals
+    return decay_rate(L_comp, k=k, sigma=sigma, which=which, maxiter=maxiter,
+                      tol=tol, noise_floor=noise_floor,
+                      return_eigenvalues=True)
 
 
 # ---------------------------------------------------------------------------
@@ -184,9 +173,11 @@ def lindbladian_gap(L_comp: sp.csr_matrix, *, k: int = 12, sigma=None,
 #  above.
 # ---------------------------------------------------------------------------
 def build_dense_H_jumps(J: float, gamma: float, gamma_p: float, N: int,
-                        edges: Sequence[Tuple[int, int]]):
+                        edges: Sequence[Tuple[int, int]], *, h_x: float = 0.0):
     """(H, [c_1, c_2, ...]) as dense numpy arrays, shape (2^N, 2^N) each.  Only
-    for N small enough that 2^N is a manageable dense dimension (N<=6 -> 64)."""
-    H_sp = build_hamiltonian(J, N, edges)
+    for N small enough that 2^N is a manageable dense dimension (N<=6 -> 64).
+
+    h_x = 0 (default) -> model3 physics; h_x = 1.5 -> model4."""
+    H_sp = build_hamiltonian(J, N, edges, h_x=h_x)
     jumps_sp = build_jump_operators(gamma, gamma_p, N)
     return H_sp.toarray(), [A.toarray() for A in jumps_sp]
