@@ -11,9 +11,18 @@
 #  Ten rounds propagate the framable floor up to ten grid rings (2.0 in gamma
 #  at the 0.2 grid step) outward from wherever it already sits.
 #
+#  RESUMING.  Round numbers must keep increasing: a point that already wrote
+#  pt_..._qrefine_r03.npz is skipped forever at round 3 (the worker's
+#  out.exists() guard), and the per-point seed is 100000*round, so re-running
+#  the same round numbers would re-do frozen work with identical seeds.  So
+#  START_ROUND defaults to one past the highest round already on disk -- just
+#  run this script again for 10 MORE rounds and it continues at 11, 12, ...
+#  Rounds are zero-padded to two digits, so 99 is the ceiling.
+#
 #  Usage:
-#      bash scripts/submit_model4_rate_quick_refine.sh
-#      N_ROUNDS=5 bash scripts/submit_model4_rate_quick_refine.sh
+#      bash scripts/submit_model4_rate_quick_refine.sh              # next 10 rounds
+#      N_ROUNDS=5 bash scripts/submit_model4_rate_quick_refine.sh   # next 5
+#      START_ROUND=1 bash scripts/submit_model4_rate_quick_refine.sh  # force from 1
 #      N_RESTARTS=5 MAXFEV_4=2000 bash scripts/submit_model4_rate_quick_refine.sh
 #
 #  Then replot (picks the min over base + every round automatically):
@@ -30,13 +39,23 @@ cd "$(dirname "$0")/.."               # repo root
 [ -f .venv/bin/activate ] && source .venv/bin/activate
 mkdir -p logs "$OUT_DIR"
 
-for round in $(seq 1 "$N_ROUNDS"); do
-    echo "[m4 rate qrefine] round ${round}/${N_ROUNDS}: submitting..."
+# Resume point: one past the highest round already written.  10# forces base-10
+# so that "08"/"09" are not parsed as invalid octal.
+if [ -z "${START_ROUND:-}" ]; then
+    last=$(find "$OUT_DIR/model4" -name '*_qrefine_r[0-9][0-9].npz' 2>/dev/null \
+           | sed 's/.*_qrefine_r\([0-9][0-9]\)\.npz$/\1/' | sort -n | tail -1)
+    START_ROUND=$(( 10#${last:-0} + 1 ))
+fi
+END_ROUND=$(( START_ROUND + N_ROUNDS - 1 ))
+echo "[m4 rate qrefine] running rounds ${START_ROUND}..${END_ROUND}"
+
+for round in $(seq "$START_ROUND" "$END_ROUND"); do
+    echo "[m4 rate qrefine] round ${round}/${END_ROUND}: submitting..."
     ROUND="$round" N_CHUNKS="$N_CHUNKS" OUT_DIR="$OUT_DIR" \
         sbatch --wait "$SLURM_SCRIPT"
     n_new=$(find "$OUT_DIR/model4" -name "*_qrefine_r$(printf '%02d' "$round").npz" \
             2>/dev/null | wc -l)
-    echo "[m4 rate qrefine] round ${round}/${N_ROUNDS}: done (${n_new} point(s) improved)"
+    echo "[m4 rate qrefine] round ${round}/${END_ROUND}: done (${n_new} point(s) improved)"
     if [ "$n_new" -eq 0 ]; then
         echo "[m4 rate qrefine] round ${round} improved nothing -- converged, stopping early."
         break
