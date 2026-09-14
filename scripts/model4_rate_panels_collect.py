@@ -7,12 +7,17 @@ Reads the per-point npz files written by
   * scripts/model4_manybody_worker.py     -> <in_dir>/model4_8q/pt_<ix>_<iy>.npz
        panels 7-8: oscillation rate and Lindbladian gap of the full 8-qubit
        2x4 lattice
+  * scripts/liouvillian_q_worker.py       -> <q_dir>/model4/pt_<ix>_<iy>.npz
+       panels 9-10: quality factor Q_max of the bond generator and of the
+       2x3-lattice Lindbladian (exact spectra); bond Q_max = 1 is also drawn as
+       a dashed cyan contour on the six rate panels
 
 assembles each quantity on its (gamma, gamma') grid, stores the merged arrays
 and draws
 
     row 1 |  stabilizer-3 rate  |  Pauli rate  |  opt Heisenberg d=4  |  d=6
     row 2 |  opt Schrodinger d=4 |  d=6        |  8q osc rate         |  8q gap
+    row 3 |  bond Q_max          |  lattice Q_max          (when Q data exists)
 
 The two groups may live on different strides (the many-body panels default to
 --mb_stride 5, an 11x11 grid, against the framability panels' full 51x51); the
@@ -59,6 +64,7 @@ from trotter_lindbladian_scan import MODELS, MODEL4_H                    # noqa:
 from model4_rate_panels_worker import RATE_KEYS, MODEL_NAME              # noqa: E402
 from model4_manybody_worker import (TAG as MB_TAG, N_QUBITS,             # noqa: E402
                                     LATTICE_LX, LATTICE_LY)
+import liouvillian_q_collect as qcollect                                 # noqa: E402
 
 # (npz key, panel label) in figure order.
 MB_KEYS = [
@@ -214,12 +220,21 @@ def _panel(fig, ax, xv, yv, Z, title, cmap, *, floor_contour=None):
     fig.colorbar(pcm, ax=ax)
 
 
-def plot(rates: dict, mb: dict, png: Path, *, floor: float = 0.0) -> None:
+def plot(rates: dict, mb: dict, png: Path, *, floor: float = 0.0,
+         q: dict | None = None,
+         q_levels=qcollect.Q_LEVELS_DEFAULT) -> None:
     import matplotlib
     matplotlib.use('Agg')
     import matplotlib.pyplot as plt
 
-    fig, axes = plt.subplots(2, 4, figsize=(22, 10), constrained_layout=True)
+    nrow = 2 if q is None else 3
+    fig, axes = plt.subplots(nrow, 4, figsize=(22, 5 * nrow),
+                             constrained_layout=True)
+    levels_txt = ','.join(f'{lev:g}' for lev in q_levels)
+    q_line = ('' if q is None else
+              "\n" + rf"row 3: quality factor $Q_{{\max}}$ of the most coherent "
+              rf"damped mode (exact spectra)  |  dashed cyan on the rate "
+              rf"panels: bond $Q_{{\max}}={levels_txt}$")
     fig.suptitle(
         rf"model4:  $H = J\sum_{{\langle ij\rangle}} Z_iZ_j + {MODEL4_H}\sum_i X_i$,  "
         rf"jumps $\sqrt{{\gamma}}\,|{{-}}\rangle\langle{{+}}|_i,\ \sqrt{{\gamma'}}Z_i$  "
@@ -227,7 +242,7 @@ def plot(rates: dict, mb: dict, png: Path, *, floor: float = 0.0) -> None:
         "\n"
         rf"framability rates $\mu^*=\lim_{{dt\to0}}({{\rm fra}}-1)/dt$ of the bond "
         rf"generator  |  panels 7-8: full {N_QUBITS}-qubit "
-        rf"{LATTICE_LY}x{LATTICE_LX} lattice Lindbladian",
+        rf"{LATTICE_LY}x{LATTICE_LX} lattice Lindbladian" + q_line,
         fontsize=13)
 
     # Panels 1-6 are framability rates, so they get the white floor contour:
@@ -237,10 +252,24 @@ def plot(rates: dict, mb: dict, png: Path, *, floor: float = 0.0) -> None:
     for ax, (key, label) in zip(axes.flat[:6], RATE_KEYS):
         _panel(fig, ax, rates['p1_vals'], rates['p2_vals'], rates[key],
                label, FRA_CMAP, floor_contour=floor)
+        if q is not None:
+            qcollect.draw_q_contour(ax, q['p1_vals'], q['p2_vals'],
+                                    q['bond_Q_max'], levels=q_levels)
 
     # Panels 7-8 are not framabilities and have no such floor.
-    for ax, (key, label) in zip(axes.flat[6:], MB_KEYS):
+    for ax, (key, label) in zip(axes.flat[6:8], MB_KEYS):
         _panel(fig, ax, mb['p1_vals'], mb['p2_vals'], mb[key], label, MB_CMAP)
+
+    # Panels 9-10: Lindbladian quality factor (bond generator, exact lattice).
+    if q is not None:
+        titles = qcollect.labels(q)
+        for ax, (key, _) in zip(axes.flat[8:10], qcollect.Q_GROUPS):
+            qcollect.draw_q_panel(fig, ax, q['p1_vals'], q['p2_vals'], q[key],
+                                  titles[key], xlabel=r'$\gamma$',
+                                  ylabel=r"$\gamma'$", cmap=MB_CMAP,
+                                  levels=q_levels)
+        for ax in axes.flat[10:]:
+            ax.axis('off')
 
     fig.savefig(png, dpi=150)
     plt.close(fig)
@@ -259,6 +288,14 @@ def main() -> None:
                     help='value the white contour outlines on the rate panels '
                          '(default 0.0 = the framability rate floor, the '
                          'rate-picture image of framability = 1)')
+    ap.add_argument('--q_dir', type=str, default='results_liouvillian_q',
+                    help='scripts/liouvillian_q_worker.py output; the Q row and '
+                         'the bond-Q contour are added when data exists there')
+    ap.add_argument('--q_stride', type=int, default=1,
+                    help='stride used by liouvillian_q_worker')
+    ap.add_argument('--q_levels', type=float, nargs='+',
+                    default=list(qcollect.Q_LEVELS_DEFAULT),
+                    help='Q values contoured (dashed) on the rate and Q panels')
     args = ap.parse_args()
 
     in_dir, out_dir = Path(args.in_dir), Path(args.out_dir)
@@ -269,6 +306,13 @@ def main() -> None:
                        refine_keys=RATE_REFINE_KEYS)
     mb = load_group(in_dir / MB_TAG, [k for k, _ in MB_KEYS],
                     args.mb_stride, f'model4-{N_QUBITS}q')
+    q = qcollect.load(MODEL_NAME, Path(args.q_dir), args.q_stride)
+    if q is None:
+        print(f'[model4-rate] no Q data under {args.q_dir}/{MODEL_NAME}; '
+              f'Q row and contour omitted', flush=True)
+    q_arrays = {} if q is None else dict(
+        q_gamma_vals=q['p1_vals'], q_gamma_p_vals=q['p2_vals'],
+        q_stride=args.q_stride, **{k: q[k] for k, _ in qcollect.Q_GROUPS})
 
     np.savez(out_dir / 'model4_rate_panels.npz',
              model=MODEL_NAME, h=MODEL4_H, N_manybody=N_QUBITS,
@@ -277,10 +321,12 @@ def main() -> None:
              gamma_vals=rates['p1_vals'], gamma_p_vals=rates['p2_vals'],
              mb_gamma_vals=mb['p1_vals'], mb_gamma_p_vals=mb['p2_vals'],
              **{k: rates[k] for k, _ in RATE_KEYS},
-             **{k: mb[k] for k, _ in MB_KEYS})
+             **{k: mb[k] for k, _ in MB_KEYS},
+             **q_arrays)
     print(f'[model4-rate] wrote {out_dir / "model4_rate_panels.npz"}', flush=True)
 
-    plot(rates, mb, out_dir / 'model4_rate_panels.png', floor=args.floor)
+    plot(rates, mb, out_dir / 'model4_rate_panels.png', floor=args.floor,
+         q=q, q_levels=tuple(args.q_levels))
 
 
 if __name__ == '__main__':

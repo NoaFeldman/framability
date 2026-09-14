@@ -224,16 +224,46 @@ def osc_rate_panels(model: str, osc_dir: Path, stride: int = 1) -> list:
                  cmap='magma', vmin=0.0)]
 
 
+def q_panels_and_contour(model: str, q_dir: Path, stride: int = 1):
+    """(extra panel specs, contour spec) for the Lindbladian quality factor
+    Q_max of `model` (scripts/liouvillian_q_worker.py), or ([], None) when no
+    data exists yet.  The panels carry kind='q' and are drawn by
+    liouvillian_q_collect.draw_q_panel; the contour is the bond-generator
+    Q_max grid, overlaid on the framability panels.  Shared with
+    scripts/collect_and_plot_all.py."""
+    try:
+        import liouvillian_q_collect as qcollect
+    except ImportError:
+        return [], None
+    d = qcollect.load(model, q_dir, stride)
+    if d is None:
+        return [], None
+    titles = qcollect.labels(d)
+    panels = [dict(kind='q', p1_vals=d['p1_vals'], p2_vals=d['p2_vals'],
+                   Z=d[key], label=titles[key])
+              for key, _ in qcollect.Q_GROUPS]
+    contour = dict(p1_vals=d['p1_vals'], p2_vals=d['p2_vals'],
+                   Z=d['bond_Q_max'])
+    return panels, contour
+
+
 def plot_model(model: str, data: dict, png: Path, *, raw: bool,
-               fra_tol: float = 1e-3, extra: list | None = None) -> None:
+               fra_tol: float = 1e-3, extra: list | None = None,
+               q_contour: dict | None = None, q_levels=(1.0,)) -> None:
     """`extra`: optional list of additional panels appended after the MEASURES
     panels, each a dict with keys p1_vals, p2_vals, Z, label, cbar_label and
     optionally cmap/vmin.  Used for quantities that are NOT dt-extrapolated
-    framabilities -- currently the 8-qubit-ring oscillation rate, which is a
-    property of the Lindbladian itself and so carries no dt dependence."""
+    framabilities -- the 8-qubit-ring oscillation rate and the Lindbladian
+    quality factor (kind='q', see q_panels_and_contour), both properties of
+    the Lindbladian itself with no dt dependence.
+
+    `q_contour`: optional bond Q_max grid (p1_vals, p2_vals, Z) drawn as dashed
+    cyan contours at `q_levels` on every framability panel."""
     import matplotlib
     matplotlib.use('Agg')
     import matplotlib.pyplot as plt
+    if q_contour is not None or any(s.get('kind') == 'q' for s in (extra or [])):
+        import liouvillian_q_collect as qcollect
 
     m = MODELS[model]
     p1_vals = data['p1_vals']
@@ -252,9 +282,12 @@ def plot_model(model: str, data: dict, png: Path, *, raw: bool,
     fig, axes = plt.subplots(nrow, ncol, figsize=(6 * ncol, 5 * nrow),
                              constrained_layout=True, squeeze=False)
     qty = 'framability' if raw else r'framability$^{1/dt}$'
+    q_note = ('' if q_contour is None else
+              r'   |   dashed cyan: bond $Q_{\max}=$'
+              + ','.join(f'{lev:g}' for lev in q_levels))
     fig.suptitle(f'{m.title}\n' + r'$dt\to0$ extrapolation of ' + qty
-                 + r'   ($dt=\mathrm{DT\_BASE}/\max(\|H\|_1,\{\gamma_k\})$)',
-                 fontsize=13)
+                 + r'   ($dt=\mathrm{DT\_BASE}/\max(\|H\|_1,\{\gamma_k\})$)'
+                 + q_note, fontsize=13)
 
     axflat = list(axes.flat)
     for ax, (key, label) in zip(axflat, MEASURES):
@@ -269,6 +302,10 @@ def plot_model(model: str, data: dict, png: Path, *, raw: bool,
             cs = ax.contour(p1_vals, p2_vals, Z, levels=[1.0 + fra_tol],
                             colors='white', linewidths=1.3)
             ax.clabel(cs, fmt=f'framable (=1+{fra_tol:g})', fontsize=7)
+        if q_contour is not None:
+            qcollect.draw_q_contour(ax, q_contour['p1_vals'],
+                                    q_contour['p2_vals'], q_contour['Z'],
+                                    levels=q_levels)
         ax.set_title(label, fontsize=11)
         ax.set_xlabel(m.p1_label)              # gamma
         ax.set_ylabel(m.p2_label)              # gamma'
@@ -277,6 +314,11 @@ def plot_model(model: str, data: dict, png: Path, *, raw: bool,
     # Extra (non-framability) panels: own colour scale, own grid, vmin=0 rather
     # than the framability floor of 1.
     for ax, spec in zip(axflat[len(MEASURES):], extra):
+        if spec.get('kind') == 'q':
+            qcollect.draw_q_panel(fig, ax, spec['p1_vals'], spec['p2_vals'],
+                                  spec['Z'], spec['label'], xlabel=m.p1_label,
+                                  ylabel=m.p2_label, levels=q_levels)
+            continue
         ex2, ey2 = edges(spec['p1_vals']), edges(spec['p2_vals'])
         Z = np.asarray(spec['Z'], float).T
         # inf is a physically meaningful outcome here (an undamped oscillating
@@ -332,6 +374,10 @@ def main() -> None:
                     help='directory of scripts/osc_rate_worker.py output; the '
                          'oscillation-rate panel is appended when data exists '
                          'there (silently omitted otherwise)')
+    ap.add_argument('--q_dir', type=str, default='results_liouvillian_q',
+                    help='directory of scripts/liouvillian_q_worker.py output; '
+                         'the two Q_max panels and the bond Q_max = 1 contour '
+                         'are added when data exists there')
     args = ap.parse_args()
 
     in_dir = Path(args.in_dir)
@@ -348,8 +394,12 @@ def main() -> None:
         np.savez(npz, model=model, fit_n=args.fit_n, deg=args.deg,
                  raw=args.raw, measures=[k for k, _ in MEASURES], **data)
         print(f'[extrap] saved {npz}', flush=True)
+        q_panels, q_contour = q_panels_and_contour(model, Path(args.q_dir),
+                                                   args.stride)
         plot_model(model, data, png, raw=args.raw, fra_tol=args.fra_tol,
-                   extra=osc_rate_panels(model, Path(args.osc_dir), args.stride))
+                   extra=osc_rate_panels(model, Path(args.osc_dir), args.stride)
+                   + q_panels,
+                   q_contour=q_contour)
 
 
 if __name__ == '__main__':
