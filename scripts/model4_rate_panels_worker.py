@@ -26,7 +26,28 @@ refinement (framability_rate.neighbor_refine_rates) can cross-evaluate them --
 the cross-evaluation that the model3 gp2 row established as mandatory for the
 optimised rates.
 
-Output: <out_dir>/model4/pt_<ix:03d>_<iy:03d>.npz   (one file per grid point;
+Other models: --model model8 runs the identical six measures on model8's
+(h, gamma') grid (default out_dir results_<model>_rate).
+
+Frame seeds (--frame_seeds)
+---------------------------
+'default' = the optimisers' own seed sets (minimize_rate: extended-Pauli
+octagon in the X-Z plane at d=6, cycling identity, random; minimize_state_rate:
+octahedron, SIC tetrahedron, random).  'ring' ADDS seeds whose columns form a
+ring in the plane rotated by the model's single-site field (RING_AXIS; model8:
+the X-Y plane about Z):
+  * observable frames: identity, the axis Pauli and d-2 ring directions at
+    angles pi j/(d-2) -- a 2(d-2)-gon (square at d=4, octagon at d=6) -- once
+    per ring length in RING_LENGTHS;
+  * state frames: d pure states equally spaced on the ring, tilted alternately
+    toward +-axis (STATE_RING_TILTS; keeps the Pauli-support penalty at zero).
+'auto' = 'ring' for models in RING_AXIS, 'default' otherwise.  Without the ring
+seeds the d=6 optimisers start from X-Z-plane / octahedral frames and may stall
+at the square's value on model8.  The seeds are appended to (not substituted
+for) the default restarts, so each optimisation runs 3 (Heisenberg) / 2 (state)
+more restarts.
+
+Output: <out_dir>/<model>/pt_<ix:03d>_<iy:03d>.npz   (one file per grid point;
 existing files are skipped, so a partial array can simply be resubmitted).
 
 Usage:
@@ -58,7 +79,64 @@ from framability_rate_frames import (pauli_rate, stabilizer_3_rate,      # noqa:
 from framability_rate_state import (minimize_state_rate,                 # noqa: E402
                                     RATE_STATE_VERSION)
 
-MODEL_NAME = 'model4'
+MODEL_NAME = 'model4'                   # default --model
+SUPPORTED_MODELS = ('model4', 'model8')
+
+# Ring frame seeds (see module docstring): model -> Pauli axis (1=X, 2=Y, 3=Z)
+# its single-site field rotates about; the ring lies in the other two axes.
+RING_AXIS = {'model8': 3}
+RING_LENGTHS = (1.0, 0.5, 0.2)          # observable-frame ring column lengths
+STATE_RING_TILTS = (0.15, 0.4)          # state ring: sine of the tilt to the axis
+
+
+def _ring_plane(axis: int):
+    """Pauli row indices (u, v) of the plane rotated about `axis`."""
+    return {1: (2, 3), 2: (3, 1), 3: (1, 2)}[axis]
+
+
+def ring_heis_seeds(d_ext_single: int, axis: int) -> list:
+    """Observable-frame seeds S (4 x d) for minimize_rate(extra_init_S=...):
+    identity, the axis Pauli, and d-2 ring directions pi j/(d-2), one S per
+    ring length.  Columns obey |c_I| + |b| <= 1; column 0 is the identity."""
+    k = d_ext_single - 2
+    u, v = _ring_plane(axis)
+    th = np.pi * np.arange(k) / k
+    seeds = []
+    for a in RING_LENGTHS:
+        S = np.zeros((4, d_ext_single))
+        S[0, 0] = 1.0
+        S[axis, 1] = 1.0
+        S[u, 2:] = a * np.cos(th)
+        S[v, 2:] = a * np.sin(th)
+        seeds.append(S)
+    return seeds
+
+
+def ring_state_seeds(d_ext_single: int, axis: int) -> list:
+    """State-frame seeds for minimize_state_rate(extra_init_xs=...): flat
+    3 x d Bloch blocks (the encoding of optimize_framability._state_params_to_S)
+    of d pure states equally spaced on the ring, tilted alternately to +-axis."""
+    u, v = _ring_plane(axis)
+    th = 2 * np.pi * np.arange(d_ext_single) / d_ext_single
+    sign = np.where(np.arange(d_ext_single) % 2 == 0, 1.0, -1.0)
+    seeds = []
+    for s in STATE_RING_TILTS:
+        B = np.zeros((4, d_ext_single))       # rows I, X, Y, Z; row I unused
+        c = np.sqrt(1.0 - s * s)
+        B[u] = 0.5 * c * np.cos(th)
+        B[v] = 0.5 * c * np.sin(th)
+        B[axis] = 0.5 * s * sign
+        seeds.append(B[1:].ravel())
+    return seeds
+
+
+def frame_seed_mode(model: str, requested: str) -> str:
+    """Resolve --frame_seeds ('auto' | 'default' | 'ring') for `model`."""
+    if requested == 'auto':
+        return 'ring' if model in RING_AXIS else 'default'
+    if requested == 'ring' and model not in RING_AXIS:
+        raise ValueError(f'--frame_seeds ring: no RING_AXIS entry for {model}')
+    return requested
 
 # The six rate panels, in figure order: (npz key, human label).
 RATE_KEYS = [
@@ -71,22 +149,27 @@ RATE_KEYS = [
 ]
 
 
-def grid_vals(stride: int):
-    """model4's (gamma, gamma') axes, optionally strided."""
-    m = MODELS[MODEL_NAME]
+def grid_vals(stride: int, model: str = MODEL_NAME):
+    """`model`'s scan axes (p1, p2), optionally strided."""
+    m = MODELS[model]
     return (np.asarray(m.p1_vals[::stride], float),
             np.asarray(m.p2_vals[::stride], float))
 
 
-def compute_rates(gamma: float, gamma_p: float, args) -> dict:
-    """All six framability rates of the model4 bond generator at one point."""
-    m = MODELS[MODEL_NAME]
-    H1, H2, jumps1, jumps2 = m.build(gamma, gamma_p)
+def compute_rates(p1: float, p2: float, args) -> dict:
+    """All six framability rates of the model's bond generator at one point."""
+    model = getattr(args, 'model', MODEL_NAME)
+    m = MODELS[model]
+    H1, H2, jumps1, jumps2 = m.build(p1, p2)
     L = build_bond_lindbladian(H1, H2, jumps1, jumps2, args.dim).real
     A = L.T                                   # Heisenberg picture generator
 
-    out: dict = dict(gamma=gamma, gamma_p=gamma_p, dim=args.dim,
-                     floor=spectral_abscissa(A))
+    seeds = frame_seed_mode(model, getattr(args, 'frame_seeds', 'auto'))
+    axis = RING_AXIS.get(model)
+    # {p1_name: p1, p2_name: p2} keeps model4's gamma / gamma_p keys unchanged
+    out: dict = dict(p1=p1, p2=p2, **{m.p1_name: p1, m.p2_name: p2},
+                     dim=args.dim, floor=spectral_abscissa(A),
+                     frame_seeds=seeds)
 
     # ---- 1-2: fixed frames (no optimisation; stab3 is 1080 per-column LPs) --
     t0 = time.perf_counter()
@@ -100,7 +183,9 @@ def compute_rates(gamma: float, gamma_p: float, args) -> dict:
         S, mu, info = minimize_rate(
             A, de, n_restarts=args.heis_restarts, maxfev=args.heis_maxfev,
             seed=args.seed + de, verbose=False, polish_iters=args.polish,
-            check_swap=not args.no_swap_check)
+            check_swap=not args.no_swap_check,
+            extra_init_S=(ring_heis_seeds(de, axis) if seeds == 'ring'
+                          else None))
         out[f'rate_heis_{de}'] = mu
         out[f'S_heis_{de}'] = S
         out[f'mu_search_heis_{de}'] = info['mu_search']
@@ -112,7 +197,9 @@ def compute_rates(gamma: float, gamma_p: float, args) -> dict:
         t0 = time.perf_counter()
         S, mu, x = minimize_state_rate(
             L, de, n_restarts=args.schro_restarts, maxfev=args.schro_maxfev,
-            seed=args.seed + de, verbose=False, return_x=True)
+            seed=args.seed + de, verbose=False, return_x=True,
+            extra_init_xs=(ring_state_seeds(de, axis) if seeds == 'ring'
+                           else None))
         out[f'rate_schro_{de}'] = mu
         out[f'S_schro_{de}'] = S
         out[f'x_schro_{de}'] = x
@@ -122,27 +209,29 @@ def compute_rates(gamma: float, gamma_p: float, args) -> dict:
 
 
 def run_point(ix: int, iy: int, args) -> None:
-    p1_vals, p2_vals = grid_vals(args.stride)
-    gamma, gamma_p = float(p1_vals[ix]), float(p2_vals[iy])
+    model = getattr(args, 'model', MODEL_NAME)
+    m = MODELS[model]
+    p1_vals, p2_vals = grid_vals(args.stride, model)
+    p1, p2 = float(p1_vals[ix]), float(p2_vals[iy])
 
-    pt_dir = Path(args.out_dir) / MODEL_NAME
+    pt_dir = Path(args.out_dir) / model
     out_f = pt_dir / f'pt_{ix:03d}_{iy:03d}.npz'
     if out_f.exists():
-        print(f'[skip] {MODEL_NAME}/{out_f.name} already exists', flush=True)
+        print(f'[skip] {model}/{out_f.name} already exists', flush=True)
         return
 
     t0 = time.perf_counter()
-    print(f'[{MODEL_NAME}] point ({ix},{iy})  gamma={gamma:.3f} '
-          f"gamma'={gamma_p:.3f}", flush=True)
+    print(f'[{model}] point ({ix},{iy})  {m.p1_name}={p1:.3f} '
+          f'{m.p2_name}={p2:.3f}', flush=True)
 
     try:
-        res = compute_rates(gamma, gamma_p, args)
+        res = compute_rates(p1, p2, args)
     except Exception as e:
         print(f'  ERROR: {type(e).__name__}: {e}', flush=True)
         return
 
     pt_dir.mkdir(parents=True, exist_ok=True)
-    np.savez(out_f, model=MODEL_NAME, ix=ix, iy=iy, stride=args.stride,
+    np.savez(out_f, model=model, ix=ix, iy=iy, stride=args.stride,
              rate_version=RATE_VERSION, rate_frames_version=RATE_FRAMES_VERSION,
              rate_state_version=RATE_STATE_VERSION, **res)
     vals = '  '.join(f'{k}={res[k]:+.5f}' for k, _ in RATE_KEYS)
@@ -157,9 +246,17 @@ def main() -> None:
                    help='split the grid into this many strided array tasks '
                         '(200 = the job cap; n_chunks<=1 means task_id is a '
                         'single flat grid index)')
-    p.add_argument('--out_dir',  type=str, default='results_model4_rate')
+    p.add_argument('--model',    type=str, default=MODEL_NAME,
+                   choices=SUPPORTED_MODELS)
+    p.add_argument('--frame_seeds', type=str, default='auto',
+                   choices=('auto', 'default', 'ring'),
+                   help="optimiser frame seeds: 'ring' adds rings in the "
+                        "model's field plane (auto: ring for models in "
+                        'RING_AXIS, i.e. model8)')
+    p.add_argument('--out_dir',  type=str, default=None,
+                   help='default results_<model>_rate')
     p.add_argument('--stride',   type=int, default=1,
-                   help='stride on the model4 grid (1 = full 51x51 = 2601 pts)')
+                   help='stride on the model grid (1 = full 51x51 = 2601 pts)')
     p.add_argument('--dim',      type=int, default=DIM_DEFAULT,
                    help='lattice dimension of the bond Trotter convention '
                         '(each qubit sits on 2*dim bonds); must match the scan')
@@ -177,8 +274,10 @@ def main() -> None:
                         'bond generator (model4 is symmetric; this is an escape '
                         'hatch for numerical edge cases)')
     args = p.parse_args()
+    if args.out_dir is None:
+        args.out_dir = f'results_{args.model}_rate'
 
-    p1_vals, p2_vals = grid_vals(args.stride)
+    p1_vals, p2_vals = grid_vals(args.stride, args.model)
     nx, ny = len(p1_vals), len(p2_vals)
     n_total = nx * ny
 
@@ -194,7 +293,7 @@ def main() -> None:
         sys.exit(1)
 
     ids = list(range(args.task_id, n_total, args.n_chunks))
-    print(f'[chunk {args.task_id}/{args.n_chunks}] {MODEL_NAME}: '
+    print(f'[chunk {args.task_id}/{args.n_chunks}] {args.model}: '
           f'{len(ids)} of {n_total} points ({nx}x{ny} grid)', flush=True)
     for pid in ids:
         run_point(pid // ny, pid % ny, args)

@@ -23,6 +23,7 @@
 #    mkdir -p logs results_model4_rate
 #    sbatch scripts/model4_manybody.slurm.sh
 #    K_OSC=128 sbatch scripts/model4_manybody.slurm.sh      # tighter osc bound
+#    MODEL=model8 sbatch --job-name=m8_8q scripts/model4_manybody.slurm.sh
 #
 #  Output: results_model4_rate/model4_8q/pt_<ix>_<iy>.npz
 #
@@ -39,7 +40,8 @@
 #SBATCH --output=logs/m48q_%x_%A_%a.out
 #SBATCH --error=logs/m48q_%x_%A_%a.err
 
-OUT_DIR=${OUT_DIR:-results_model4_rate}
+MODEL=${MODEL:-model4}
+OUT_DIR=${OUT_DIR:-results_${MODEL}_rate}
 STRIDE=${STRIDE:-5}            # 5 -> 11x11 = 121 points (matches --array=0-120)
 N_CHUNKS=${N_CHUNKS:-121}      # must match the --array size above
 METHOD=${METHOD:-sparse}       # 'sparse' required at N=8
@@ -61,6 +63,7 @@ export MPLCONFIGDIR="/tmp/matplotlib-${SLURM_JOB_ID}"
 echo "[model4 8q] chunk ${SLURM_ARRAY_TASK_ID}/${N_CHUNKS}: starting"
 
 python scripts/model4_manybody_worker.py \
+    --model       "$MODEL" \
     --task_id     "$SLURM_ARRAY_TASK_ID" \
     --n_chunks    "$N_CHUNKS" \
     --out_dir     "$OUT_DIR" \

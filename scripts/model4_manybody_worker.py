@@ -8,6 +8,9 @@ sqrt(gamma)|-><+|_i and sqrt(gamma')Z_i on every site.  This is exactly
 n_qubit_lindbladian.build_lindbladian_comp with h_x = MODEL4_H and the edge
 list dissipative_PT.bonds_2d(4, 2), i.e. the same sparse builder the model3
 item-4 workers use; model4 differs from model3 only by that transverse field.
+--model model8 runs the same two panels for model8 (longitudinal field h Z,
+gamma fixed) on its (h, gamma') grid, writing <out_dir>/model8_8q/; the scan
+point -> builder mapping is n_qubit_lindbladian.model_lattice_params.
 
   7. osc_rate  max_k |Im(lambda_k)/Re(lambda_k)|
                nonequilibrium_phase_characterizers.oscillation_rate
@@ -57,13 +60,20 @@ from pathlib import Path
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from trotter_lindbladian_scan import MODELS, MODEL4_H                    # noqa: E402
+from trotter_lindbladian_scan import MODELS                              # noqa: E402
 from dissipative_PT import bonds_2d                                      # noqa: E402
-from n_qubit_lindbladian import build_lindbladian_comp, lindbladian_gap  # noqa: E402
+from n_qubit_lindbladian import (build_lindbladian_comp, lindbladian_gap,  # noqa: E402
+                                 model_lattice_params)
 from nonequilibrium_phase_characterizers import oscillation_rate         # noqa: E402
 
-MODEL_NAME = 'model4'
-TAG = 'model4_8q'
+MODEL_NAME = 'model4'                  # default --model
+TAG = 'model4_8q'                      # = mb_tag(MODEL_NAME), kept for importers
+SUPPORTED_MODELS = ('model4', 'model8')
+
+
+def mb_tag(model: str) -> str:
+    """Per-point output subdirectory of `model`'s many-body panels."""
+    return f'{model}_8q'
 
 J = 1.0                          # matches model4 (J = 1)
 LATTICE_LX, LATTICE_LY = 4, 2    # 2x4 open-boundary lattice
@@ -75,30 +85,35 @@ def lattice_edges():
     return bonds_2d(LATTICE_LX, LATTICE_LY)
 
 
-def grid_vals(stride: int):
-    """model4's (gamma, gamma') axes, optionally strided."""
-    m = MODELS[MODEL_NAME]
+def grid_vals(stride: int, model: str = MODEL_NAME):
+    """`model`'s scan axes (p1, p2), optionally strided."""
+    m = MODELS[model]
     return (np.asarray(m.p1_vals[::stride], float),
             np.asarray(m.p2_vals[::stride], float))
 
 
 def run_point(ix: int, iy: int, args) -> None:
-    p1_vals, p2_vals = grid_vals(args.stride)
-    gamma, gamma_p = float(p1_vals[ix]), float(p2_vals[iy])
+    model = getattr(args, 'model', MODEL_NAME)
+    tag = mb_tag(model)
+    m = MODELS[model]
+    p1_vals, p2_vals = grid_vals(args.stride, model)
+    p1, p2 = float(p1_vals[ix]), float(p2_vals[iy])
+    params = model_lattice_params(model, p1, p2)
 
-    pt_dir = Path(args.out_dir) / TAG
+    pt_dir = Path(args.out_dir) / tag
     out_f = pt_dir / f'pt_{ix:03d}_{iy:03d}.npz'
     if out_f.exists():
-        print(f'[skip] {TAG}/{out_f.name} already exists', flush=True)
+        print(f'[skip] {tag}/{out_f.name} already exists', flush=True)
         return
 
     t0 = time.perf_counter()
-    print(f'[{TAG}] point ({ix},{iy})  gamma={gamma:.3f} '
-          f"gamma'={gamma_p:.3f}  N={N_QUBITS} lattice "
-          f'{LATTICE_LX}x{LATTICE_LY}  h={MODEL4_H}', flush=True)
+    print(f'[{tag}] point ({ix},{iy})  {m.p1_name}={p1:.3f} '
+          f'{m.p2_name}={p2:.3f}  N={N_QUBITS} lattice '
+          f'{LATTICE_LX}x{LATTICE_LY}  {params}', flush=True)
 
-    L = build_lindbladian_comp(J, gamma, gamma_p, N_QUBITS, lattice_edges(),
-                               h_x=MODEL4_H)
+    L = build_lindbladian_comp(J, params['gamma'], params['gamma_p'], N_QUBITS,
+                               lattice_edges(), h_x=params['h_x'],
+                               h_z=params['h_z'])
     print(f'  Liouvillian built: {L.shape[0]}x{L.shape[1]}, {L.nnz} nnz '
           f'({time.perf_counter() - t0:.0f}s)', flush=True)
 
@@ -123,8 +138,9 @@ def run_point(ix: int, iy: int, args) -> None:
         gap, evals = np.nan, np.full(args.k_gap, np.nan, dtype=complex)
 
     pt_dir.mkdir(parents=True, exist_ok=True)
-    np.savez(out_f, model=MODEL_NAME, ix=ix, iy=iy, stride=args.stride,
-             gamma=gamma, gamma_p=gamma_p, J=J, h=MODEL4_H, N=N_QUBITS,
+    np.savez(out_f, model=model, ix=ix, iy=iy, stride=args.stride,
+             p1=p1, p2=p2, p1_name=m.p1_name, p2_name=m.p2_name,
+             J=J, N=N_QUBITS, **params,
              topology='lattice', Lx=LATTICE_LX, Ly=LATTICE_LY,
              osc_rate=osc,
              osc_lam_re=(np.nan if lam is None else lam.real),
@@ -140,11 +156,14 @@ def run_point(ix: int, iy: int, args) -> None:
 
 def main() -> None:
     p = argparse.ArgumentParser()
+    p.add_argument('--model',    type=str, default=MODEL_NAME,
+                   choices=SUPPORTED_MODELS)
     p.add_argument('--task_id',  type=int, required=True)
     p.add_argument('--n_chunks', type=int, default=1,
                    help='split the grid into this many strided array tasks; '
                         'n_chunks<=1 means task_id is a single flat grid index')
-    p.add_argument('--out_dir',  type=str, default='results_model4_rate')
+    p.add_argument('--out_dir',  type=str, default=None,
+                   help='default results_<model>_rate')
     p.add_argument('--stride',   type=int, default=5,
                    help='stride on the model4 grid (5 -> 11x11 = 121 points; '
                         '1 = full 51x51, matching the framability panels)')
@@ -168,8 +187,10 @@ def main() -> None:
                    help='decay rates at or below this are steady-state modes')
     p.add_argument('--maxiter',  type=int, default=10000)
     args = p.parse_args()
+    if args.out_dir is None:
+        args.out_dir = f'results_{args.model}_rate'
 
-    p1_vals, p2_vals = grid_vals(args.stride)
+    p1_vals, p2_vals = grid_vals(args.stride, args.model)
     nx, ny = len(p1_vals), len(p2_vals)
     n_total = nx * ny
 
@@ -185,7 +206,7 @@ def main() -> None:
         sys.exit(1)
 
     ids = list(range(args.task_id, n_total, args.n_chunks))
-    print(f'[chunk {args.task_id}/{args.n_chunks}] {TAG}: {len(ids)} of '
+    print(f'[chunk {args.task_id}/{args.n_chunks}] {mb_tag(args.model)}: {len(ids)} of '
           f'{n_total} points ({nx}x{ny} grid)', flush=True)
     for pid in ids:
         run_point(pid // ny, pid % ny, args)

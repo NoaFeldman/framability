@@ -1,6 +1,6 @@
 """
-Quality factor Q_max of the Lindbladian over a model's (gamma, gamma') grid --
-the Q panels of results_model4_rate/model4_rate_panels.png and of
+Quality factor Q_max of the Lindbladian over a model's scan grid -- the Q
+panels of results_<model>_rate/<model>_rate_panels.png and of
 results_dtbase_line/<model>_dtbase_extrap.png.
 
 For each grid point two exact spectra are classified by
@@ -18,14 +18,14 @@ numerically zero Re):
           the sparse 8-qubit osc_rate panels, which maximise over the slowest
           64 modes only.
 
-model3 and model4 only: those are the models n_qubit_lindbladian.
-build_lindbladian_comp reproduces (h_x = 0 / MODEL4_H).
+Models: those n_qubit_lindbladian.model_lattice_params maps onto
+build_lindbladian_comp (model3, model4, model8).
 
 Output: <out_dir>/<model>/pt_<ix:03d>_<iy:03d>.npz  (existing files skipped)
 
 Usage:
     python scripts/liouvillian_q_worker.py --model model3 --task_id 0 --n_chunks 200
-    python scripts/liouvillian_q_worker.py --model model4 --task_id 5 --n_chunks 200 --no_lattice
+    python scripts/liouvillian_q_worker.py --model model8 --task_id 5 --n_chunks 200 --no_lattice
 """
 
 from __future__ import annotations
@@ -43,15 +43,15 @@ from pathlib import Path
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from trotter_lindbladian_scan import (MODELS, MODEL4_H,                   # noqa: E402
-                                      build_bond_lindbladian, DIM_DEFAULT)
-from n_qubit_lindbladian import build_lindbladian_comp                   # noqa: E402
+from trotter_lindbladian_scan import (MODELS, build_bond_lindbladian,     # noqa: E402
+                                      DIM_DEFAULT)
+from n_qubit_lindbladian import (build_lindbladian_comp,                  # noqa: E402
+                                 model_lattice_params, LATTICE_MODELS)
 from dissipative_PT import bonds_2d                                      # noqa: E402
 from liouvillian_quality import (quality_factor, QUALITY_VERSION,        # noqa: E402
                                  TOL_REL_DEFAULT, DENSE_MAX_DIM_DEFAULT)
 
-J = 1.0                                        # models 3-4: J = 1
-H_X = {'model3': 0.0, 'model4': MODEL4_H}      # build_lindbladian_comp's field
+J = 1.0                                        # models 3, 4, 8: J = 1
 N_TOP = 64                                     # most coherent lattice modes kept
 
 
@@ -88,8 +88,10 @@ def _pack(prefix: str, res, evals, *, keep_all: bool) -> dict:
 
 
 def run_point(model: str, ix: int, iy: int, args) -> None:
+    m = MODELS[model]
     p1_vals, p2_vals = grid_vals(model, args.stride)
-    gamma, gamma_p = float(p1_vals[ix]), float(p2_vals[iy])
+    p1, p2 = float(p1_vals[ix]), float(p2_vals[iy])
+    params = model_lattice_params(model, p1, p2)
 
     pt_dir = Path(args.out_dir) / model
     out_f = pt_dir / f'pt_{ix:03d}_{iy:03d}.npz'
@@ -98,16 +100,16 @@ def run_point(model: str, ix: int, iy: int, args) -> None:
         return
 
     t0 = time.perf_counter()
-    print(f'[{model}] point ({ix},{iy})  gamma={gamma:.3f} '
-          f"gamma'={gamma_p:.3f}", flush=True)
+    print(f'[{model}] point ({ix},{iy})  {m.p1_name}={p1:.3f} '
+          f'{m.p2_name}={p2:.3f}', flush=True)
     rec: dict = dict(model=model, ix=ix, iy=iy, stride=args.stride,
-                     gamma=gamma, gamma_p=gamma_p, J=J, h_x=H_X[model],
-                     dim=args.dim, tol_rel=args.tol_rel,
-                     quality_version=QUALITY_VERSION)
+                     p1=p1, p2=p2, p1_name=m.p1_name, p2_name=m.p2_name,
+                     J=J, dim=args.dim, tol_rel=args.tol_rel,
+                     quality_version=QUALITY_VERSION, **params)
 
     # ---- bond generator (16x16, the framability-rate generator) -------------
     try:
-        H1, H2, jumps1, jumps2 = MODELS[model].build(gamma, gamma_p)
+        H1, H2, jumps1, jumps2 = m.build(p1, p2)
         Lb = build_bond_lindbladian(H1, H2, jumps1, jumps2, args.dim).real
         rb, eb = quality_factor(Lb, tol_rel=args.tol_rel, return_eigenvalues=True)
         rec.update(_pack('bond', rb, eb, keep_all=True))
@@ -123,9 +125,10 @@ def run_point(model: str, ix: int, iy: int, args) -> None:
     if not args.no_lattice:
         try:
             t1 = time.perf_counter()
-            Lc = build_lindbladian_comp(J, gamma, gamma_p, args.lx * args.ly,
+            Lc = build_lindbladian_comp(J, params['gamma'], params['gamma_p'],
+                                        args.lx * args.ly,
                                         bonds_2d(args.lx, args.ly),
-                                        h_x=H_X[model])
+                                        h_x=params['h_x'], h_z=params['h_z'])
             rl, el = quality_factor(Lc, tol_rel=args.tol_rel,
                                     dense_max_dim=args.dense_max_dim,
                                     return_eigenvalues=True)
@@ -146,7 +149,7 @@ def run_point(model: str, ix: int, iy: int, args) -> None:
 
 def main() -> None:
     p = argparse.ArgumentParser()
-    p.add_argument('--model', type=str, default='model3', choices=sorted(H_X))
+    p.add_argument('--model', type=str, default='model3', choices=LATTICE_MODELS)
     p.add_argument('--task_id', type=int, required=True)
     p.add_argument('--n_chunks', type=int, default=1,
                    help='split the grid into this many strided array tasks '

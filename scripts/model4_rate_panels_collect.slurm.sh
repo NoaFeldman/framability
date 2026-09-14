@@ -22,19 +22,27 @@
 #SBATCH --output=logs/m4collect_%x_%A.out
 #SBATCH --error=logs/m4collect_%x_%A.err
 
-IN_DIR=${IN_DIR:-results_model4_rate}
-OUT_DIR=${OUT_DIR:-results_model4_rate}
+MODEL=${MODEL:-model4}
+IN_DIR=${IN_DIR:-results_${MODEL}_rate}
+OUT_DIR=${OUT_DIR:-results_${MODEL}_rate}
 STRIDE=${STRIDE:-1}          # must match the model4_rate_panels array
 MB_STRIDE=${MB_STRIDE:-5}    # must match the model4_manybody array
+Q_DIR=${Q_DIR:-results_liouvillian_q}
+Q_STRIDE=${Q_STRIDE:-1}      # must match the liouvillian_q array
+Q_LEVELS=${Q_LEVELS:-1}      # space-separated Q contour levels
 
 source "${SLURM_SUBMIT_DIR}/.venv/bin/activate"
 cd "${SLURM_SUBMIT_DIR}"
 export MPLCONFIGDIR="/tmp/matplotlib-${SLURM_JOB_ID}"
 
 python scripts/model4_rate_panels_collect.py \
+    --model     "$MODEL" \
     --in_dir    "$IN_DIR" \
     --out_dir   "$OUT_DIR" \
     --stride    "$STRIDE" \
-    --mb_stride "$MB_STRIDE"
+    --mb_stride "$MB_STRIDE" \
+    --q_dir     "$Q_DIR" \
+    --q_stride  "$Q_STRIDE" \
+    --q_levels  $Q_LEVELS
 
 echo "[model4 collect] done"

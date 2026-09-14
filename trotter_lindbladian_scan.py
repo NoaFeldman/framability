@@ -588,6 +588,26 @@ def _build_model4(gamma: float, gamma_p: float):
     return H1, H2, jumps1, []
 
 
+# model8 (added 2026-09, no version bump: existing model data is unchanged):
+# model3 plus a LONGITUDINAL field along the dephasing axis,
+#   H = J ZZ + h Z (J = 1) ; jumps sqrt(gamma)|-><+| with gamma = MODEL8_GAMMA
+#   fixed, sqrt(gamma') Z (one-qubit) ; scan h, gamma' in [0, 20].
+# The field precesses spins in the X-Y plane, which the Z dephasing damps on
+# both axes, so an X-Y ring of frame directions (square at d_ext_single = 4,
+# octagon at 6) can absorb it at a rate cost ~ h tan(pi/n): the model probes
+# whether larger frames push the mu* = 0 line to dephasing below h.
+MODEL8_GAMMA = 2.0
+
+
+def _build_model8(h: float, gamma_p: float):
+    # H = J ZZ + h Z ; jumps sqrt(MODEL8_GAMMA) |-><+|, sqrt(gamma') Z (one-qubit)
+    J = 1.0
+    H1 = h * _SZ
+    H2 = J * _ZZ()
+    jumps1 = [np.sqrt(MODEL8_GAMMA) * MINUS_PLUS, np.sqrt(gamma_p) * _SZ]
+    return H1, H2, jumps1, []
+
+
 def _build_model5(J_y: float, gamma: float):
     # (was the 2.x model3.)  Heisenberg bond H2 = J_x XX + J_y YY + J_z ZZ with
     # J_x = 0.9, J_z = 1 ; jump sqrt(gamma) S^- (one-qubit).  Same model and grid
@@ -757,6 +777,15 @@ MODELS: dict[str, ModelSpec] = {
         p1_name='gamma', p1_label=r'$\gamma$', p1_vals=_arange(0, 0.95, 0.05),
         p2_name='n',     p2_label=r'$n$',      p2_vals=_arange(0, 0.05, 0.005),
         build=_make_model7_gamma_n(omega=1.0, Gamma=0.05, J=0.1, delta=0.5)),
+    # model8 (added 2026-09): model3 + longitudinal field h Z, gamma fixed at
+    # MODEL8_GAMMA; scan the field h against the dephasing gamma' (51 x 51).
+    'model8': ModelSpec(
+        name='model8',
+        title=r"$H=J\,ZZ + h\,Z$,  jumps $\sqrt{\gamma}\,|{-}\rangle\langle{+}|,\ "
+              r"\sqrt{\gamma'}\,Z$  (J=1, $\gamma$=2)",
+        p1_name='h',       p1_label=r'$h$',        p1_vals=_arange(0, 20, 0.4),
+        p2_name='gamma_p', p2_label=r"$\gamma'$",  p2_vals=_arange(0, 20, 0.4),
+        build=_build_model8, lpdo_init='plus'),
 }
 
 

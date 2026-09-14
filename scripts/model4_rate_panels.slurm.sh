@@ -18,6 +18,9 @@
 #    mkdir -p logs results_model4_rate
 #    sbatch scripts/model4_rate_panels.slurm.sh
 #    STRIDE=5 sbatch scripts/model4_rate_panels.slurm.sh   # quick 11x11 preview
+#    MODEL=model8 sbatch --job-name=m8_rate scripts/model4_rate_panels.slurm.sh
+#      (any supported model; OUT_DIR defaults to results_<model>_rate and
+#       FRAME_SEEDS=auto adds the field-plane ring seeds for model8)
 #
 #  Output: results_model4_rate/model4/pt_<ix>_<iy>.npz
 #
@@ -36,7 +39,9 @@
 #SBATCH --output=logs/m4rate_%x_%A_%a.out
 #SBATCH --error=logs/m4rate_%x_%A_%a.err
 
-OUT_DIR=${OUT_DIR:-results_model4_rate}
+MODEL=${MODEL:-model4}
+OUT_DIR=${OUT_DIR:-results_${MODEL}_rate}
+FRAME_SEEDS=${FRAME_SEEDS:-auto}  # auto: ring seeds for model8, defaults for model4
 N_CHUNKS=${N_CHUNKS:-200}         # must match the --array size above
 STRIDE=${STRIDE:-1}               # 1 = full 51x51 grid
 HEIS_RESTARTS=${HEIS_RESTARTS:-8}
@@ -53,6 +58,8 @@ export MPLCONFIGDIR="/tmp/matplotlib-${SLURM_JOB_ID}"
 echo "[model4 rates] chunk ${SLURM_ARRAY_TASK_ID}/${N_CHUNKS}: starting"
 
 python scripts/model4_rate_panels_worker.py \
+    --model          "$MODEL" \
+    --frame_seeds    "$FRAME_SEEDS" \
     --task_id        "$SLURM_ARRAY_TASK_ID" \
     --n_chunks       "$N_CHUNKS" \
     --out_dir        "$OUT_DIR" \

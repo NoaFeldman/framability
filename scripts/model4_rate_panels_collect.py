@@ -44,9 +44,14 @@ the rate sits at its floor, mu* = 0 -- the rate-picture image of framability =
 1, since mu* = max(0, coherence rate) exactly as framability = max(1, margin).
 Inside that contour the frame does not inflate at all.
 
+--model model8 collects the same pipeline run for model8 (default in/out dir
+results_<model>_rate, figure <model>_rate_panels.png, axes = the model's own
+scan parameters).
+
 Usage:
     python scripts/model4_rate_panels_collect.py
     python scripts/model4_rate_panels_collect.py --stride 1 --mb_stride 5
+    python scripts/model4_rate_panels_collect.py --model model8 --q_levels 1 2.414 3.732
     python scripts/model4_rate_panels_collect.py --floor 0.0
 """
 
@@ -60,9 +65,10 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from trotter_lindbladian_scan import MODELS, MODEL4_H                    # noqa: E402
-from model4_rate_panels_worker import RATE_KEYS, MODEL_NAME              # noqa: E402
-from model4_manybody_worker import (TAG as MB_TAG, N_QUBITS,             # noqa: E402
+from trotter_lindbladian_scan import MODELS                              # noqa: E402
+from model4_rate_panels_worker import (RATE_KEYS, MODEL_NAME,            # noqa: E402
+                                       SUPPORTED_MODELS)
+from model4_manybody_worker import (mb_tag, N_QUBITS,                    # noqa: E402
                                     LATTICE_LX, LATTICE_LY)
 import liouvillian_q_collect as qcollect                                 # noqa: E402
 
@@ -99,14 +105,14 @@ _LOG_DECADES = 4.0
 CONTOUR_TOL = 1e-6
 
 
-def grid_vals(stride: int):
-    m = MODELS[MODEL_NAME]
+def grid_vals(stride: int, model: str = MODEL_NAME):
+    m = MODELS[model]
     return (np.asarray(m.p1_vals[::stride], float),
             np.asarray(m.p2_vals[::stride], float))
 
 
 def load_group(pt_dir: Path, keys, stride: int, label: str, *,
-               refine_keys=frozenset()) -> dict:
+               refine_keys=frozenset(), model: str = MODEL_NAME) -> dict:
     """Assemble every key in `keys` on the strided grid from per-point files.
 
     Keys in `refine_keys` take the MINIMUM over the base scan file and every
@@ -116,7 +122,7 @@ def load_group(pt_dir: Path, keys, stride: int, label: str, *,
     smallest one is the best bound known.  Every other key is read from the
     base file alone.
     """
-    p1_vals, p2_vals = grid_vals(stride)
+    p1_vals, p2_vals = grid_vals(stride, model)
     nx, ny = len(p1_vals), len(p2_vals)
     grids = {k: np.full((nx, ny), np.nan) for k in keys}
     found = n_refined = 0
@@ -167,7 +173,8 @@ def _edges(v):
     return np.concatenate([[2 * v[0] - mid[0]], mid, [2 * v[-1] - mid[-1]]])
 
 
-def _panel(fig, ax, xv, yv, Z, title, cmap, *, floor_contour=None):
+def _panel(fig, ax, xv, yv, Z, title, cmap, *, floor_contour=None,
+           xlabel=r'$\gamma$', ylabel=r"$\gamma'$"):
     """One pcolormesh panel; Z is indexed [ix, iy] so it is drawn transposed.
 
     The colour scale always spans exactly the panel's own finite data -- no
@@ -186,8 +193,8 @@ def _panel(fig, ax, xv, yv, Z, title, cmap, *, floor_contour=None):
     finite = np.isfinite(Zt)
     if not finite.any():
         ax.set_title(f'{title}\n(no data)', fontsize=10)
-        ax.set_xlabel(r'$\gamma$')
-        ax.set_ylabel(r"$\gamma'$")
+        ax.set_xlabel(xlabel)
+        ax.set_ylabel(ylabel)
         return
 
     vals = Zt[finite]
@@ -215,18 +222,20 @@ def _panel(fig, ax, xv, yv, Z, title, cmap, *, floor_contour=None):
                        levels=[0.5], colors='white', linewidths=CONTOUR_LW)
 
     ax.set_title(title, fontsize=10)
-    ax.set_xlabel(r'$\gamma$')
-    ax.set_ylabel(r"$\gamma'$")
+    ax.set_xlabel(xlabel)
+    ax.set_ylabel(ylabel)
     fig.colorbar(pcm, ax=ax)
 
 
 def plot(rates: dict, mb: dict, png: Path, *, floor: float = 0.0,
-         q: dict | None = None,
+         model: str = MODEL_NAME, q: dict | None = None,
          q_levels=qcollect.Q_LEVELS_DEFAULT) -> None:
     import matplotlib
     matplotlib.use('Agg')
     import matplotlib.pyplot as plt
 
+    m = MODELS[model]
+    lab = dict(xlabel=m.p1_label, ylabel=m.p2_label)
     nrow = 2 if q is None else 3
     fig, axes = plt.subplots(nrow, 4, figsize=(22, 5 * nrow),
                              constrained_layout=True)
@@ -236,9 +245,7 @@ def plot(rates: dict, mb: dict, png: Path, *, floor: float = 0.0,
               rf"damped mode (exact spectra)  |  dashed cyan on the rate "
               rf"panels: bond $Q_{{\max}}={levels_txt}$")
     fig.suptitle(
-        rf"model4:  $H = J\sum_{{\langle ij\rangle}} Z_iZ_j + {MODEL4_H}\sum_i X_i$,  "
-        rf"jumps $\sqrt{{\gamma}}\,|{{-}}\rangle\langle{{+}}|_i,\ \sqrt{{\gamma'}}Z_i$  "
-        rf"($J=1$)"
+        f'{model}:  {m.title}'
         "\n"
         rf"framability rates $\mu^*=\lim_{{dt\to0}}({{\rm fra}}-1)/dt$ of the bond "
         rf"generator  |  panels 7-8: full {N_QUBITS}-qubit "
@@ -251,35 +258,39 @@ def plot(rates: dict, mb: dict, png: Path, *, floor: float = 0.0,
     # boundary of the region where the frame does not inflate at all.
     for ax, (key, label) in zip(axes.flat[:6], RATE_KEYS):
         _panel(fig, ax, rates['p1_vals'], rates['p2_vals'], rates[key],
-               label, FRA_CMAP, floor_contour=floor)
+               label, FRA_CMAP, floor_contour=floor, **lab)
         if q is not None:
             qcollect.draw_q_contour(ax, q['p1_vals'], q['p2_vals'],
                                     q['bond_Q_max'], levels=q_levels)
 
     # Panels 7-8 are not framabilities and have no such floor.
     for ax, (key, label) in zip(axes.flat[6:8], MB_KEYS):
-        _panel(fig, ax, mb['p1_vals'], mb['p2_vals'], mb[key], label, MB_CMAP)
+        _panel(fig, ax, mb['p1_vals'], mb['p2_vals'], mb[key], label, MB_CMAP,
+               **lab)
 
     # Panels 9-10: Lindbladian quality factor (bond generator, exact lattice).
     if q is not None:
         titles = qcollect.labels(q)
         for ax, (key, _) in zip(axes.flat[8:10], qcollect.Q_GROUPS):
             qcollect.draw_q_panel(fig, ax, q['p1_vals'], q['p2_vals'], q[key],
-                                  titles[key], xlabel=r'$\gamma$',
-                                  ylabel=r"$\gamma'$", cmap=MB_CMAP,
-                                  levels=q_levels)
+                                  titles[key], cmap=MB_CMAP,
+                                  levels=q_levels, **lab)
         for ax in axes.flat[10:]:
             ax.axis('off')
 
     fig.savefig(png, dpi=150)
     plt.close(fig)
-    print(f'[model4-rate] wrote {png}', flush=True)
+    print(f'[{model}-rate] wrote {png}', flush=True)
 
 
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument('--in_dir',  type=str, default='results_model4_rate')
-    ap.add_argument('--out_dir', type=str, default='results_model4_rate')
+    ap.add_argument('--model',   type=str, default=MODEL_NAME,
+                    choices=SUPPORTED_MODELS)
+    ap.add_argument('--in_dir',  type=str, default=None,
+                    help='default results_<model>_rate')
+    ap.add_argument('--out_dir', type=str, default=None,
+                    help='default results_<model>_rate')
     ap.add_argument('--stride',    type=int, default=1,
                     help='stride used by model4_rate_panels_worker (panels 1-6)')
     ap.add_argument('--mb_stride', type=int, default=5,
@@ -298,35 +309,43 @@ def main() -> None:
                     help='Q values contoured (dashed) on the rate and Q panels')
     args = ap.parse_args()
 
-    in_dir, out_dir = Path(args.in_dir), Path(args.out_dir)
+    model = args.model
+    m = MODELS[model]
+    in_dir = Path(args.in_dir or f'results_{model}_rate')
+    out_dir = Path(args.out_dir or f'results_{model}_rate')
     out_dir.mkdir(parents=True, exist_ok=True)
+    tag = f'[{model}-rate]'
 
-    rates = load_group(in_dir / MODEL_NAME, [k for k, _ in RATE_KEYS],
-                       args.stride, 'model4-rates',
-                       refine_keys=RATE_REFINE_KEYS)
-    mb = load_group(in_dir / MB_TAG, [k for k, _ in MB_KEYS],
-                    args.mb_stride, f'model4-{N_QUBITS}q')
-    q = qcollect.load(MODEL_NAME, Path(args.q_dir), args.q_stride)
+    rates = load_group(in_dir / model, [k for k, _ in RATE_KEYS],
+                       args.stride, f'{model}-rates',
+                       refine_keys=RATE_REFINE_KEYS, model=model)
+    mb = load_group(in_dir / mb_tag(model), [k for k, _ in MB_KEYS],
+                    args.mb_stride, f'{model}-{N_QUBITS}q', model=model)
+    q = qcollect.load(model, Path(args.q_dir), args.q_stride)
     if q is None:
-        print(f'[model4-rate] no Q data under {args.q_dir}/{MODEL_NAME}; '
+        print(f'{tag} no Q data under {args.q_dir}/{model}; '
               f'Q row and contour omitted', flush=True)
-    q_arrays = {} if q is None else dict(
-        q_gamma_vals=q['p1_vals'], q_gamma_p_vals=q['p2_vals'],
-        q_stride=args.q_stride, **{k: q[k] for k, _ in qcollect.Q_GROUPS})
 
-    np.savez(out_dir / 'model4_rate_panels.npz',
-             model=MODEL_NAME, h=MODEL4_H, N_manybody=N_QUBITS,
+    # axis arrays are named by the model's scan parameters, so model4 keeps
+    # its gamma_vals / gamma_p_vals / mb_... / q_... keys
+    x, y = m.p1_name, m.p2_name
+    q_arrays = {} if q is None else {
+        f'q_{x}_vals': q['p1_vals'], f'q_{y}_vals': q['p2_vals'],
+        'q_stride': args.q_stride, **{k: q[k] for k, _ in qcollect.Q_GROUPS}}
+
+    npz = out_dir / f'{model}_rate_panels.npz'
+    np.savez(npz, model=model, title=m.title, N_manybody=N_QUBITS,
              lattice=f'{LATTICE_LY}x{LATTICE_LX}',
              stride=args.stride, mb_stride=args.mb_stride,
-             gamma_vals=rates['p1_vals'], gamma_p_vals=rates['p2_vals'],
-             mb_gamma_vals=mb['p1_vals'], mb_gamma_p_vals=mb['p2_vals'],
+             **{f'{x}_vals': rates['p1_vals'], f'{y}_vals': rates['p2_vals'],
+                f'mb_{x}_vals': mb['p1_vals'], f'mb_{y}_vals': mb['p2_vals']},
              **{k: rates[k] for k, _ in RATE_KEYS},
              **{k: mb[k] for k, _ in MB_KEYS},
              **q_arrays)
-    print(f'[model4-rate] wrote {out_dir / "model4_rate_panels.npz"}', flush=True)
+    print(f'{tag} wrote {npz}', flush=True)
 
-    plot(rates, mb, out_dir / 'model4_rate_panels.png', floor=args.floor,
-         q=q, q_levels=tuple(args.q_levels))
+    plot(rates, mb, out_dir / f'{model}_rate_panels.png', floor=args.floor,
+         model=model, q=q, q_levels=tuple(args.q_levels))
 
 
 if __name__ == '__main__':

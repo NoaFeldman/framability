@@ -75,8 +75,10 @@ def _two_site_op(loc_a: np.ndarray, loc_b: np.ndarray, sa: int, sb: int,
 #  sqrt(gamma)|-><+|_i, sqrt(gamma')Z_i on every site)
 # ---------------------------------------------------------------------------
 def build_hamiltonian(J: float, N: int, edges: Sequence[Tuple[int, int]], *,
-                      h_x: float = 0.0) -> sp.csr_matrix:
-    """H = J * sum_<i,j> Z_i Z_j  +  h_x * sum_i X_i   (sparse, 2^N x 2^N).
+                      h_x: float = 0.0, h_z: float = 0.0) -> sp.csr_matrix:
+    """H = J * sum_<i,j> Z_i Z_j  +  h_x * sum_i X_i  +  h_z * sum_i Z_i
+    (sparse, 2^N x 2^N).  h_z != 0 is trotter_lindbladian_scan's model8
+    (longitudinal field; see model_lattice_params).
 
     h_x = 0 (the default) is model3's field-free Hamiltonian, so every existing
     caller is unchanged; h_x = trotter_lindbladian_scan.MODEL4_H = 1.5 gives
@@ -93,6 +95,9 @@ def build_hamiltonian(J: float, N: int, edges: Sequence[Tuple[int, int]], *,
     if h_x != 0.0:
         for k in range(N):
             H = H + h_x * _site_op(_SX, k, N)
+    if h_z != 0.0:
+        for k in range(N):
+            H = H + h_z * _site_op(_SZ, k, N)
     return H.tocsr()
 
 
@@ -129,18 +134,37 @@ def _superop_dissipator(L: sp.csr_matrix) -> sp.csr_matrix:
 
 def build_lindbladian_comp(J: float, gamma: float, gamma_p: float, N: int,
                            edges: Sequence[Tuple[int, int]], *,
-                           h_x: float = 0.0) -> sp.csr_matrix:
+                           h_x: float = 0.0, h_z: float = 0.0) -> sp.csr_matrix:
     """Sparse Liouvillian in the computational basis, column-stacking vec
     convention.  Shape (2^N * 2^N, 2^N * 2^N) -- for N=8 this is 65536x65536
     (sparse only; never densify this for N=8).
 
-    h_x = 0 (default) -> model3 physics; h_x = 1.5 -> model4 (see
-    build_hamiltonian)."""
-    H = build_hamiltonian(J, N, edges, h_x=h_x)
+    h_x = h_z = 0 (default) -> model3 physics; h_x = 1.5 -> model4; h_z = h with
+    gamma = MODEL8_GAMMA -> model8 (see build_hamiltonian, model_lattice_params)."""
+    H = build_hamiltonian(J, N, edges, h_x=h_x, h_z=h_z)
     L = _superop_commutator(H)
     for A in build_jump_operators(gamma, gamma_p, N):
         L = L + _superop_dissipator(A)
     return L.tocsr()
+
+
+# Models whose lattice physics build_lindbladian_comp reproduces.
+LATTICE_MODELS = ('model3', 'model4', 'model8')
+
+
+def model_lattice_params(model: str, p1: float, p2: float) -> dict:
+    """build_lindbladian_comp arguments (gamma, gamma_p, h_x, h_z) of
+    trotter_lindbladian_scan's `model` at its scan point (p1, p2), so many-body
+    workers can take the model as a parameter instead of hardcoding it."""
+    # lazy import: trotter_lindbladian_scan is heavy and not needed otherwise
+    from trotter_lindbladian_scan import MODEL4_H, MODEL8_GAMMA
+    if model == 'model3':                      # (gamma, gamma')
+        return dict(gamma=p1, gamma_p=p2, h_x=0.0, h_z=0.0)
+    if model == 'model4':                      # (gamma, gamma'), h = 1.5 X
+        return dict(gamma=p1, gamma_p=p2, h_x=MODEL4_H, h_z=0.0)
+    if model == 'model8':                      # (h, gamma'), gamma fixed, h Z
+        return dict(gamma=MODEL8_GAMMA, gamma_p=p2, h_x=0.0, h_z=p1)
+    raise ValueError(f'model_lattice_params: {model!r} not in {LATTICE_MODELS}')
 
 
 # ---------------------------------------------------------------------------
