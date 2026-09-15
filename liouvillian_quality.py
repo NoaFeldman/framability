@@ -53,10 +53,31 @@ tol = tol_rel * max|lambda|.  The default tol_rel = 1e-7 sits above the
 under floating point, so a defective steady cluster is not misread as a pair of
 undamped modes.
 
+Observable quality factor (not a spectral quantity)
+---------------------------------------------------
+Q_max is the coherence of the dressed eigenmodes, so it is blind to rotations
+that the dissipation Zeno-freezes into an overdamped (real) spectrum -- e.g.
+model4's field rotating the weakly damped Z axis into the strongly dephased Y.
+The observable quality factor measures the bare rotation of product
+observables instead: for A = L^T in the two-qubit Pauli basis,
+
+    Q_obs(P) = sum_{P' != P} |A_{P'P}| / (-A_{PP}),     Q_obs = max_P Q_obs(P),
+
+the rate at which the generator moves weight off the Pauli string P (coherent
+rotation and drift) in units of P's own decay rate.  Exactly:
+  * Q_obs <= 1  <=>  the Pauli-frame rate mu*_Pauli vanishes;
+  * Q_obs(P) > 1 <=> the Pauli-l1 weight of the Heisenberg-evolved P grows at t=0+.
+observable_quality_opt minimises Q_obs over one local rotation R (the same on
+both qubits) and axis lengths w, i.e. over frames S = diag(1, R diag(w)) -- the
+zero set of that minimum is that of the d_ext = 4 rate restricted to rotated,
+rescaled Pauli frames.
+
 Public API
 ----------
 quality_from_eigenvalues(evals)     classification + Q_max / Q_slowest / gap
 quality_factor(L)                   the same from a dense or sparse Liouvillian
+observable_quality(L)               Q_obs of a 16x16 Pauli-basis bond generator
+observable_quality_opt(L)           Q_obs minimised over the local basis
 
     python liouvillian_quality.py   # self-test (exact model3 gamma=0 values)
 """
@@ -160,6 +181,126 @@ def quality_factor(L, *, tol_rel: float = TOL_REL_DEFAULT,
 
 
 # ---------------------------------------------------------------------------
+#  Observable quality factor (Pauli-basis column dominance)
+# ---------------------------------------------------------------------------
+OBS_QUALITY_VERSION = '1.0-column-dominance'
+OBS_W_MIN = 1e-2          # shortest rotated axis allowed in observable_quality_opt
+_OBS_BIG = 1e6            # stand-in for +inf inside the optimiser
+
+
+@dataclass
+class ObservableQualityResult:
+    """See observable_quality."""
+    Q_obs: float            # max_P Q_obs(P); inf if an undamped string is pushed
+    label: str              # two-letter string attaining it ('ZI'; lowercase
+                            # letters = rotated axes, named by nearest Pauli axis)
+    cols: np.ndarray        # Q_obs(P) for all 16 strings (identity column: 0)
+    rotvec: np.ndarray      # local basis rotation (zeros = Pauli basis)
+    w: np.ndarray           # lengths of the three rotated axes (ones = Pauli)
+
+
+def _local_frame(rotvec=None, w=None):
+    """4x4 single-qubit frame S: identity column, then the columns of R diag(w)."""
+    from scipy.spatial.transform import Rotation
+    R = (np.eye(3) if rotvec is None
+         else Rotation.from_rotvec(np.asarray(rotvec, float)).as_matrix())
+    w = np.ones(3) if w is None else np.asarray(w, float)
+    S = np.zeros((4, 4))
+    S[0, 0] = 1.0
+    S[1:, 1:] = R * w                       # column k scaled by w[k]
+    return S, R
+
+
+def column_dominance_ratios(H, tol):
+    """sum_{k != j} |H_kj| / (-H_jj) for every column j of H (H acts on
+    coefficient vectors).  Columns with -H_jj <= tol give +inf when they still
+    leak (off-diagonal > tol) and 0 when they are conserved (the identity)."""
+    H = np.asarray(H, float)
+    diag = np.diag(H)
+    off = np.abs(H).sum(axis=0) - np.abs(diag)
+    damp = -diag
+    with np.errstate(divide='ignore', invalid='ignore'):
+        return np.where(damp > tol, off / damp,
+                        np.where(off > tol, np.inf, 0.0))
+
+
+def observable_quality(L, *, rotvec=None, w=None,
+                       tol_rel: float = TOL_REL_DEFAULT) -> ObservableQualityResult:
+    """Q_obs of a two-qubit Pauli-basis generator L (the 16x16 Schrodinger
+    matrix M[a,b] = Tr(P_a L(P_b))/4 of build_bond_lindbladian, index 4a+b <->
+    P_a (x) P_b) in the local basis (rotvec, w); default: the Pauli basis.
+
+    In a basis S the generator on frame coefficients is H = D^{-1} A D with
+    A = L^T and D = S (x) S (square and invertible, so H is unique), and
+    max_j (H_jj + sum_{k!=j}|H_kj|) is exactly that frame's rate mu*.
+    """
+    A = np.asarray(L, float).T
+    S, R = _local_frame(rotvec, w)
+    D = np.kron(S, S)
+    H = np.linalg.solve(D, A @ D)
+    tol = tol_rel * max(float(np.max(np.abs(H))), 1e-300)
+    cols = column_dominance_ratios(H, tol)
+    k = int(np.argmax(cols))
+    if rotvec is None:
+        letters = 'IXYZ'
+    else:
+        letters = 'I' + ''.join('xyz'[int(np.argmax(np.abs(R[:, c])))]
+                                for c in range(3))
+    label = letters[k // 4] + letters[k % 4]
+    return ObservableQualityResult(
+        float(cols[k]), label, cols,
+        np.zeros(3) if rotvec is None else np.asarray(rotvec, float),
+        np.ones(3) if w is None else np.asarray(w, float))
+
+
+def observable_quality_opt(L, *, n_restarts: int = 8, maxfev: int = 2000,
+                           seed: int = 0, w_min: float = OBS_W_MIN,
+                           tol_rel: float = TOL_REL_DEFAULT
+                           ) -> ObservableQualityResult:
+    """min over a local rotation R in SO(3) (same on both qubits) and axis
+    lengths w in [w_min, 1]^3 of observable_quality.  Nelder-Mead on
+    (rotation vector, logit of w) from the Pauli basis plus random rotations.
+    Never worse than the Pauli basis (it is compared at the end)."""
+    from scipy.optimize import minimize
+    from scipy.spatial.transform import Rotation
+
+    L = np.asarray(L, float)
+    rng = np.random.default_rng(seed)
+    t_full = 6.0                                  # logit -> w ~ 1
+
+    def unpack(x):
+        return x[:3], w_min + (1.0 - w_min) / (1.0 + np.exp(-x[3:]))
+
+    def objective(x):
+        rv, w = unpack(x)
+        try:
+            q = observable_quality(L, rotvec=rv, w=w, tol_rel=tol_rel).Q_obs
+        except np.linalg.LinAlgError:
+            return _OBS_BIG
+        return min(q, _OBS_BIG)
+
+    starts = [np.r_[np.zeros(3), np.full(3, t_full)]]
+    while len(starts) < n_restarts:
+        rv = Rotation.random(random_state=int(rng.integers(2**31))).as_rotvec()
+        starts.append(np.r_[rv, rng.uniform(-2.0, t_full, 3)])
+    steps = np.r_[np.full(3, 0.4), np.full(3, 1.5)]
+
+    best_x, best_f = None, np.inf
+    for x0 in starts:
+        simplex = np.vstack([x0] + [x0 + steps[i] * np.eye(6)[i] for i in range(6)])
+        res = minimize(objective, x0, method='Nelder-Mead',
+                       options=dict(maxfev=maxfev, xatol=1e-7, fatol=1e-10,
+                                    initial_simplex=simplex))
+        if res.fun < best_f:
+            best_x, best_f = res.x, float(res.fun)
+
+    rv, w = unpack(best_x)
+    out = observable_quality(L, rotvec=rv, w=w, tol_rel=tol_rel)
+    pauli = observable_quality(L, rotvec=np.zeros(3), w=np.ones(3), tol_rel=tol_rel)
+    return pauli if pauli.Q_obs <= out.Q_obs else out
+
+
+# ---------------------------------------------------------------------------
 #  Self-test
 # ---------------------------------------------------------------------------
 def _self_test() -> None:
@@ -202,6 +343,27 @@ def _self_test() -> None:
     print(f'[closed]  Q_max={r.Q_max}  n_undamped={r.n_undamped}  '
           f'omega_undamped={r.omega_undamped:.4f}  Q_effective={r.Q_effective}')
     assert np.isnan(r.Q_max) and r.n_undamped > 0 and np.isinf(r.Q_effective)
+
+    # 4. observable quality factor.  Pauli basis: Q_obs <= 1 <=> Pauli rate 0
+    #    (exactly, any point); model4 at gamma=3, gamma'=8 is bound by the field
+    #    rotating Z, Q_obs = (h/2)/(gamma/8) = 4h/gamma = 2 (ties ZI, IZ, ZZ).
+    from framability_rate_frames import pauli_rate
+    from trotter_lindbladian_scan import MODEL4_H
+    m4 = MODELS['model4']
+    for g, gp in ((3.0, 8.0), (8.0, 6.0), (6.0, 4.0), (2.0, 2.0), (10.0, 1.0)):
+        L = build_bond_lindbladian(*m4.build(g, gp), 2).real
+        ro = observable_quality(L)
+        mu = pauli_rate(L)
+        print(f"[obs]     model4 gamma={g:<4} gamma'={gp:<4}  Q_obs={ro.Q_obs:.6f} "
+              f'({ro.label})  Pauli rate={mu:+.6f}')
+        assert (ro.Q_obs <= 1 + 1e-9) == (mu <= 1e-9), 'Q_obs <= 1 != Pauli rate 0'
+    L = build_bond_lindbladian(*m4.build(3.0, 8.0), 2).real
+    ro = observable_quality(L)
+    assert abs(ro.Q_obs - 4 * MODEL4_H / 3.0) < 1e-9 and ro.label in ('ZI', 'IZ', 'ZZ')
+    ro_opt = observable_quality_opt(L, n_restarts=4, maxfev=800)
+    print(f'[obs-opt] model4 gamma=3 gamma\'=8  Q_obs_opt={ro_opt.Q_obs:.6f} '
+          f'({ro_opt.label})  w={np.round(ro_opt.w, 3)}')
+    assert ro_opt.Q_obs <= ro.Q_obs + 1e-12
 
     print('liouvillian_quality self-test passed.')
 

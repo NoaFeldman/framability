@@ -130,7 +130,7 @@ def draw_q_panel(fig, ax, xv, yv, Z, title, *, xlabel, ylabel, cmap='magma',
 
 
 def draw_q_contour(ax, xv, yv, Z, *, levels=Q_LEVELS_DEFAULT,
-                   color: str = Q_CONTOUR_COLOR) -> None:
+                   color: str = Q_CONTOUR_COLOR, linestyle: str = '--') -> None:
     """Overlay Q = level contours of Z[ix, iy] on an existing panel."""
     Zt = np.asarray(Z, float).T
     Zs = np.where(np.isinf(Zt), 1e6, Zt)
@@ -141,8 +141,99 @@ def draw_q_contour(ax, xv, yv, Z, *, levels=Q_LEVELS_DEFAULT,
     for lev in levels:
         if lo < lev < hi:
             ax.contour(np.asarray(xv, float), np.asarray(yv, float), Zs,
-                       levels=[lev], colors=color, linestyles='--',
+                       levels=[lev], colors=color, linestyles=linestyle,
                        linewidths=1.1)
+
+
+# ---------------------------------------------------------------------------
+#  Observable quality factor Q_obs (scripts/observable_q_worker.py)
+# ---------------------------------------------------------------------------
+# (grid key, label key)
+OBS_GROUPS = [('obs_Q', 'obs_label'), ('obs_opt_Q', 'obs_opt_label')]
+# Q_obs = 1 contour style on the rate / framability panels
+OBS_STYLE = {'obs_Q': ('magenta', '-.'), 'obs_opt_Q': ('orange', ':')}
+
+
+def canonical_label(s: str) -> str:
+    """Merge a two-letter string with its mirror image ('IZ' -> 'ZI/IZ')."""
+    r = s[::-1]
+    if r == s:
+        return s
+    a, b = (s, r) if s >= r else (r, s)
+    return f'{a}/{b}'
+
+
+def load_obs(model: str, in_dir: Path, stride: int = 1) -> dict | None:
+    """Q_obs grids and binding-string grids of `model`, or None without data.
+    Missing optimised-basis keys (a --no_opt run) leave NaN / ''."""
+    pt_dir = Path(in_dir) / model
+    if not pt_dir.is_dir():
+        return None
+    p1_vals, p2_vals = grid_vals(model, stride)
+    nx, ny = len(p1_vals), len(p2_vals)
+    out = {k: np.full((nx, ny), np.nan) for k, _ in OBS_GROUPS}
+    out.update({lk: np.full((nx, ny), '', dtype=object) for _, lk in OBS_GROUPS})
+    found = 0
+    for ix in range(nx):
+        for iy in range(ny):
+            f = pt_dir / f'pt_{ix:03d}_{iy:03d}.npz'
+            if not f.exists():
+                continue
+            try:
+                d = np.load(f, allow_pickle=True)
+            except Exception as e:
+                print(f'  warning: {f.name}: {e}', flush=True)
+                continue
+            found += 1
+            for k, lk in OBS_GROUPS:
+                if k in d.files:
+                    out[k][ix, iy] = float(d[k])
+                    out[lk][ix, iy] = str(d[lk])
+    if found == 0:
+        return None
+    print(f'[observable_q] {model}: {found}/{nx * ny} grid points loaded; '
+          + ', '.join(f'{k} finite {int(np.isfinite(out[k]).sum())}'
+                      for k, _ in OBS_GROUPS), flush=True)
+    return dict(p1_vals=p1_vals, p2_vals=p2_vals, found=found, **out)
+
+
+def obs_titles(d: dict) -> dict:
+    q = r'$Q_{\rm obs}=\max_P\sum_{P^\prime\neq P}|A_{P^\prime P}|/(-A_{PP})$'
+    return {'obs_Q': f'{q}\nbond generator, Pauli basis',
+            'obs_opt_Q': f'{q}\nbond generator, optimised local basis',
+            'obs_label': r'string attaining $Q_{\rm obs}$ (Pauli basis)',
+            'obs_opt_label': r'axes attaining $Q_{\rm obs}$ (optimised basis,'
+                             '\nnamed by nearest Pauli axis)'}
+
+
+def draw_label_panel(fig, ax, xv, yv, labels, title, *, xlabel, ylabel) -> None:
+    """Categorical map of the string attaining Q_obs (mirror pairs merged)."""
+    from matplotlib import colormaps
+    from matplotlib.colors import ListedColormap
+    from matplotlib.patches import Patch
+
+    Lt = np.asarray(labels, dtype=object).T
+    canon = np.empty(Lt.shape, dtype=object)
+    for idx, s in np.ndenumerate(Lt):
+        canon[idx] = canonical_label(s) if s else ''
+    names = sorted({s for s in canon.ravel() if s})
+    ax.set_xlabel(xlabel)
+    ax.set_ylabel(ylabel)
+    if not names:
+        ax.set_title(f'{title}\n(no data)', fontsize=10)
+        return
+    code = {s: i for i, s in enumerate(names)}
+    Z = np.full(canon.shape, np.nan)
+    for idx, s in np.ndenumerate(canon):
+        if s:
+            Z[idx] = code[s]
+    colors = [colormaps['tab20'](i % 20) for i in range(len(names))]
+    ax.pcolormesh(_edges(xv), _edges(yv), Z, cmap=ListedColormap(colors),
+                  vmin=-0.5, vmax=len(names) - 0.5, shading='flat')
+    ax.legend(handles=[Patch(color=colors[i], label=s)
+                       for i, s in enumerate(names)],
+              fontsize=7, loc='upper right', framealpha=0.85)
+    ax.set_title(title, fontsize=10)
 
 
 def main() -> None:

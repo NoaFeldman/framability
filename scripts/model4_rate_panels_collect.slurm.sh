@@ -30,6 +30,8 @@ MB_STRIDE=${MB_STRIDE:-5}    # must match the model4_manybody array
 Q_DIR=${Q_DIR:-results_liouvillian_q}
 Q_STRIDE=${Q_STRIDE:-1}      # must match the liouvillian_q array
 Q_LEVELS=${Q_LEVELS:-1}      # space-separated Q contour levels
+OBS_DIR=${OBS_DIR:-results_observable_q}
+OBS_STRIDE=${OBS_STRIDE:-1}  # must match the observable_q array
 
 source "${SLURM_SUBMIT_DIR}/.venv/bin/activate"
 cd "${SLURM_SUBMIT_DIR}"
@@ -43,6 +45,8 @@ python scripts/model4_rate_panels_collect.py \
     --mb_stride "$MB_STRIDE" \
     --q_dir     "$Q_DIR" \
     --q_stride  "$Q_STRIDE" \
-    --q_levels  $Q_LEVELS
+    --q_levels  $Q_LEVELS \
+    --obs_dir   "$OBS_DIR" \
+    --obs_stride "$OBS_STRIDE"
 
 echo "[model4 collect] done"

@@ -11,13 +11,20 @@ Reads the per-point npz files written by
        panels 9-10: quality factor Q_max of the bond generator and of the
        2x3-lattice Lindbladian (exact spectra); bond Q_max = 1 is also drawn as
        a dashed cyan contour on the six rate panels
+  * scripts/observable_q_worker.py        -> <obs_dir>/model4/pt_<ix>_<iy>.npz
+       panels 11-14: observable quality factor Q_obs of the bond generator in
+       the Pauli basis and in the optimised local basis, and the string
+       attaining each; Q_obs = 1 is drawn on the rate panels (magenta
+       dash-dot = Pauli basis, orange dotted = optimised basis)
 
 assembles each quantity on its (gamma, gamma') grid, stores the merged arrays
 and draws
 
     row 1 |  stabilizer-3 rate  |  Pauli rate  |  opt Heisenberg d=4  |  d=6
     row 2 |  opt Schrodinger d=4 |  d=6        |  8q osc rate         |  8q gap
-    row 3 |  bond Q_max          |  lattice Q_max          (when Q data exists)
+    row 3 |  bond Q_max          |  lattice Q_max  |  Q_obs Pauli  |  Q_obs opt
+    row 4 |  binding string (Pauli) | binding axes (opt)
+          (rows 3-4 hold whichever of the Q / Q_obs groups have data)
 
 The two groups may live on different strides (the many-body panels default to
 --mb_stride 5, an 11x11 grid, against the framability panels' full 51x51); the
@@ -229,27 +236,47 @@ def _panel(fig, ax, xv, yv, Z, title, cmap, *, floor_contour=None,
 
 def plot(rates: dict, mb: dict, png: Path, *, floor: float = 0.0,
          model: str = MODEL_NAME, q: dict | None = None,
-         q_levels=qcollect.Q_LEVELS_DEFAULT) -> None:
+         q_levels=qcollect.Q_LEVELS_DEFAULT, obs: dict | None = None) -> None:
     import matplotlib
     matplotlib.use('Agg')
     import matplotlib.pyplot as plt
 
     m = MODELS[model]
     lab = dict(xlabel=m.p1_label, ylabel=m.p2_label)
-    nrow = 2 if q is None else 3
+
+    # Panels after the eight rate / many-body panels, in figure order:
+    # (kind, data, key, title, contour levels)
+    extra = []
+    if q is not None:
+        titles = qcollect.labels(q)
+        extra += [('q', q, key, titles[key], q_levels)
+                  for key, _ in qcollect.Q_GROUPS]
+    if obs is not None:
+        titles = qcollect.obs_titles(obs)
+        extra += [('q', obs, key, titles[key], (1.0,))
+                  for key, _ in qcollect.OBS_GROUPS]
+        extra += [('label', obs, lkey, titles[lkey], None)
+                  for _, lkey in qcollect.OBS_GROUPS]
+
+    nrow = 2 + int(np.ceil(len(extra) / 4))
     fig, axes = plt.subplots(nrow, 4, figsize=(22, 5 * nrow),
                              constrained_layout=True)
     levels_txt = ','.join(f'{lev:g}' for lev in q_levels)
-    q_line = ('' if q is None else
-              "\n" + rf"row 3: quality factor $Q_{{\max}}$ of the most coherent "
-              rf"damped mode (exact spectra)  |  dashed cyan on the rate "
-              rf"panels: bond $Q_{{\max}}={levels_txt}$")
+    notes = []
+    if q is not None:
+        notes.append(rf"$Q_{{\max}}$: most coherent damped mode (exact spectra), "
+                     rf"dashed cyan = bond $Q_{{\max}}={levels_txt}$")
+    if obs is not None:
+        notes.append(r"$Q_{\rm obs}$: observable quality factor, $=1$ as "
+                     r"magenta dash-dot (Pauli basis) / orange dotted "
+                     r"(optimised basis)")
     fig.suptitle(
         f'{model}:  {m.title}'
         "\n"
         rf"framability rates $\mu^*=\lim_{{dt\to0}}({{\rm fra}}-1)/dt$ of the bond "
         rf"generator  |  panels 7-8: full {N_QUBITS}-qubit "
-        rf"{LATTICE_LY}x{LATTICE_LX} lattice Lindbladian" + q_line,
+        rf"{LATTICE_LY}x{LATTICE_LX} lattice Lindbladian"
+        + ('\n' + '  |  '.join(notes) if notes else ''),
         fontsize=13)
 
     # Panels 1-6 are framability rates, so they get the white floor contour:
@@ -262,21 +289,28 @@ def plot(rates: dict, mb: dict, png: Path, *, floor: float = 0.0,
         if q is not None:
             qcollect.draw_q_contour(ax, q['p1_vals'], q['p2_vals'],
                                     q['bond_Q_max'], levels=q_levels)
+        if obs is not None:
+            for key, (color, ls) in qcollect.OBS_STYLE.items():
+                qcollect.draw_q_contour(ax, obs['p1_vals'], obs['p2_vals'],
+                                        obs[key], levels=(1.0,), color=color,
+                                        linestyle=ls)
 
     # Panels 7-8 are not framabilities and have no such floor.
     for ax, (key, label) in zip(axes.flat[6:8], MB_KEYS):
         _panel(fig, ax, mb['p1_vals'], mb['p2_vals'], mb[key], label, MB_CMAP,
                **lab)
 
-    # Panels 9-10: Lindbladian quality factor (bond generator, exact lattice).
-    if q is not None:
-        titles = qcollect.labels(q)
-        for ax, (key, _) in zip(axes.flat[8:10], qcollect.Q_GROUPS):
-            qcollect.draw_q_panel(fig, ax, q['p1_vals'], q['p2_vals'], q[key],
-                                  titles[key], cmap=MB_CMAP,
-                                  levels=q_levels, **lab)
-        for ax in axes.flat[10:]:
-            ax.axis('off')
+    # Panels 9+: mode quality factor Q_max (bond, lattice), observable quality
+    # factor Q_obs (Pauli, optimised basis) and the strings attaining Q_obs.
+    for ax, (kind, d, key, title, levels) in zip(axes.flat[8:], extra):
+        if kind == 'q':
+            qcollect.draw_q_panel(fig, ax, d['p1_vals'], d['p2_vals'], d[key],
+                                  title, cmap=MB_CMAP, levels=levels, **lab)
+        else:
+            qcollect.draw_label_panel(fig, ax, d['p1_vals'], d['p2_vals'],
+                                      d[key], title, **lab)
+    for ax in axes.flat[8 + len(extra):]:
+        ax.axis('off')
 
     fig.savefig(png, dpi=150)
     plt.close(fig)
@@ -307,6 +341,12 @@ def main() -> None:
     ap.add_argument('--q_levels', type=float, nargs='+',
                     default=list(qcollect.Q_LEVELS_DEFAULT),
                     help='Q values contoured (dashed) on the rate and Q panels')
+    ap.add_argument('--obs_dir', type=str, default='results_observable_q',
+                    help='scripts/observable_q_worker.py output; the Q_obs '
+                         'panels and Q_obs = 1 contours are added when data '
+                         'exists there')
+    ap.add_argument('--obs_stride', type=int, default=1,
+                    help='stride used by observable_q_worker')
     args = ap.parse_args()
 
     model = args.model
@@ -325,6 +365,10 @@ def main() -> None:
     if q is None:
         print(f'{tag} no Q data under {args.q_dir}/{model}; '
               f'Q row and contour omitted', flush=True)
+    obs = qcollect.load_obs(model, Path(args.obs_dir), args.obs_stride)
+    if obs is None:
+        print(f'{tag} no Q_obs data under {args.obs_dir}/{model}; '
+              f'Q_obs panels and contours omitted', flush=True)
 
     # axis arrays are named by the model's scan parameters, so model4 keeps
     # its gamma_vals / gamma_p_vals / mb_... / q_... keys
@@ -332,6 +376,11 @@ def main() -> None:
     q_arrays = {} if q is None else {
         f'q_{x}_vals': q['p1_vals'], f'q_{y}_vals': q['p2_vals'],
         'q_stride': args.q_stride, **{k: q[k] for k, _ in qcollect.Q_GROUPS}}
+    obs_arrays = {} if obs is None else {
+        f'obs_{x}_vals': obs['p1_vals'], f'obs_{y}_vals': obs['p2_vals'],
+        'obs_stride': args.obs_stride,
+        **{k: obs[k] for k, _ in qcollect.OBS_GROUPS},
+        **{lk: np.asarray(obs[lk], dtype='U8') for _, lk in qcollect.OBS_GROUPS}}
 
     npz = out_dir / f'{model}_rate_panels.npz'
     np.savez(npz, model=model, title=m.title, N_manybody=N_QUBITS,
@@ -341,11 +390,11 @@ def main() -> None:
                 f'mb_{x}_vals': mb['p1_vals'], f'mb_{y}_vals': mb['p2_vals']},
              **{k: rates[k] for k, _ in RATE_KEYS},
              **{k: mb[k] for k, _ in MB_KEYS},
-             **q_arrays)
+             **q_arrays, **obs_arrays)
     print(f'{tag} wrote {npz}', flush=True)
 
     plot(rates, mb, out_dir / f'{model}_rate_panels.png', floor=args.floor,
-         model=model, q=q, q_levels=tuple(args.q_levels))
+         model=model, q=q, q_levels=tuple(args.q_levels), obs=obs)
 
 
 if __name__ == '__main__':

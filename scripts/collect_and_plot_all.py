@@ -115,7 +115,8 @@ def collect_dtbase_lines(models, stride, in_dir, out_dir, fra_tol, force=False):
 
 def extrapolate_and_plot(models, in_dir, out_dir, *, stride, fit_n, deg,
                          max_dt_base, fra_tol, osc_dir=Path('results_osc_rate'),
-                         q_dir=Path('results_liouvillian_q')):
+                         q_dir=Path('results_liouvillian_q'),
+                         obs_dir=Path('results_observable_q')):
     """Step 2: dt->0 colormaps (model3_dtbase_extrap.png / model4_...) -- the
     replot of the optimised-Heisenberg (opt_fra_4/opt_fra_6, refine-merged)
     and every other framability, now with 7 panels instead of 5."""
@@ -128,10 +129,12 @@ def extrapolate_and_plot(models, in_dir, out_dir, *, stride, fit_n, deg,
         np.savez(npz, model=model, fit_n=fit_n, deg=deg, raw=False,
                 measures=[k for k, _ in extrap.MEASURES], **data)
         q_panels, q_contour = extrap.q_panels_and_contour(model, q_dir, stride)
+        obs_panels, obs_contours = extrap.obs_panels_and_contours(
+            model, obs_dir, stride)
         extrap.plot_model(model, data, png, raw=False, fra_tol=fra_tol,
                           extra=extrap.osc_rate_panels(model, osc_dir, stride)
-                          + q_panels,
-                          q_contour=q_contour)
+                          + q_panels + obs_panels,
+                          q_contour=q_contour, obs_contours=obs_contours)
         print(f'[collect_and_plot_all] extrapolated + plotted {png}', flush=True)
 
 
@@ -157,6 +160,11 @@ def main() -> None:
                          '(scripts/liouvillian_q_worker.py); its two Q_max '
                          'panels and the bond Q_max = 1 contour are added to the '
                          'framability figure when present')
+    ap.add_argument('--obs_dir', type=str, default='results_observable_q',
+                    help='observable quality-factor data '
+                         '(scripts/observable_q_worker.py); its Q_obs panels, '
+                         'binding-string maps and Q_obs = 1 contours are added '
+                         'to the framability figure when present')
     ap.add_argument('--eightq_in_dir', type=str, default='results_8q')
     ap.add_argument('--eightq_stride', type=int, default=5)
     ap.add_argument('--skip_lines', action='store_true',
@@ -178,7 +186,8 @@ def main() -> None:
     extrapolate_and_plot(args.models, in_dir, out_dir, stride=args.stride,
                         fit_n=args.fit_n, deg=args.deg,
                         max_dt_base=args.max_dt_base, fra_tol=args.fra_tol,
-                        osc_dir=Path(args.osc_dir), q_dir=Path(args.q_dir))
+                        osc_dir=Path(args.osc_dir), q_dir=Path(args.q_dir),
+                        obs_dir=Path(args.obs_dir))
 
     # 3: item 4 -- 8-qubit ring/lattice Lindbladian gap
     eightq_in = Path(args.eightq_in_dir)

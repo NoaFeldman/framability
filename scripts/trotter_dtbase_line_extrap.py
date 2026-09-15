@@ -247,9 +247,36 @@ def q_panels_and_contour(model: str, q_dir: Path, stride: int = 1):
     return panels, contour
 
 
+def obs_panels_and_contours(model: str, obs_dir: Path, stride: int = 1):
+    """(extra panel specs, contour specs) for the observable quality factor
+    Q_obs of `model` (scripts/observable_q_worker.py), or ([], []) without
+    data: two Q_obs panels (kind='q', Pauli and optimised basis), two
+    binding-string panels (kind='label'), and the two Q_obs = 1 contours
+    overlaid on the framability panels.  Shared with collect_and_plot_all.py."""
+    try:
+        import liouvillian_q_collect as qcollect
+    except ImportError:
+        return [], []
+    d = qcollect.load_obs(model, obs_dir, stride)
+    if d is None:
+        return [], []
+    titles = qcollect.obs_titles(d)
+    panels = [dict(kind='q', p1_vals=d['p1_vals'], p2_vals=d['p2_vals'],
+                   Z=d[key], label=titles[key], levels=(1.0,))
+              for key, _ in qcollect.OBS_GROUPS]
+    panels += [dict(kind='label', p1_vals=d['p1_vals'], p2_vals=d['p2_vals'],
+                    Z=d[lkey], label=titles[lkey])
+               for _, lkey in qcollect.OBS_GROUPS]
+    contours = [dict(p1_vals=d['p1_vals'], p2_vals=d['p2_vals'], Z=d[key],
+                     color=color, linestyle=ls)
+                for key, (color, ls) in qcollect.OBS_STYLE.items()]
+    return panels, contours
+
+
 def plot_model(model: str, data: dict, png: Path, *, raw: bool,
                fra_tol: float = 1e-3, extra: list | None = None,
-               q_contour: dict | None = None, q_levels=(1.0,)) -> None:
+               q_contour: dict | None = None, q_levels=(1.0,),
+               obs_contours: list | None = None) -> None:
     """`extra`: optional list of additional panels appended after the MEASURES
     panels, each a dict with keys p1_vals, p2_vals, Z, label, cbar_label and
     optionally cmap/vmin.  Used for quantities that are NOT dt-extrapolated
@@ -258,11 +285,16 @@ def plot_model(model: str, data: dict, png: Path, *, raw: bool,
     the Lindbladian itself with no dt dependence.
 
     `q_contour`: optional bond Q_max grid (p1_vals, p2_vals, Z) drawn as dashed
-    cyan contours at `q_levels` on every framability panel."""
+    cyan contours at `q_levels` on every framability panel.
+
+    `obs_contours`: optional list of Q_obs grids (p1_vals, p2_vals, Z, color,
+    linestyle), each drawn as its Q_obs = 1 contour on every framability panel;
+    extra panels with kind='label' are binding-string maps."""
     import matplotlib
     matplotlib.use('Agg')
     import matplotlib.pyplot as plt
-    if q_contour is not None or any(s.get('kind') == 'q' for s in (extra or [])):
+    if (q_contour is not None or obs_contours
+            or any(s.get('kind') in ('q', 'label') for s in (extra or []))):
         import liouvillian_q_collect as qcollect
 
     m = MODELS[model]
@@ -285,6 +317,9 @@ def plot_model(model: str, data: dict, png: Path, *, raw: bool,
     q_note = ('' if q_contour is None else
               r'   |   dashed cyan: bond $Q_{\max}=$'
               + ','.join(f'{lev:g}' for lev in q_levels))
+    if obs_contours:
+        q_note += (r'   |   $Q_{\rm obs}=1$: magenta dash-dot (Pauli basis), '
+                   r'orange dotted (optimised basis)')
     fig.suptitle(f'{m.title}\n' + r'$dt\to0$ extrapolation of ' + qty
                  + r'   ($dt=\mathrm{DT\_BASE}/\max(\|H\|_1,\{\gamma_k\})$)'
                  + q_note, fontsize=13)
@@ -306,6 +341,10 @@ def plot_model(model: str, data: dict, png: Path, *, raw: bool,
             qcollect.draw_q_contour(ax, q_contour['p1_vals'],
                                     q_contour['p2_vals'], q_contour['Z'],
                                     levels=q_levels)
+        for oc in (obs_contours or []):
+            qcollect.draw_q_contour(ax, oc['p1_vals'], oc['p2_vals'], oc['Z'],
+                                    levels=(1.0,), color=oc['color'],
+                                    linestyle=oc['linestyle'])
         ax.set_title(label, fontsize=11)
         ax.set_xlabel(m.p1_label)              # gamma
         ax.set_ylabel(m.p2_label)              # gamma'
@@ -317,7 +356,13 @@ def plot_model(model: str, data: dict, png: Path, *, raw: bool,
         if spec.get('kind') == 'q':
             qcollect.draw_q_panel(fig, ax, spec['p1_vals'], spec['p2_vals'],
                                   spec['Z'], spec['label'], xlabel=m.p1_label,
-                                  ylabel=m.p2_label, levels=q_levels)
+                                  ylabel=m.p2_label,
+                                  levels=spec.get('levels', q_levels))
+            continue
+        if spec.get('kind') == 'label':
+            qcollect.draw_label_panel(fig, ax, spec['p1_vals'], spec['p2_vals'],
+                                      spec['Z'], spec['label'],
+                                      xlabel=m.p1_label, ylabel=m.p2_label)
             continue
         ex2, ey2 = edges(spec['p1_vals']), edges(spec['p2_vals'])
         Z = np.asarray(spec['Z'], float).T
@@ -378,6 +423,10 @@ def main() -> None:
                     help='directory of scripts/liouvillian_q_worker.py output; '
                          'the two Q_max panels and the bond Q_max = 1 contour '
                          'are added when data exists there')
+    ap.add_argument('--obs_dir', type=str, default='results_observable_q',
+                    help='directory of scripts/observable_q_worker.py output; '
+                         'the Q_obs panels, binding-string maps and Q_obs = 1 '
+                         'contours are added when data exists there')
     args = ap.parse_args()
 
     in_dir = Path(args.in_dir)
@@ -396,10 +445,12 @@ def main() -> None:
         print(f'[extrap] saved {npz}', flush=True)
         q_panels, q_contour = q_panels_and_contour(model, Path(args.q_dir),
                                                    args.stride)
+        obs_panels, obs_contours = obs_panels_and_contours(
+            model, Path(args.obs_dir), args.stride)
         plot_model(model, data, png, raw=args.raw, fra_tol=args.fra_tol,
                    extra=osc_rate_panels(model, Path(args.osc_dir), args.stride)
-                   + q_panels,
-                   q_contour=q_contour)
+                   + q_panels + obs_panels,
+                   q_contour=q_contour, obs_contours=obs_contours)
 
 
 if __name__ == '__main__':
