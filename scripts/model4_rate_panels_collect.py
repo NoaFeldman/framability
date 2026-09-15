@@ -53,7 +53,10 @@ Inside that contour the frame does not inflate at all.
 
 --model model8 collects the same pipeline run for model8 (default in/out dir
 results_<model>_rate, figure <model>_rate_panels.png, axes = the model's own
-scan parameters).
+scan parameters), --model model10 the run for the Shibata-Katsura dissipative
+quantum Ising chain (https://arxiv.org/abs/1904.12505), whose panels 7-8 come
+from an 8-site periodic ring instead of the 2x4 lattice
+(scripts/submit_model10_rate.sh chains every stage).
 
 Usage:
     python scripts/model4_rate_panels_collect.py
@@ -76,7 +79,7 @@ from trotter_lindbladian_scan import MODELS                              # noqa:
 from model4_rate_panels_worker import (RATE_KEYS, MODEL_NAME,            # noqa: E402
                                        SUPPORTED_MODELS)
 from model4_manybody_worker import (mb_tag, N_QUBITS,                    # noqa: E402
-                                    LATTICE_LX, LATTICE_LY)
+                                    mb_geometry)
 import liouvillian_q_collect as qcollect                                 # noqa: E402
 
 # (npz key, panel label) in figure order.
@@ -275,7 +278,7 @@ def plot(rates: dict, mb: dict, png: Path, *, floor: float = 0.0,
         "\n"
         rf"framability rates $\mu^*=\lim_{{dt\to0}}({{\rm fra}}-1)/dt$ of the bond "
         rf"generator  |  panels 7-8: full {N_QUBITS}-qubit "
-        rf"{LATTICE_LY}x{LATTICE_LX} lattice Lindbladian"
+        rf"{mb_geometry(model)['label']} Lindbladian"
         + ('\n' + '  |  '.join(notes) if notes else ''),
         fontsize=13)
 
@@ -383,8 +386,10 @@ def main() -> None:
         **{lk: np.asarray(obs[lk], dtype='U8') for _, lk in qcollect.OBS_GROUPS}}
 
     npz = out_dir / f'{model}_rate_panels.npz'
+    geo = mb_geometry(model)
     np.savez(npz, model=model, title=m.title, N_manybody=N_QUBITS,
-             lattice=f'{LATTICE_LY}x{LATTICE_LX}',
+             lattice=(f"{geo['Ly']}x{geo['Lx']}" if geo['topology'] == 'lattice'
+                      else geo['topology']),
              stride=args.stride, mb_stride=args.mb_stride,
              **{f'{x}_vals': rates['p1_vals'], f'{y}_vals': rates['p2_vals'],
                 f'mb_{x}_vals': mb['p1_vals'], f'mb_{y}_vals': mb['p2_vals']},

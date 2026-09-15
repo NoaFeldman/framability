@@ -13,6 +13,10 @@ reuses dissipative_PT.bonds_2d for open-boundary rectangular lattices.
 An optional transverse field h_x * sum_i X_i (keyword-only, default 0)
 extends the same builders to trotter_lindbladian_scan's model4, which is
 model3 plus h = MODEL4_H = 1.5 on every site.
+build_lindbladian_from_terms instead places any trotter_lindbladian_scan
+model's own (H1, H2, jumps1, jumps2) on an edge list; it builds the periodic
+rings of the 1D RING_MODELS (model10, the Shibata-Katsura dissipative quantum
+Ising chain, https://arxiv.org/abs/1904.12505).
 
 For N=8 the Liouvillian is 65536x65536: only sparse operations (build_lindbladian_
 comp + lindbladian_gap's ARPACK eigs) are tractable -- dense diagonalization
@@ -35,6 +39,8 @@ _I2 = np.eye(2, dtype=complex)
 _SX = np.array([[0, 1], [1, 0]], dtype=complex)
 _SZ = np.array([[1, 0], [0, -1]], dtype=complex)
 _MP = 0.5 * np.array([[1, 1], [-1, -1]], dtype=complex)   # |-><+|  (X-basis lowering)
+_SY = np.array([[0, -1j], [1j, 0]], dtype=complex)
+_PAULI_1Q = (_I2, _SX, _SY, _SZ)          # basis of the two-site Pauli decomposition
 
 
 # ---------------------------------------------------------------------------
@@ -165,6 +171,75 @@ def model_lattice_params(model: str, p1: float, p2: float) -> dict:
     if model == 'model8':                      # (h, gamma'), gamma fixed, h Z
         return dict(gamma=MODEL8_GAMMA, gamma_p=p2, h_x=0.0, h_z=p1)
     raise ValueError(f'model_lattice_params: {model!r} not in {LATTICE_MODELS}')
+
+
+# ---------------------------------------------------------------------------
+#  Any trotter_lindbladian_scan model from its own scan terms
+#  (H1, H2, jumps1, jumps2), for the models build_lindbladian_comp does not cover
+# ---------------------------------------------------------------------------
+# 1D (dim = 1) models whose many-body panels are built from their scan terms on
+# a periodic ring: model10, the Shibata-Katsura dissipative quantum Ising chain
+# (https://arxiv.org/abs/1904.12505).
+RING_MODELS = ('model10',)
+MANYBODY_MODELS = LATTICE_MODELS + RING_MODELS
+
+
+def _embed_two_site_sparse(O4: np.ndarray, i: int, j: int, N: int) -> sp.csr_matrix:
+    """A 4x4 two-qubit operator (qubit a (x) qubit b) on sites (i, j) of an
+    N-qubit register, through its two-qubit Pauli decomposition -- the sparse
+    twin of trotter_lindbladian_scan._embed_two_site."""
+    O4 = np.asarray(O4, dtype=complex)
+    d = 2 ** N
+    out = sp.csr_matrix((d, d), dtype=complex)
+    for P in _PAULI_1Q:
+        for Q in _PAULI_1Q:
+            c = np.trace(np.kron(P, Q).conj().T @ O4) / 4.0
+            if abs(c) > 1e-14:
+                out = out + c * _two_site_op(P, Q, i, j, N)
+    return out.tocsr()
+
+
+def build_lindbladian_from_terms(H1, H2, jumps1, jumps2, N: int,
+                                 edges: Sequence[Tuple[int, int]]) -> sp.csr_matrix:
+    """Sparse computational-basis Liouvillian (column-stacking vec, as in
+    build_lindbladian_comp) of a trotter_lindbladian_scan model's own terms:
+    H1 and every jumps1 operator on every site, H2 and every jumps2 operator on
+    every edge (i, j) (first tensor factor on site i), all at full coupling --
+    the placement of trotter_lindbladian_scan.build_full_lindbladian_model,
+    without the 1/(2 dim) bond share of the Trotter gate.  Zero jump operators
+    (a rate set to 0) are dropped."""
+    d = 2 ** N
+    H = sp.csr_matrix((d, d), dtype=complex)
+    if H1 is not None:
+        H1 = np.asarray(H1, dtype=complex)
+        for k in range(N):
+            H = H + _site_op(H1, k, N)
+    if H2 is not None:
+        for (i, j) in edges:
+            H = H + _embed_two_site_sparse(H2, i, j, N)
+    L = _superop_commutator(H.tocsr())
+    for A in jumps1 or []:
+        A = np.asarray(A, dtype=complex)
+        if np.linalg.norm(A) < 1e-12:
+            continue
+        for k in range(N):
+            L = L + _superop_dissipator(_site_op(A, k, N))
+    for A in jumps2 or []:
+        A = np.asarray(A, dtype=complex)
+        if np.linalg.norm(A) < 1e-12:
+            continue
+        for (i, j) in edges:
+            L = L + _superop_dissipator(_embed_two_site_sparse(A, i, j, N))
+    return L.tocsr()
+
+
+def model_terms_lindbladian(model: str, p1: float, p2: float, N: int,
+                            edges: Sequence[Tuple[int, int]]) -> sp.csr_matrix:
+    """build_lindbladian_from_terms for trotter_lindbladian_scan's `model` at
+    its scan point (p1, p2)."""
+    # lazy import, as in model_lattice_params
+    from trotter_lindbladian_scan import MODELS
+    return build_lindbladian_from_terms(*MODELS[model].build(p1, p2), N, edges)
 
 
 # ---------------------------------------------------------------------------

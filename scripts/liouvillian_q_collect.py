@@ -66,23 +66,31 @@ def load(model: str, in_dir: Path, stride: int = 1) -> dict | None:
                 else:
                     grids[key][ix, iy] = float(d[f'{pre}_Q_max'])
             if lattice is None and bool(d['lat_done']):
-                lattice = (int(d['lat_Ly']), int(d['lat_Lx']))
+                # lat_topology is 'ring' for the 1D ring models; files written
+                # before the key existed are open-boundary lattices
+                topo = (str(d['lat_topology']) if 'lat_topology' in d.files
+                        else 'lattice')
+                lattice = (int(d['lat_Ly']), int(d['lat_Lx']), topo)
     if found == 0:
         return None
     print(f'[liouvillian_q] {model}: {found}/{nx * ny} grid points loaded; '
           + ', '.join(f'{k} finite/undamped '
                       f'{int(np.isfinite(grids[k]).sum())}/{n_undamped[k]}'
                       for k, _ in Q_GROUPS), flush=True)
-    ly, lx = lattice if lattice else (np.nan, np.nan)
+    ly, lx, topo = lattice if lattice else (np.nan, np.nan, 'lattice')
     return dict(p1_vals=p1_vals, p2_vals=p2_vals, found=found,
-                lat_Ly=ly, lat_Lx=lx, **grids)
+                lat_Ly=ly, lat_Lx=lx, lat_topology=topo, **grids)
 
 
 def labels(d: dict) -> dict:
     """Panel titles for the two Q grids."""
     q = r'$Q_{\max}=\max_k|\mathrm{Im}\,\lambda_k/\mathrm{Re}\,\lambda_k|$'
-    lat = (f"{d['lat_Ly']}x{d['lat_Lx']} lattice" if np.isfinite(d['lat_Ly'])
-           else 'lattice')
+    if not np.isfinite(d['lat_Ly']):
+        lat = 'lattice'
+    elif d.get('lat_topology') == 'ring':
+        lat = f"{d['lat_Lx']}-site ring"
+    else:
+        lat = f"{d['lat_Ly']}x{d['lat_Lx']} lattice"
     return {'bond_Q_max': f'{q}\nbond generator (exact)',
             'lat_Q_max': f'{q}\n{lat} Lindbladian (exact)'}
 

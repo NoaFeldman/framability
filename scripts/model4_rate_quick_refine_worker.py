@@ -39,9 +39,14 @@ Rounds are sequential -- round r reads the base file plus every earlier round,
 so the floor propagates outward one ring per round.  Run 10 rounds via
 scripts/submit_model4_rate_quick_refine.sh.
 
-Reads:  results_model4_rate/model4/pt_<ix>_<iy>.npz              (base scan)
-        results_model4_rate/model4/pt_<ix>_<iy>_qrefine_r*.npz   (earlier rounds)
-Writes: results_model4_rate/model4/pt_<ix>_<iy>_qrefine_r<NN>.npz
+--model picks the rate-panel model (model4_rate_panels_worker.SUPPORTED_MODELS,
+default model4), e.g. model10, the Shibata-Katsura dissipative quantum Ising
+chain (https://arxiv.org/abs/1904.12505); the bond generator uses the model's
+own ModelSpec.dim unless --dim is given.
+
+Reads:  results_<model>_rate/<model>/pt_<ix>_<iy>.npz              (base scan)
+        results_<model>_rate/<model>/pt_<ix>_<iy>_qrefine_r*.npz   (earlier rounds)
+Writes: results_<model>_rate/<model>/pt_<ix>_<iy>_qrefine_r<NN>.npz
         (qualifying points only; interior points write nothing)
 
 Points with no base file are skipped silently, so this is safe to run over the
@@ -50,6 +55,7 @@ whole grid however much of the base scan has landed.
 Usage:
     python scripts/model4_rate_quick_refine_worker.py --round 1 --task_id 0 --n_chunks 200
     python scripts/model4_rate_quick_refine_worker.py --round 1 --task_id 17   # single point
+    python scripts/model4_rate_quick_refine_worker.py --model model10 --round 1 --task_id 0 --n_chunks 200
 """
 
 from __future__ import annotations
@@ -74,7 +80,8 @@ from dissipative_PT import embed_frame_params                           # noqa: 
 from optimize_framability import _FIXED_COLS, _kron_power               # noqa: E402
 from framability_rate import (minimize_rate, generator_log_norm,        # noqa: E402
                               generator_log_norm_reference, RATE_VERSION)
-from model4_rate_panels_worker import MODEL_NAME                        # noqa: E402
+from model4_rate_panels_worker import (MODEL_NAME,                      # noqa: E402
+                                       SUPPORTED_MODELS)
 
 NEIGHBORS = [(-1, 0), (1, 0), (0, -1), (0, 1)]
 TOL = 1e-9
@@ -159,7 +166,7 @@ def propagate(A, own_val, own_S, nb_list):
 
 
 def run_point(model, point_id: int, args) -> None:
-    pt_dir = Path(args.out_dir) / MODEL_NAME
+    pt_dir = Path(args.out_dir) / model.name
     ix, iy = point_id // model.N_Y, point_id % model.N_Y
     p1, p2 = float(model.p1_vals[ix]), float(model.p2_vals[iy])
 
@@ -192,7 +199,7 @@ def run_point(model, point_id: int, args) -> None:
         return                      # interior point -- no file written
 
     t0 = time.perf_counter()
-    print(f'[point {point_id}/{model.N_TOTAL}] {MODEL_NAME} round {args.round} '
+    print(f'[point {point_id}/{model.N_TOTAL}] {model.name} round {args.round} '
           f'{model.p1_name}={p1:.3f} {model.p2_name}={p2:.3f}  '
           f'keys={todo or "none"} cross={cross}  '
           f'best d4={v4:.6e} d6={v6:.6e}', flush=True)
@@ -255,7 +262,9 @@ def run_point(model, point_id: int, args) -> None:
               f'({time.perf_counter() - t0:.0f}s)', flush=True)
         return
 
-    payload = dict(model=MODEL_NAME, ix=ix, iy=iy, gamma=p1, gamma_p=p2,
+    # {p1_name: p1, p2_name: p2} keeps model4's gamma / gamma_p keys unchanged
+    payload = dict(model=model.name, ix=ix, iy=iy,
+                   **{model.p1_name: p1, model.p2_name: p2},
                    dim=args.dim, round=args.round, rate_version=RATE_VERSION,
                    rate_floor=RATE_FLOOR, rate_tol=args.rate_tol)
     for key, (s_key, _) in KEYS.items():
@@ -273,13 +282,19 @@ def run_point(model, point_id: int, args) -> None:
 
 def main() -> None:
     p = argparse.ArgumentParser()
+    p.add_argument('--model',    type=str, default=MODEL_NAME,
+                   choices=SUPPORTED_MODELS,
+                   help='rate-panel model whose scan is refined')
     p.add_argument('--round',    type=int, required=True,
                    help='quick-refine round (1..10); round r reads r-1')
     p.add_argument('--task_id',  type=int, required=True)
     p.add_argument('--n_chunks', type=int, default=1,
                    help='split the grid into this many strided array tasks')
-    p.add_argument('--out_dir',  type=str, default='results_model4_rate')
-    p.add_argument('--dim',      type=int, default=DIM_DEFAULT)
+    p.add_argument('--out_dir',  type=str, default=None,
+                   help='default results_<model>_rate')
+    p.add_argument('--dim',      type=int, default=None,
+                   help="bond Trotter convention; default: the model's "
+                        f'ModelSpec.dim (DIM_DEFAULT = {DIM_DEFAULT})')
     p.add_argument('--rate_tol', type=float, default=1e-6,
                    help='a rate within this of 0 counts as sitting on the '
                         'framable floor (matches the collect script\'s '
@@ -293,7 +308,11 @@ def main() -> None:
     p.add_argument('--seed',     type=int, default=0)
     args = p.parse_args()
 
-    model = MODELS[MODEL_NAME]
+    model = MODELS[args.model]
+    if args.out_dir is None:
+        args.out_dir = f'results_{args.model}_rate'
+    if args.dim is None:
+        args.dim = model.dim
     n_total = model.N_TOTAL
 
     if args.n_chunks <= 1:

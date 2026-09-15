@@ -608,6 +608,34 @@ def _build_model8(h: float, gamma_p: float):
     return H1, H2, jumps1, []
 
 
+# model10 (added 2026-09, no version bump: existing model data is unchanged):
+# the dissipative quantum Ising chain of Shibata & Katsura,
+#   N. Shibata and H. Katsura, "Dissipative quantum Ising chain as a
+#   non-Hermitian Ashkin-Teller model", Phys. Rev. B 99, 224432 (2019),
+#   https://arxiv.org/abs/1904.12505
+# Each jump operator is one of the Hamiltonian's own local terms (white noise
+# on the field and on the coupling).  Written in this module's axes, coupling
+# along Z and field along X (the paper couples sigma^x sigma^x under a sigma^z
+# field: a global Hadamard, which leaves every framability rate unchanged):
+#   H = -J sum_i Z_i Z_{i+1} - h sum_i X_i          (J = h = 1)
+#   jumps sqrt(Delta1) X_i (one-qubit), sqrt(Delta2) Z_i Z_{i+1} (two-qubit)
+# scan Delta1, Delta2 in [0, 2.5].  The diagonal Delta1 = Delta2 is the paper's
+# self-dual line, where the Liouvillian gap is exact (cusp at Delta = 1/sqrt 3).
+# A 1D chain, so dim = 1: the field and its noise are shared 1/2 per bond,
+# while the coupling and its noise enter every bond in full.
+MODEL10_J = 1.0
+MODEL10_H = 1.0
+
+
+def _build_model10(delta1: float, delta2: float):
+    # H = -J ZZ - h X ; jumps sqrt(Delta1) X (one-qubit), sqrt(Delta2) ZZ (two-qubit)
+    H1 = -MODEL10_H * _SX
+    H2 = -MODEL10_J * _ZZ()
+    jumps1 = [np.sqrt(delta1) * _SX]
+    jumps2 = [np.sqrt(delta2) * _ZZ()]
+    return H1, H2, jumps1, jumps2
+
+
 def _build_model5(J_y: float, gamma: float):
     # (was the 2.x model3.)  Heisenberg bond H2 = J_x XX + J_y YY + J_z ZZ with
     # J_x = 0.9, J_z = 1 ; jump sqrt(gamma) S^- (one-qubit).  Same model and grid
@@ -678,8 +706,8 @@ def _make_model7_gamma_n(omega: float, Gamma: float, J: float, delta: float):
     return build
 
 
-# All models use dim=2 and the per-point adaptive Trotter step (dt=None ->
-# choose_dt).  Models 1-4 share H = J ZZ + h X; models 1-2 relax the lpdo_max
+# All models but model10 (a 1D chain, dim=1) use dim=2; all use the per-point
+# adaptive Trotter step (dt=None -> choose_dt).  Models 1-4 share H = J ZZ + h X; models 1-2 relax the lpdo_max
 # path from |+>^N (the transverse-field / X-basis dynamics sit far from a |0>^N
 # start), as do the |-><+| models 3-4.  model5 keeps the |0>^N start of the old
 # Heisenberg model3.
@@ -786,6 +814,16 @@ MODELS: dict[str, ModelSpec] = {
         p1_name='h',       p1_label=r'$h$',        p1_vals=_arange(0, 20, 0.4),
         p2_name='gamma_p', p2_label=r"$\gamma'$",  p2_vals=_arange(0, 20, 0.4),
         build=_build_model8, lpdo_init='plus'),
+    # model10 (added 2026-09): the Shibata-Katsura dissipative quantum Ising
+    # chain (https://arxiv.org/abs/1904.12505), a 1D model (dim=1); scan the
+    # field noise Delta1 against the coupling noise Delta2 (51 x 51).
+    'model10': ModelSpec(
+        name='model10',
+        title=r"$H=-J\,ZZ-h\,X$,  jumps $\sqrt{\Delta_1}\,X,\ "
+              r"\sqrt{\Delta_2}\,ZZ$  (J=h=1, 1D chain; Shibata-Katsura)",
+        p1_name='delta1', p1_label=r'$\Delta_1$', p1_vals=_arange(0, 2.5, 0.05),
+        p2_name='delta2', p2_label=r'$\Delta_2$', p2_vals=_arange(0, 2.5, 0.05),
+        build=_build_model10, dim=1),
 }
 
 

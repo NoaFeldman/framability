@@ -27,7 +27,11 @@ the cross-evaluation that the model3 gp2 row established as mandatory for the
 optimised rates.
 
 Other models: --model model8 runs the identical six measures on model8's
-(h, gamma') grid (default out_dir results_<model>_rate).
+(h, gamma') grid, --model model10 on the (Delta1, Delta2) grid of the
+Shibata-Katsura dissipative quantum Ising chain
+(https://arxiv.org/abs/1904.12505); default out_dir results_<model>_rate.
+The bond generator takes the model's own lattice dimension (ModelSpec.dim:
+2 for model4 / model8, 1 for the model10 chain) unless --dim is given.
 
 Frame seeds (--frame_seeds)
 ---------------------------
@@ -80,7 +84,7 @@ from framability_rate_state import (minimize_state_rate,                 # noqa:
                                     RATE_STATE_VERSION)
 
 MODEL_NAME = 'model4'                   # default --model
-SUPPORTED_MODELS = ('model4', 'model8')
+SUPPORTED_MODELS = ('model4', 'model8', 'model10')
 
 # Ring frame seeds (see module docstring): model -> Pauli axis (1=X, 2=Y, 3=Z)
 # its single-site field rotates about; the ring lies in the other two axes.
@@ -257,9 +261,11 @@ def main() -> None:
                    help='default results_<model>_rate')
     p.add_argument('--stride',   type=int, default=1,
                    help='stride on the model grid (1 = full 51x51 = 2601 pts)')
-    p.add_argument('--dim',      type=int, default=DIM_DEFAULT,
+    p.add_argument('--dim',      type=int, default=None,
                    help='lattice dimension of the bond Trotter convention '
-                        '(each qubit sits on 2*dim bonds); must match the scan')
+                        '(each qubit sits on 2*dim bonds); must match the scan. '
+                        "Default: the model's ModelSpec.dim (DIM_DEFAULT = "
+                        f'{DIM_DEFAULT} for model4 / model8, 1 for model10)')
     p.add_argument('--heis_restarts', type=int, default=8,
                    help='minimize_rate restarts for the observable frames')
     p.add_argument('--heis_maxfev',   type=int, default=3000)
@@ -276,6 +282,8 @@ def main() -> None:
     args = p.parse_args()
     if args.out_dir is None:
         args.out_dir = f'results_{args.model}_rate'
+    if args.dim is None:
+        args.dim = MODELS[args.model].dim
 
     p1_vals, p2_vals = grid_vals(args.stride, args.model)
     nx, ny = len(p1_vals), len(p2_vals)

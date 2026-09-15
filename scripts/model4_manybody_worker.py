@@ -11,6 +11,12 @@ item-4 workers use; model4 differs from model3 only by that transverse field.
 --model model8 runs the same two panels for model8 (longitudinal field h Z,
 gamma fixed) on its (h, gamma') grid, writing <out_dir>/model8_8q/; the scan
 point -> builder mapping is n_qubit_lindbladian.model_lattice_params.
+--model model10 (the Shibata-Katsura dissipative quantum Ising chain,
+https://arxiv.org/abs/1904.12505) is a 1D model: its two panels use an 8-site
+PERIODIC ring -- the paper's boundary condition, and every site sits on two
+bonds as in the model's dim = 1 bond gate -- built from the model's own scan
+terms by n_qubit_lindbladian.build_lindbladian_from_terms (see mb_geometry),
+writing <out_dir>/model10_8q/.
 
   7. osc_rate  max_k |Im(lambda_k)/Re(lambda_k)|
                nonequilibrium_phase_characterizers.oscillation_rate
@@ -63,12 +69,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from trotter_lindbladian_scan import MODELS                              # noqa: E402
 from dissipative_PT import bonds_2d                                      # noqa: E402
 from n_qubit_lindbladian import (build_lindbladian_comp, lindbladian_gap,  # noqa: E402
-                                 model_lattice_params)
+                                 model_lattice_params, model_terms_lindbladian,
+                                 ring_edges, RING_MODELS)
 from nonequilibrium_phase_characterizers import oscillation_rate         # noqa: E402
 
 MODEL_NAME = 'model4'                  # default --model
 TAG = 'model4_8q'                      # = mb_tag(MODEL_NAME), kept for importers
-SUPPORTED_MODELS = ('model4', 'model8')
+SUPPORTED_MODELS = ('model4', 'model8', 'model10')
 
 
 def mb_tag(model: str) -> str:
@@ -85,6 +92,18 @@ def lattice_edges():
     return bonds_2d(LATTICE_LX, LATTICE_LY)
 
 
+def mb_geometry(model: str) -> dict:
+    """The N_QUBITS sites and bonds of `model`'s many-body panels: the 2x4
+    open-boundary lattice for the 2D models, a periodic ring for the 1D
+    RING_MODELS (model10).  topology / Lx / Ly are stored per point; `label`
+    goes into the figure title."""
+    if model in RING_MODELS:
+        return dict(edges=ring_edges(N_QUBITS), topology='ring', Lx=N_QUBITS,
+                    Ly=1, label='periodic ring')
+    return dict(edges=lattice_edges(), topology='lattice', Lx=LATTICE_LX,
+                Ly=LATTICE_LY, label=f'{LATTICE_LY}x{LATTICE_LX} lattice')
+
+
 def grid_vals(stride: int, model: str = MODEL_NAME):
     """`model`'s scan axes (p1, p2), optionally strided."""
     m = MODELS[model]
@@ -98,7 +117,11 @@ def run_point(ix: int, iy: int, args) -> None:
     m = MODELS[model]
     p1_vals, p2_vals = grid_vals(args.stride, model)
     p1, p2 = float(p1_vals[ix]), float(p2_vals[iy])
-    params = model_lattice_params(model, p1, p2)
+    # model4/model8: build_lindbladian_comp arguments; the RING_MODELS carry
+    # their physics in MODELS[model].build instead
+    params = ({} if model in RING_MODELS
+              else model_lattice_params(model, p1, p2))
+    geo = mb_geometry(model)
 
     pt_dir = Path(args.out_dir) / tag
     out_f = pt_dir / f'pt_{ix:03d}_{iy:03d}.npz'
@@ -108,12 +131,15 @@ def run_point(ix: int, iy: int, args) -> None:
 
     t0 = time.perf_counter()
     print(f'[{tag}] point ({ix},{iy})  {m.p1_name}={p1:.3f} '
-          f'{m.p2_name}={p2:.3f}  N={N_QUBITS} lattice '
-          f'{LATTICE_LX}x{LATTICE_LY}  {params}', flush=True)
+          f"{m.p2_name}={p2:.3f}  N={N_QUBITS} {geo['label']}  {params}",
+          flush=True)
 
-    L = build_lindbladian_comp(J, params['gamma'], params['gamma_p'], N_QUBITS,
-                               lattice_edges(), h_x=params['h_x'],
-                               h_z=params['h_z'])
+    if model in RING_MODELS:
+        L = model_terms_lindbladian(model, p1, p2, N_QUBITS, geo['edges'])
+    else:
+        L = build_lindbladian_comp(J, params['gamma'], params['gamma_p'],
+                                   N_QUBITS, geo['edges'], h_x=params['h_x'],
+                                   h_z=params['h_z'])
     print(f'  Liouvillian built: {L.shape[0]}x{L.shape[1]}, {L.nnz} nnz '
           f'({time.perf_counter() - t0:.0f}s)', flush=True)
 
@@ -141,7 +167,7 @@ def run_point(ix: int, iy: int, args) -> None:
     np.savez(out_f, model=model, ix=ix, iy=iy, stride=args.stride,
              p1=p1, p2=p2, p1_name=m.p1_name, p2_name=m.p2_name,
              J=J, N=N_QUBITS, **params,
-             topology='lattice', Lx=LATTICE_LX, Ly=LATTICE_LY,
+             topology=geo['topology'], Lx=geo['Lx'], Ly=geo['Ly'],
              osc_rate=osc,
              osc_lam_re=(np.nan if lam is None else lam.real),
              osc_lam_im=(np.nan if lam is None else lam.imag),

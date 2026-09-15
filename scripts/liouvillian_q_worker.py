@@ -16,10 +16,15 @@ numerically zero Re):
           (default 2x3 = 6 qubits, 4096x4096 dense) with the model's physics at
           full coupling strength -- the physical many-body Q.  Exact, unlike
           the sparse 8-qubit osc_rate panels, which maximise over the slowest
-          64 modes only.
+          64 modes only.  For the 1D RING_MODELS the same Lx*Ly sites form a
+          periodic ring instead (default a 6-site ring).
 
 Models: those n_qubit_lindbladian.model_lattice_params maps onto
-build_lindbladian_comp (model3, model4, model8).
+build_lindbladian_comp (model3, model4, model8), plus the RING_MODELS, whose
+lattice Lindbladian is built from their own scan terms by
+n_qubit_lindbladian.build_lindbladian_from_terms (model10, the Shibata-Katsura
+dissipative quantum Ising chain, https://arxiv.org/abs/1904.12505).  The bond
+generator uses the model's own ModelSpec.dim unless --dim is given.
 
 Output: <out_dir>/<model>/pt_<ix:03d>_<iy:03d>.npz  (existing files skipped)
 
@@ -46,7 +51,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from trotter_lindbladian_scan import (MODELS, build_bond_lindbladian,     # noqa: E402
                                       DIM_DEFAULT)
 from n_qubit_lindbladian import (build_lindbladian_comp,                  # noqa: E402
-                                 model_lattice_params, LATTICE_MODELS)
+                                 model_lattice_params, model_terms_lindbladian,
+                                 ring_edges, RING_MODELS, MANYBODY_MODELS)
 from dissipative_PT import bonds_2d                                      # noqa: E402
 from liouvillian_quality import (quality_factor, QUALITY_VERSION,        # noqa: E402
                                  TOL_REL_DEFAULT, DENSE_MAX_DIM_DEFAULT)
@@ -91,7 +97,10 @@ def run_point(model: str, ix: int, iy: int, args) -> None:
     m = MODELS[model]
     p1_vals, p2_vals = grid_vals(model, args.stride)
     p1, p2 = float(p1_vals[ix]), float(p2_vals[iy])
-    params = model_lattice_params(model, p1, p2)
+    # model3/4/8: build_lindbladian_comp arguments; the RING_MODELS carry their
+    # physics in MODELS[model].build instead
+    params = ({} if model in RING_MODELS
+              else model_lattice_params(model, p1, p2))
 
     pt_dir = Path(args.out_dir) / model
     out_f = pt_dir / f'pt_{ix:03d}_{iy:03d}.npz'
@@ -120,15 +129,24 @@ def run_point(model: str, ix: int, iy: int, args) -> None:
         return
 
     # ---- full lattice Lindbladian (exact dense spectrum) --------------------
-    rec.update(lat_Lx=args.lx, lat_Ly=args.ly, lat_N=args.lx * args.ly,
-               lat_done=False)
+    n_lat = args.lx * args.ly
+    ring = model in RING_MODELS
+    # the 1D RING_MODELS put the same lx*ly sites on a periodic ring
+    rec.update(lat_Lx=(n_lat if ring else args.lx),
+               lat_Ly=(1 if ring else args.ly), lat_N=n_lat,
+               lat_topology=('ring' if ring else 'lattice'), lat_done=False)
     if not args.no_lattice:
         try:
             t1 = time.perf_counter()
-            Lc = build_lindbladian_comp(J, params['gamma'], params['gamma_p'],
-                                        args.lx * args.ly,
-                                        bonds_2d(args.lx, args.ly),
-                                        h_x=params['h_x'], h_z=params['h_z'])
+            if ring:
+                Lc = model_terms_lindbladian(model, p1, p2, n_lat,
+                                             ring_edges(n_lat))
+            else:
+                Lc = build_lindbladian_comp(J, params['gamma'],
+                                            params['gamma_p'], n_lat,
+                                            bonds_2d(args.lx, args.ly),
+                                            h_x=params['h_x'],
+                                            h_z=params['h_z'])
             rl, el = quality_factor(Lc, tol_rel=args.tol_rel,
                                     dense_max_dim=args.dense_max_dim,
                                     return_eigenvalues=True)
@@ -149,7 +167,7 @@ def run_point(model: str, ix: int, iy: int, args) -> None:
 
 def main() -> None:
     p = argparse.ArgumentParser()
-    p.add_argument('--model', type=str, default='model3', choices=LATTICE_MODELS)
+    p.add_argument('--model', type=str, default='model3', choices=MANYBODY_MODELS)
     p.add_argument('--task_id', type=int, required=True)
     p.add_argument('--n_chunks', type=int, default=1,
                    help='split the grid into this many strided array tasks '
@@ -157,16 +175,22 @@ def main() -> None:
     p.add_argument('--out_dir', type=str, default='results_liouvillian_q')
     p.add_argument('--stride', type=int, default=1,
                    help='stride on the model grid (1 = full 51x51)')
-    p.add_argument('--dim', type=int, default=DIM_DEFAULT,
+    p.add_argument('--dim', type=int, default=None,
                    help='bond Trotter convention (single-site share 1/(2 dim)); '
-                        'must match the framability scans')
-    p.add_argument('--lx', type=int, default=3, help='lattice columns')
-    p.add_argument('--ly', type=int, default=2, help='lattice rows')
+                        "must match the framability scans.  Default: the model's "
+                        f'ModelSpec.dim (DIM_DEFAULT = {DIM_DEFAULT}; 1 for the '
+                        'model10 chain)')
+    p.add_argument('--lx', type=int, default=3,
+                   help='lattice columns (RING_MODELS: lx*ly ring sites)')
+    p.add_argument('--ly', type=int, default=2,
+                   help='lattice rows (RING_MODELS: lx*ly ring sites)')
     p.add_argument('--no_lattice', action='store_true',
                    help='bond spectrum only (seconds for the whole grid)')
     p.add_argument('--tol_rel', type=float, default=TOL_REL_DEFAULT)
     p.add_argument('--dense_max_dim', type=int, default=DENSE_MAX_DIM_DEFAULT)
     args = p.parse_args()
+    if args.dim is None:
+        args.dim = MODELS[args.model].dim
 
     p1_vals, p2_vals = grid_vals(args.model, args.stride)
     nx, ny = len(p1_vals), len(p2_vals)

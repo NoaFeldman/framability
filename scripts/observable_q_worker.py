@@ -114,9 +114,11 @@ def main() -> None:
     p.add_argument('--out_dir', type=str, default='results_observable_q')
     p.add_argument('--stride', type=int, default=1,
                    help='stride on the model grid (1 = full grid)')
-    p.add_argument('--dim', type=int, default=DIM_DEFAULT,
+    p.add_argument('--dim', type=int, default=None,
                    help='bond Trotter convention (single-site share 1/(2 dim)); '
-                        'must match the framability scans')
+                        "must match the framability scans.  Default: the model's "
+                        f'ModelSpec.dim (DIM_DEFAULT = {DIM_DEFAULT}; 1 for the '
+                        'model10 chain)')
     p.add_argument('--no_opt', action='store_true',
                    help='Pauli basis only (skip the local-basis optimisation)')
     p.add_argument('--n_restarts', type=int, default=8)
@@ -124,6 +126,8 @@ def main() -> None:
     p.add_argument('--seed', type=int, default=0)
     p.add_argument('--tol_rel', type=float, default=TOL_REL_DEFAULT)
     args = p.parse_args()
+    if args.dim is None:
+        args.dim = MODELS[args.model].dim
 
     p1_vals, p2_vals = grid_vals(args.model, args.stride)
     nx, ny = len(p1_vals), len(p2_vals)
