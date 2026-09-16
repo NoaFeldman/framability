@@ -89,9 +89,10 @@ MB_KEYS = [
     ('gap',      f'{N_QUBITS}q Lindbladian gap'),
 ]
 
-# Quantities the quick neighbour-refine pipeline
-# (scripts/model4_rate_quick_refine_worker.py) can improve: the collect takes
-# the min over the base scan and every refine round for these.
+# Quantities the neighbour-refine pipelines can improve -- quick
+# (scripts/model4_rate_quick_refine_worker.py, boundary points only) and full
+# (scripts/model4_rate_nb_refine_worker.py, every point): the collect takes the
+# min over the base scan and every refine round of both for these.
 RATE_REFINE_KEYS = frozenset({'rate_heis_4', 'rate_heis_6'})
 
 # Colours follow results_dtbase_line (scripts/trotter_dtbase_line_extrap.py):
@@ -126,8 +127,10 @@ def load_group(pt_dir: Path, keys, stride: int, label: str, *,
     """Assemble every key in `keys` on the strided grid from per-point files.
 
     Keys in `refine_keys` take the MINIMUM over the base scan file and every
-    quick-refine round written next to it (pt_<ix>_<iy>_qrefine_r*.npz, from
-    scripts/model4_rate_quick_refine_worker.py).  That is sound because every
+    neighbour-refine round written next to it: quick rounds
+    (pt_<ix>_<iy>_qrefine_r*.npz, scripts/model4_rate_quick_refine_worker.py)
+    and full rounds (pt_<ix>_<iy>_nrefine_r*.npz,
+    scripts/model4_rate_nb_refine_worker.py).  That is sound because every
     stored rate is a certified upper bound on the point's true minimum, so the
     smallest one is the best bound known.  Every other key is read from the
     base file alone.
@@ -141,7 +144,7 @@ def load_group(pt_dir: Path, keys, stride: int, label: str, *,
             base = pt_dir / f'pt_{ix:03d}_{iy:03d}.npz'
             if not base.exists():
                 continue
-            rounds = sorted(pt_dir.glob(f'pt_{ix:03d}_{iy:03d}_qrefine_r*.npz'))
+            rounds = sorted(pt_dir.glob(f'pt_{ix:03d}_{iy:03d}_*refine_r*.npz'))
             improved = False
             for f in [base, *rounds]:
                 try:
@@ -164,7 +167,7 @@ def load_group(pt_dir: Path, keys, stride: int, label: str, *,
     print(f'[{label}] {found}/{nx * ny} grid points loaded from {pt_dir}',
           flush=True)
     if refine_keys:
-        print(f'  quick-refine: {n_refined} point(s) improved over the base scan',
+        print(f'  neighbour refine: {n_refined} point(s) improved over the base scan',
               flush=True)
     for k in keys:
         n_ok = int(np.isfinite(grids[k]).sum())

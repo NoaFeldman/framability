@@ -96,9 +96,10 @@ KEYS = {'rate_heis_4': ('S_heis_4', 4), 'rate_heis_6': ('S_heis_6', 6)}
 
 
 def _pt_paths(pt_dir: Path, ix: int, iy: int):
-    """Base file + every quick-refine round written so far for this point."""
+    """Base file + every refine round written so far for this point: quick
+    (_qrefine_r*) and full (_nrefine_r*, scripts/model4_rate_nb_refine_worker.py)."""
     base = pt_dir / f'pt_{ix:03d}_{iy:03d}.npz'
-    rounds = sorted(pt_dir.glob(f'pt_{ix:03d}_{iy:03d}_qrefine_r*.npz'))
+    rounds = sorted(pt_dir.glob(f'pt_{ix:03d}_{iy:03d}_*refine_r*.npz'))
     return [p for p in [base, *rounds] if p.exists()]
 
 
