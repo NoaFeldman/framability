@@ -16,15 +16,20 @@ Reads the per-point npz files written by
        the Pauli basis and in the optimised local basis, and the string
        attaining each; Q_obs = 1 is drawn on the rate panels (magenta
        dash-dot = Pauli basis, orange dotted = optimised basis)
+  * scripts/model4_product_rate_worker.py -> <in_dir>/model4_product/pt_<ix>_<iy>.npz
+       product-state framability rates (chi = 10, 40) of the bond generator on
+       the scan's random product frames; drawn like panels 1-6 (viridis, white
+       floor contour, Q / Q_obs contours) at the start of row 3
 
 assembles each quantity on its (gamma, gamma') grid, stores the merged arrays
 and draws
 
     row 1 |  stabilizer-3 rate  |  Pauli rate  |  opt Heisenberg d=4  |  d=6
     row 2 |  opt Schrodinger d=4 |  d=6        |  8q osc rate         |  8q gap
-    row 3 |  bond Q_max          |  lattice Q_max  |  Q_obs Pauli  |  Q_obs opt
-    row 4 |  binding string (Pauli) | binding axes (opt)
-          (rows 3-4 hold whichever of the Q / Q_obs groups have data)
+    row 3 |  product rate chi=10 |  chi=40  |  bond Q_max  |  lattice Q_max
+    row 4 |  Q_obs Pauli  |  Q_obs opt  |  binding string (Pauli) | binding axes (opt)
+          (rows 3-4 hold whichever of the product / Q / Q_obs groups have data,
+           in that order)
 
 The two groups may live on different strides (the many-body panels default to
 --mb_stride 5, an 11x11 grid, against the framability panels' full 51x51); the
@@ -78,6 +83,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from trotter_lindbladian_scan import MODELS                              # noqa: E402
 from model4_rate_panels_worker import (RATE_KEYS, MODEL_NAME,            # noqa: E402
                                        SUPPORTED_MODELS)
+from model4_product_rate_worker import PROD_RATE_KEYS, prod_tag          # noqa: E402
 from model4_manybody_worker import (mb_tag, N_QUBITS,                    # noqa: E402
                                     mb_geometry)
 import liouvillian_q_collect as qcollect                                 # noqa: E402
@@ -240,9 +246,26 @@ def _panel(fig, ax, xv, yv, Z, title, cmap, *, floor_contour=None,
     fig.colorbar(pcm, ax=ax)
 
 
+def _rate_panel(fig, ax, d: dict, key: str, label: str, *, floor, q, q_levels,
+                obs, **lab) -> None:
+    """A framability-rate panel: viridis, white floor contour, and the bond
+    Q_max / Q_obs contours when that data exists."""
+    _panel(fig, ax, d['p1_vals'], d['p2_vals'], d[key], label, FRA_CMAP,
+           floor_contour=floor, **lab)
+    if q is not None:
+        qcollect.draw_q_contour(ax, q['p1_vals'], q['p2_vals'],
+                                q['bond_Q_max'], levels=q_levels)
+    if obs is not None:
+        for okey, (color, ls) in qcollect.OBS_STYLE.items():
+            qcollect.draw_q_contour(ax, obs['p1_vals'], obs['p2_vals'],
+                                    obs[okey], levels=(1.0,), color=color,
+                                    linestyle=ls)
+
+
 def plot(rates: dict, mb: dict, png: Path, *, floor: float = 0.0,
          model: str = MODEL_NAME, q: dict | None = None,
-         q_levels=qcollect.Q_LEVELS_DEFAULT, obs: dict | None = None) -> None:
+         q_levels=qcollect.Q_LEVELS_DEFAULT, obs: dict | None = None,
+         prod: dict | None = None) -> None:
     import matplotlib
     matplotlib.use('Agg')
     import matplotlib.pyplot as plt
@@ -253,6 +276,8 @@ def plot(rates: dict, mb: dict, png: Path, *, floor: float = 0.0,
     # Panels after the eight rate / many-body panels, in figure order:
     # (kind, data, key, title, contour levels)
     extra = []
+    if prod is not None:
+        extra += [('rate', prod, key, label, None) for key, label in PROD_RATE_KEYS]
     if q is not None:
         titles = qcollect.labels(q)
         extra += [('q', q, key, titles[key], q_levels)
@@ -289,27 +314,22 @@ def plot(rates: dict, mb: dict, png: Path, *, floor: float = 0.0,
     # mu* = 0 is the rate-picture image of framability = 1 (mu* = max(0,
     # coherence rate) exactly as framability = max(1, margin)), i.e. the
     # boundary of the region where the frame does not inflate at all.
+    rate_kw = dict(floor=floor, q=q, q_levels=q_levels, obs=obs, **lab)
     for ax, (key, label) in zip(axes.flat[:6], RATE_KEYS):
-        _panel(fig, ax, rates['p1_vals'], rates['p2_vals'], rates[key],
-               label, FRA_CMAP, floor_contour=floor, **lab)
-        if q is not None:
-            qcollect.draw_q_contour(ax, q['p1_vals'], q['p2_vals'],
-                                    q['bond_Q_max'], levels=q_levels)
-        if obs is not None:
-            for key, (color, ls) in qcollect.OBS_STYLE.items():
-                qcollect.draw_q_contour(ax, obs['p1_vals'], obs['p2_vals'],
-                                        obs[key], levels=(1.0,), color=color,
-                                        linestyle=ls)
+        _rate_panel(fig, ax, rates, key, label, **rate_kw)
 
     # Panels 7-8 are not framabilities and have no such floor.
     for ax, (key, label) in zip(axes.flat[6:8], MB_KEYS):
         _panel(fig, ax, mb['p1_vals'], mb['p2_vals'], mb[key], label, MB_CMAP,
                **lab)
 
-    # Panels 9+: mode quality factor Q_max (bond, lattice), observable quality
-    # factor Q_obs (Pauli, optimised basis) and the strings attaining Q_obs.
+    # Panels 9+: product-state framability rates (chi = 10, 40), mode quality
+    # factor Q_max (bond, lattice), observable quality factor Q_obs (Pauli,
+    # optimised basis) and the strings attaining Q_obs.
     for ax, (kind, d, key, title, levels) in zip(axes.flat[8:], extra):
-        if kind == 'q':
+        if kind == 'rate':
+            _rate_panel(fig, ax, d, key, title, **rate_kw)
+        elif kind == 'q':
             qcollect.draw_q_panel(fig, ax, d['p1_vals'], d['p2_vals'], d[key],
                                   title, cmap=MB_CMAP, levels=levels, **lab)
         else:
@@ -353,6 +373,10 @@ def main() -> None:
                          'exists there')
     ap.add_argument('--obs_stride', type=int, default=1,
                     help='stride used by observable_q_worker')
+    ap.add_argument('--prod_stride', type=int, default=1,
+                    help='stride used by model4_product_rate_worker; the '
+                         'product-rate panels are added when data exists under '
+                         '<in_dir>/<model>_product')
     args = ap.parse_args()
 
     model = args.model
@@ -367,6 +391,12 @@ def main() -> None:
                        refine_keys=RATE_REFINE_KEYS, model=model)
     mb = load_group(in_dir / mb_tag(model), [k for k, _ in MB_KEYS],
                     args.mb_stride, f'{model}-{N_QUBITS}q', model=model)
+    prod = load_group(in_dir / prod_tag(model), [k for k, _ in PROD_RATE_KEYS],
+                      args.prod_stride, f'{model}-product', model=model)
+    if prod['n_points'] == 0:
+        print(f'{tag} no product-rate data under {in_dir / prod_tag(model)}; '
+              f'product panels omitted', flush=True)
+        prod = None
     q = qcollect.load(model, Path(args.q_dir), args.q_stride)
     if q is None:
         print(f'{tag} no Q data under {args.q_dir}/{model}; '
@@ -388,6 +418,11 @@ def main() -> None:
         **{k: obs[k] for k, _ in qcollect.OBS_GROUPS},
         **{lk: np.asarray(obs[lk], dtype='U8') for _, lk in qcollect.OBS_GROUPS}}
 
+    prod_arrays = {} if prod is None else {
+        f'prod_{x}_vals': prod['p1_vals'], f'prod_{y}_vals': prod['p2_vals'],
+        'prod_stride': args.prod_stride,
+        **{k: prod[k] for k, _ in PROD_RATE_KEYS}}
+
     npz = out_dir / f'{model}_rate_panels.npz'
     geo = mb_geometry(model)
     np.savez(npz, model=model, title=m.title, N_manybody=N_QUBITS,
@@ -398,11 +433,11 @@ def main() -> None:
                 f'mb_{x}_vals': mb['p1_vals'], f'mb_{y}_vals': mb['p2_vals']},
              **{k: rates[k] for k, _ in RATE_KEYS},
              **{k: mb[k] for k, _ in MB_KEYS},
-             **q_arrays, **obs_arrays)
+             **q_arrays, **obs_arrays, **prod_arrays)
     print(f'{tag} wrote {npz}', flush=True)
 
     plot(rates, mb, out_dir / f'{model}_rate_panels.png', floor=args.floor,
-         model=model, q=q, q_levels=tuple(args.q_levels), obs=obs)
+         model=model, q=q, q_levels=tuple(args.q_levels), obs=obs, prod=prod)
 
 
 if __name__ == '__main__':
