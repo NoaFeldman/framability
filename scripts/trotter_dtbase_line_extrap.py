@@ -324,9 +324,8 @@ def plot_model(model: str, data: dict, png: Path, *, raw: bool,
                  + r'   ($dt=\mathrm{DT\_BASE}/\max(\|H\|_1,\{\gamma_k\})$)'
                  + q_note, fontsize=13)
 
-    axflat = list(axes.flat)
-    for ax, (key, label) in zip(axflat, MEASURES):
-        Z = data[key].T                        # rows = gamma' (y), cols = gamma (x)
+    def fra_panel(ax, ex, ey, p1_vals, p2_vals, Z, label):
+        Z = np.asarray(Z, float).T             # rows = gamma' (y), cols = gamma (x)
         vmin = 1.0
         vmax = float(np.nanmax(Z)) if np.isfinite(Z).any() else vmin + 1e-6
         if vmax <= vmin:
@@ -350,9 +349,19 @@ def plot_model(model: str, data: dict, png: Path, *, raw: bool,
         ax.set_ylabel(m.p2_label)              # gamma'
         cb = fig.colorbar(pcm, ax=ax)
         cb.set_label(qty + r'  at $dt=0$')
-    # Extra (non-framability) panels: own colour scale, own grid, vmin=0 rather
+
+    axflat = list(axes.flat)
+    for ax, (key, label) in zip(axflat, MEASURES):
+        fra_panel(ax, ex, ey, p1_vals, p2_vals, data[key], label)
+    # Extra panels.  kind='fra': further dt-extrapolated framabilities (e.g.
+    # scripts/dtbase_randframe_collect.py), drawn exactly like MEASURES.  All
+    # other extras (non-framability): own colour scale, own grid, vmin=0 rather
     # than the framability floor of 1.
     for ax, spec in zip(axflat[len(MEASURES):], extra):
+        if spec.get('kind') == 'fra':
+            fra_panel(ax, edges(spec['p1_vals']), edges(spec['p2_vals']),
+                      spec['p1_vals'], spec['p2_vals'], spec['Z'], spec['label'])
+            continue
         if spec.get('kind') == 'q':
             qcollect.draw_q_panel(fig, ax, spec['p1_vals'], spec['p2_vals'],
                                   spec['Z'], spec['label'], xlabel=m.p1_label,
@@ -427,7 +436,13 @@ def main() -> None:
                     help='directory of scripts/observable_q_worker.py output; '
                          'the Q_obs panels, binding-string maps and Q_obs = 1 '
                          'contours are added when data exists there')
+    ap.add_argument('--rf_dir', type=str, default='results_dtbase_randframe',
+                    help='directory of scripts/dtbase_randframe_worker.py output; '
+                         'its six random-frame framability panels (mixed product '
+                         'states, random Heisenberg frames) are added right after '
+                         'the MEASURES panels when data exists there')
     args = ap.parse_args()
+    import dtbase_randframe_collect as randframe
 
     in_dir = Path(args.in_dir)
     out_dir = Path(args.out_dir)
@@ -438,17 +453,24 @@ def main() -> None:
         data = extrapolate_model(model, in_dir, fit_n=args.fit_n, deg=args.deg,
                                  raw=args.raw, stride=args.stride,
                                  max_dt_base=args.max_dt_base)
+        rf = randframe.extrapolate_model(model, Path(args.rf_dir),
+                                         fit_n=args.fit_n, deg=args.deg,
+                                         raw=args.raw, stride=args.stride,
+                                         max_dt_base=args.max_dt_base)
         npz = out_dir / f'{model}_dtbase_{suffix}.npz'
         png = out_dir / f'{model}_dtbase_{suffix}.png'
         np.savez(npz, model=model, fit_n=args.fit_n, deg=args.deg,
-                 raw=args.raw, measures=[k for k, _ in MEASURES], **data)
+                 raw=args.raw, measures=[k for k, _ in MEASURES],
+                 randframe_measures=[k for k, _ in randframe.MEASURES] if rf else [],
+                 **data, **(rf or {}))
         print(f'[extrap] saved {npz}', flush=True)
         q_panels, q_contour = q_panels_and_contour(model, Path(args.q_dir),
                                                    args.stride)
         obs_panels, obs_contours = obs_panels_and_contours(
             model, Path(args.obs_dir), args.stride)
         plot_model(model, data, png, raw=args.raw, fra_tol=args.fra_tol,
-                   extra=osc_rate_panels(model, Path(args.osc_dir), args.stride)
+                   extra=randframe.panels(model, rf, args.stride)
+                   + osc_rate_panels(model, Path(args.osc_dir), args.stride)
                    + q_panels + obs_panels,
                    q_contour=q_contour, obs_contours=obs_contours)
 

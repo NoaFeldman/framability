@@ -28,6 +28,7 @@ sys.path.insert(0, str(_REPO / 'scripts'))
 from trotter_lindbladian_scan import MODELS
 import trotter_dtbase_line_collect as collect
 import trotter_dtbase_line_extrap as extrap
+import dtbase_randframe_collect as randframe
 import eight_qubit_gap_collect as gap8_collect
 import six_qubit_spectral_osc_collect as specosc6_collect
 
@@ -116,23 +117,31 @@ def collect_dtbase_lines(models, stride, in_dir, out_dir, fra_tol, force=False):
 def extrapolate_and_plot(models, in_dir, out_dir, *, stride, fit_n, deg,
                          max_dt_base, fra_tol, osc_dir=Path('results_osc_rate'),
                          q_dir=Path('results_liouvillian_q'),
-                         obs_dir=Path('results_observable_q')):
+                         obs_dir=Path('results_observable_q'),
+                         rf_dir=Path('results_dtbase_randframe')):
     """Step 2: dt->0 colormaps (model3_dtbase_extrap.png / model4_...) -- the
     replot of the optimised-Heisenberg (opt_fra_4/opt_fra_6, refine-merged)
-    and every other framability, now with 7 panels instead of 5."""
+    and every other framability, plus the random-frame panels of
+    scripts/dtbase_randframe_worker.py when rf_dir holds data."""
     for model in models:
         data = extrap.extrapolate_model(model, in_dir, fit_n=fit_n, deg=deg,
                                         raw=False, stride=stride,
                                         max_dt_base=max_dt_base)
+        rf = randframe.extrapolate_model(model, rf_dir, fit_n=fit_n, deg=deg,
+                                         raw=False, stride=stride,
+                                         max_dt_base=max_dt_base)
         npz = out_dir / f'{model}_dtbase_extrap.npz'
         png = out_dir / f'{model}_dtbase_extrap.png'
         np.savez(npz, model=model, fit_n=fit_n, deg=deg, raw=False,
-                measures=[k for k, _ in extrap.MEASURES], **data)
+                measures=[k for k, _ in extrap.MEASURES],
+                randframe_measures=[k for k, _ in randframe.MEASURES] if rf else [],
+                **data, **(rf or {}))
         q_panels, q_contour = extrap.q_panels_and_contour(model, q_dir, stride)
         obs_panels, obs_contours = extrap.obs_panels_and_contours(
             model, obs_dir, stride)
         extrap.plot_model(model, data, png, raw=False, fra_tol=fra_tol,
-                          extra=extrap.osc_rate_panels(model, osc_dir, stride)
+                          extra=randframe.panels(model, rf, stride)
+                          + extrap.osc_rate_panels(model, osc_dir, stride)
                           + q_panels + obs_panels,
                           q_contour=q_contour, obs_contours=obs_contours)
         print(f'[collect_and_plot_all] extrapolated + plotted {png}', flush=True)
@@ -165,6 +174,10 @@ def main() -> None:
                          '(scripts/observable_q_worker.py); its Q_obs panels, '
                          'binding-string maps and Q_obs = 1 contours are added '
                          'to the framability figure when present')
+    ap.add_argument('--rf_dir', type=str, default='results_dtbase_randframe',
+                    help='random-frame DT_BASE lines '
+                         '(scripts/dtbase_randframe_worker.py); its six '
+                         'framability panels are added when present')
     ap.add_argument('--eightq_in_dir', type=str, default='results_8q')
     ap.add_argument('--eightq_stride', type=int, default=5)
     ap.add_argument('--skip_lines', action='store_true',
@@ -187,7 +200,7 @@ def main() -> None:
                         fit_n=args.fit_n, deg=args.deg,
                         max_dt_base=args.max_dt_base, fra_tol=args.fra_tol,
                         osc_dir=Path(args.osc_dir), q_dir=Path(args.q_dir),
-                        obs_dir=Path(args.obs_dir))
+                        obs_dir=Path(args.obs_dir), rf_dir=Path(args.rf_dir))
 
     # 3: item 4 -- 8-qubit ring/lattice Lindbladian gap
     eightq_in = Path(args.eightq_in_dir)
