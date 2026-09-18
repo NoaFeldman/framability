@@ -71,7 +71,7 @@ def load_case(in_dir, tag: str) -> dict | None:
     gp_factor = float('nan')
     for gp in GP_VARIANTS:
         for field in FIELDS:
-            d_ext, fra, floor = [], [], []
+            d_ext, fra, floor, tbnd = [], [], [], []
             for r, d in enumerate(out['d_exts']):
                 path = unit_path(in_dir, tag, r, gp, field)
                 if not path.exists():
@@ -85,6 +85,8 @@ def load_case(in_dir, tag: str) -> dict | None:
                 fra.append(float(np.asarray(z['framability']).ravel()[0]))
                 floor.append(float(np.asarray(z['floor']).ravel()[0])
                              if 'floor' in z.files else np.nan)
+                tbnd.append(float(np.asarray(z['trotter_bound_rate']).ravel()[0])
+                            if 'trotter_bound_rate' in z.files else np.nan)
                 if gp == 'lo':
                     gp_factor = float(np.asarray(z['gp_factor']).ravel()[0])
             order = np.argsort(d_ext)
@@ -94,6 +96,8 @@ def load_case(in_dir, tag: str) -> dict | None:
             out['curves'][(gp, field)] = (d_ext, fra, (fra - 1.0) / out['dt'])
             out.setdefault('floors', {})[(gp, field)] = (d_ext, floor,
                                                          (floor - 1.0) / out['dt'])
+            out.setdefault('tbnds', {})[(gp, field)] = (
+                d_ext, np.asarray(tbnd, dtype=float)[order])
     out['gp_factor'] = gp_factor if np.isfinite(gp_factor) else GP_FACTOR_DEFAULT
     n_have = sum(len(v[0]) for v in out['curves'].values())
     print(f'[{tag}] ladder d_exts={list(out["d_exts"])}, '
@@ -225,6 +229,9 @@ def save_npz(recs: list, out_dir: Path) -> Path:
             if fl is not None:
                 data[f'{tag}_{gp}_{field}_floor'] = fl[1]
                 data[f'{tag}_{gp}_{field}_floor_rate'] = fl[2]
+            tb = rec.get('tbnds', {}).get((gp, field))
+            if tb is not None:
+                data[f'{tag}_{gp}_{field}_trotter_bound_rate'] = tb[1]
     npz = out_dir / 'product_frame_grow.npz'
     np.savez(npz, **data)
     return npz
@@ -249,16 +256,22 @@ def report(recs: list) -> None:
                                     if len(d_ext) else f'{"-":>17s}'))
             print(row)
     print('=' * 92)
-    print('certified floor (negativity_floor: a lower bound for ANY frame) at '
-          'the largest d_ext')
+    print('certified floor (negativity_floor: a lower bound for ANY frame) and, '
+          'in brackets, the')
+    print('truncation-error bound 2||(expm - euler) d_j||_1/dt that upper bounds '
+          'it -- at the largest d_ext')
     for rec in recs:
         row = f'{rec["tag"]:16s} {"floor":>11s}'
         for gp in GP_VARIANTS:
             for field in FIELDS:
                 fl = rec.get('floors', {}).get((gp, field))
-                row += ('  ' + (f'{fl[2][-1]:.6e}      ' if fl is not None
-                                and len(fl[0]) and np.isfinite(fl[2][-1])
-                                else f'{"-":>17s}'))
+                tb = rec.get('tbnds', {}).get((gp, field))
+                if fl is None or not len(fl[0]) or not np.isfinite(fl[2][-1]):
+                    row += '  ' + f'{"-":>17s}'
+                    continue
+                bnd = (tb[1][-1] if tb is not None and len(tb[1])
+                       and np.isfinite(tb[1][-1]) else np.nan)
+                row += f'  {fl[2][-1]:.3e} [{bnd:.1e}]'
         print(row)
     print('=' * 92)
     print("A gamma' = J curve that keeps falling while the gamma' < J one "

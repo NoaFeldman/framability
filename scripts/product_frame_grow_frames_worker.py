@@ -50,13 +50,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from product_frame_grow import (CASES, CASE_BY_TAG, CRITERION_MAX_DEXT_DEFAULT,  # noqa: E402
                                 DT_DEFAULT, D_EXT_MAX_DEFAULT, GROW_VERSION,
-                                grow_frames)
+                                MIN_SEP_FRAC_DEFAULT, grow_frames)
 
 OUT_DIR_DEFAULT = 'results_product_frame_grow'
 
 # The growth parameters an existing frames file must agree on to be reused.
 _KEYS = ('dt', 'd_ext_max', 'max_new_per_round', 'filter', 'criterion_max_dext',
-         'accept', 'gate_kind', 'version')
+         'accept', 'gate_kind', 'tilt', 'min_sep_frac', 'version')
 
 
 def frames_path(out_dir, tag: str) -> Path:
@@ -98,6 +98,7 @@ def load_frames(out_dir, tag: str) -> dict | None:
 def _meta(args) -> dict:
     return dict(dt=args.dt, d_ext_max=args.d_ext_max,
                 max_new_per_round=args.max_new_per_round, filter=args.filter,
+                tilt=args.tilt, min_sep_frac=args.min_sep_frac,
                 criterion_max_dext=args.criterion_max_dext, accept=args.accept,
                 gate_kind=args.gate, version=GROW_VERSION)
 
@@ -125,8 +126,17 @@ def main() -> None:
     p.add_argument('--dt', type=float, default=DT_DEFAULT)
     p.add_argument('--d_ext_max', type=int, default=D_EXT_MAX_DEFAULT)
     p.add_argument('--max_new_per_round', type=int, default=12,
-                   help='per-round budget of new frame elements; a group is six '
-                        'states and is atomic, so a round may overshoot slightly')
+                   help='per-round budget of new frame elements; a group is the '
+                        'four ring states and is atomic, so a round may overshoot')
+    p.add_argument('--tilt', type=str, default='optimal',
+                   choices=('optimal', 'equatorial', 'both'),
+                   help="polar angle of the candidate ring: 'optimal' = "
+                        'tan(eps/2) = sqrt(dt a) (attains the negativity floor), '
+                        "'equatorial' = the exact-decomposition square at pi/2, "
+                        "'both' = emit each ring")
+    p.add_argument('--min_sep_frac', type=float, default=MIN_SEP_FRAC_DEFAULT,
+                   help='drop a candidate closer than this fraction of the ring '
+                        'tilt to an existing element (removes the rotated poles)')
     p.add_argument('--filter', type=str, default='criterion',
                    choices=('criterion', 'gauge'),
                    help="'criterion' = product_frame_trick.frame_element_criterion "
@@ -162,12 +172,14 @@ def main() -> None:
 
     print(f'[{tag}] growing: model={case["model"]} J={case["J"]} '
           f'gamma={case["gamma"]} gamma_p=J dt={args.dt} '
+          f'tilt={args.tilt} min_sep_frac={args.min_sep_frac} '
           f'filter={args.filter} (criterion up to d_ext {args.criterion_max_dext}) '
           f'budget={args.max_new_per_round}/round -> d_ext >= {args.d_ext_max}',
           flush=True)
     t0 = time.perf_counter()
     grown = grow_frames(case, dt=args.dt, d_ext_max=args.d_ext_max,
                         max_new_per_round=args.max_new_per_round,
+                        tilt=args.tilt, min_sep_frac=args.min_sep_frac,
                         filter_mode=args.filter,
                         criterion_max_dext=args.criterion_max_dext,
                         accept=args.accept, gate_kind=args.gate,

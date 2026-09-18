@@ -50,7 +50,9 @@
 OUT_DIR=${OUT_DIR:-results_product_frame_grow}
 DT=${DT:-1e-2}                       # the requested Euler step
 D_EXT_MAX=${D_EXT_MAX:-100}          # grow until d_ext >= this
-MAX_NEW=${MAX_NEW:-12}               # new elements per round (groups of 6 are atomic)
+MAX_NEW=${MAX_NEW:-12}               # new elements per round (rings of 4 are atomic)
+TILT=${TILT:-optimal}                # optimal | equatorial | both
+MIN_SEP_FRAC=${MIN_SEP_FRAC:-0.1}    # drop candidates this close (in units of the ring tilt)
 FILTER=${FILTER:-criterion}          # criterion | gauge
 CRITERION_MAX_DEXT=${CRITERION_MAX_DEXT:-24}
 ACCEPT=${ACCEPT:-nonharmful}         # nonharmful | useful
@@ -73,6 +75,8 @@ python scripts/product_frame_grow_frames_worker.py \
     --dt                 "$DT" \
     --d_ext_max          "$D_EXT_MAX" \
     --max_new_per_round  "$MAX_NEW" \
+    --tilt               "$TILT" \
+    --min_sep_frac       "$MIN_SEP_FRAC" \
     --filter             "$FILTER" \
     --criterion_max_dext "$CRITERION_MAX_DEXT" \
     --accept             "$ACCEPT" \

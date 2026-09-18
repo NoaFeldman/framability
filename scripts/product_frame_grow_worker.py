@@ -52,7 +52,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from product_frame_grow import (CASES, CASE_BY_TAG, FIELDS, GP_FACTOR_DEFAULT,  # noqa: E402
                                 GROW_VERSION, build_targets, frame_matrix,
-                                framability_targets, model_h, negativity_floor)
+                                framability_targets, model_h, negativity_floor,
+                                trotter_truncation_bound)
 from product_frame_grow_frames_worker import (OUT_DIR_DEFAULT,               # noqa: E402
                                               load_frames)
 
@@ -149,6 +150,9 @@ def run_unit(out_dir, tag: str, r: int, gp: str, field: str, gp_factor: float,
     # cheap, so it is recorded next to every value and drawn by the collect
     # script.  f sitting on the floor means dt is too coarse, not the frame.
     floor, floor_col = negativity_floor(Y)
+    # The truncation error 2||(expm - euler) d_j||_1 / dt, which upper bounds
+    # floor_rate but is a different quantity (see trotter_truncation_bound).
+    trot_bnd = trotter_truncation_bound(blochs, J, gamma, h, gamma_p, dt)
     f, cols = framability_targets(np.kron(frame_matrix(blochs),
                                           frame_matrix(blochs)), Y)
     el = time.perf_counter() - t0
@@ -159,6 +163,7 @@ def run_unit(out_dir, tag: str, r: int, gp: str, field: str, gp_factor: float,
     data = dict(framability=np.array(f), rate=np.array((f - 1.0) / dt),
                 floor=np.array(floor), floor_rate=np.array((floor - 1.0) / dt),
                 floor_col=np.array(int(floor_col)),
+                trotter_bound_rate=np.array(trot_bnd),
                 tag=np.array(tag), model=np.array(case['model']),
                 round=np.array(r), d_ext=np.array(d_ext), gp_variant=np.array(gp),
                 field=np.array(field), J=np.array(J), gamma=np.array(gamma),
@@ -174,7 +179,8 @@ def run_unit(out_dir, tag: str, r: int, gp: str, field: str, gp_factor: float,
         data['col_vals'] = np.asarray(cols, dtype=float)
     _save_atomic(path, data, task_id)
     print(f'  [{tag} r{r:03d} {gp} {field}] f = {f:.12f}  rate = {(f - 1.0) / dt:.6e}'
-          f'  (floor rate {(floor - 1.0) / dt:.6e})  ({el:.1f}s)', flush=True)
+          f'  (floor rate {(floor - 1.0) / dt:.6e} <= truncation bound '
+          f'{trot_bnd:.6e})  ({el:.1f}s)', flush=True)
 
 
 def main() -> None:

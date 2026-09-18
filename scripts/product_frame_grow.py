@@ -103,6 +103,30 @@ yields, per pair, the equatorial square
 in the plane orthogonal to r_i, for i = 0 and 1.  It is closed under antipodes
 (k -> k+2), so the frame stays antipode-closed.
 
+WHERE TO PUT THE RING: THE TILT (--tilt, default 'optimal')
+-----------------------------------------------------------
+The square above is EXACT but expensive: its l1 weight is 1 + 4 dt |w|, a rate
+4|w| = O(1).  The azimuths are right, the polar angle is not.  Matching the
+phase-averaged family
+
+    |a(phi)> = |Psi_0> + e^{i phi} alpha |Psi_0^perp>,
+    |b(phi)> = |Psi_1^perp> + e^{i phi} beta |Psi_1>
+
+to rho~ at the threshold fixes |alpha beta| = |w|/a_1 and, from the
+00-population budget, |alpha|^2 >= dt a_0; the l1 excess is 2 dt a_1 |alpha|^2,
+minimised at |alpha|^2 = dt a_0 with excess 2 dt^2 a_0 a_1 = 2 dt^2 |w|^2 --
+EXACTLY negativity_floor.  So the ring belongs at the small polar angle
+
+    tan(eps_i / 2) = sqrt(dt a_i)          (optimal_tilt; a_i is qubit i's own
+                                            flip rate, a_0 = A[2,2], a_1 = A[1,1])
+
+with the SAME azimuths theta + k pi/2 (the free phases of alpha and beta split
+symmetrically as -chi/2 = -theta).  eps = pi/2 recovers the equatorial square,
+which --tilt equatorial keeps for the exact-identity check; --tilt both emits
+each ring.  At dt = 1e-4 and a ~ 1 the optimal ring sits at eps ~ 0.02 rad
+instead of pi/2, i.e. it hugs the element it came from -- which is the point:
+the decomposition wants a state just off Psi, not a quarter turn away.
+
 THE U ROTATION (what makes the PLAIN framability reach 1)
 ---------------------------------------------------------
 All of the above decomposes rho~, not the requested step rho + dt L(rho).  The
@@ -114,19 +138,52 @@ two differ by exactly the local rotation the trick buys:
 hence rho + dt L(rho) = U^dag rho~ U + O(dt^2).  A LOCAL unitary maps a product
 decomposition to a product decomposition, so the plain Euler step is separable
 too and its product states are simply the U-rotated ones.  Every candidate is
-therefore pushed through U_i(dt)^dag, and the group per (pair, qubit) is the
-full set of local factors of that decomposition -- SIX states:
+therefore pushed through U_i(dt)^dag, and the local factors of that
+decomposition are
 
-    U_i(dt)^dag |x_k>,  k = 0..3      (rotated equatorial square: the coherence)
+    U_i(dt)^dag |x_k>,  k = 0..3      (the rotated ring: the coherence)
     U_i(dt)^dag |Psi_i>,
-    U_i(dt)^dag |Psi_i^perp>          (rotated poles: the three diagonal terms
-                                       P_0(x)P_1, P_0(x)P_1^perp, P_0^perp(x)P_1
-                                       become their rotated versions as well)
+    U_i(dt)^dag |Psi_i^perp>          (the rotated POLES: the three diagonal
+                                       terms P_0(x)P_1, P_0(x)P_1^perp,
+                                       P_0^perp(x)P_1 rotate as well)
 
-Groups are added ATOMICALLY, since no proper subset carries the decomposition.
-Note U_0 depends on the PARTNER (kappa_0 = -i A[2,0] is a property of the pair),
-so each pair contributes its own rotated copy of Psi_i; that is inherent to the
-construction and is why the frame keeps growing instead of closing.
+Groups (the four ring states) are added ATOMICALLY, since no proper subset
+carries the coherence.  Note U_0 depends on the PARTNER (kappa_0 = -i A[2,0] is a
+property of the pair), so each pair rotates Psi_i differently; that is inherent
+to the construction and is why the frame keeps growing instead of closing.
+
+THE ROTATED POLES ARE FREE (and are not emitted)
+------------------------------------------------
+This pipeline requires -- as every frame in this project does -- that the frame
+be TRANSLATIONALLY INVARIANT across the qubits: one single-qubit S, used on
+every site, D = S (x) S (x) ...  Never S_a (x) S_b.
+
+Given that, the two rotated poles need no computation and no slot in S.  They
+are not new states: they are elements S already has, moved by the free local
+unitary U_i(dt) -- the very resource the trick buys, applied at every site
+identically because S is the same at every site.  The protocol carries that
+rotation along with the trajectory's current product state rather than
+branching on it, so "S together with everything the free local rotation reaches
+from S" is the frame that is actually available, and the poles are inside it by
+construction.  We therefore skip computing and storing them (include_poles=True
+restores them for the exactness checks in --self_check).
+
+The quantitative version of the same statement, for the finite frame the LP
+actually sees: a pole sits at angle dt|kappa_i| from its parent, and a state at
+angle x from a frame element is represented by that element at cost O(x^2), so
+omitting it costs O(dt^2 kappa^2) -- the order of negativity_floor itself, i.e.
+nothing at the resolution this pipeline works at.  For scale, at dt = 1e-4 a
+pole sits ~1e-3 rad from its parent while the ring sits at eps ~ 2 sqrt(dt a)
+~ 2e-2 rad, so keeping the poles would spend a third of the per-round budget on
+states that shrink the frame's angular resolution by nothing.
+
+When kappa = 0 the pole is not merely close to its parent but IS its parent:
+for the octahedron pair (+x, +x) at gamma = 0, z = 0 kills both the ZZ and the
+dephasing contributions to the starred entries, so kappa_0 = kappa_1 = 0, U = 1,
+and the two poles are exactly (id +- sigma^x)/2.  (That same pair has q = 1,
+w = i, a_0 = a_1 = 1, hence M = [[1, i], [-i, 1]] with lambda_- = 0 exactly: it
+is the element that saturates the tex threshold.  Its ring is the four
+(0, +-1/sqrt2, +-1/sqrt2) at gauge exactly sqrt(2).)
 
 Only unordered pairs are visited, d_ext(d_ext+1)/2 of them: L is swap
 symmetric, so the pair (j,i) returns the two groups of (i,j) exchanged and the
@@ -207,6 +264,11 @@ GP_FACTOR_DEFAULT = 0.99   # the detuned parameter set: gamma' = factor * J
 DEDUP_TOL = 1e-7           # two Bloch vectors closer than this are the same state
 GAUGE_TOL = 1e-9           # redundant iff gauge <= 1 + GAUGE_TOL
 STRUCT_TOL = 1e-8          # relative slack on the A_cancelled sparsity pattern
+# A candidate within this fraction of the group's tilt eps of an existing element
+# buys no coverage (the existing one represents it at cost O(angle^2)) and would
+# waste a slot of the per-round budget.  Self-scaling: it removes the rotated
+# poles, at ~dt|kappa|, while keeping the tilted ring at eps ~ 2 sqrt(dt a).
+MIN_SEP_FRAC_DEFAULT = 0.1
 
 # frame_element_criterion costs O(d_ext^4) LPs and, worse,
 # product_frame_trick._min_l1 builds a DENSE (2m x 2m) epigraph block with
@@ -434,6 +496,39 @@ def negativity_floor(Y: np.ndarray) -> tuple[float, int]:
     return best, jbest
 
 
+def trotter_truncation_bound(blochs, J: float, gamma: float, h: float,
+                             gamma_p: float, dt: float) -> float:
+    """2 max_j ||(expm(dt M) - (1 + dt M)) d_j||_1 / dt: an upper bound on the
+    floor rate, and the honest measure of "is the Euler step close to expm".
+
+    NOT the same quantity as negativity_floor, and the relation is one-way.
+    With rho' = (1 + dt L)rho = expm(dt L)rho - E and expm(dt L)rho >= 0, every
+    negative eigenvalue of rho' is paid for by E, so
+
+        floor - 1 = 2 sum|lambda^-(rho')| <= 2 ||E||_1,
+
+    i.e. a small truncation error forces a small floor.  The converse is false:
+    positivity is a cone condition, not a norm one.  A classical rate matrix has
+    1 + dt W stochastic (floor exactly 1, zero excess) for every dt <= 1/max
+    rate while its truncation error is still O(dt^2).  The bound is also loose
+    here by construction: E is spread over all directions but can only create
+    negativity where expm(dt L)rho is itself O(dt^2)-small, which for these
+    elements is the single {|Psi_0 Psi_1>, |Psi_0^perp Psi_1^perp>} corner.
+
+    Returns 0 for gate_kind='expm' (the targets are then genuine states, and
+    negativity_floor correspondingly returns exactly 1).
+    """
+    M = lindbladian_ptm(J, gamma, h, gamma_p)
+    Delta = expm(dt * M).real - (np.eye(16) + dt * M)
+    S = frame_matrix(blochs)
+    Y = Delta @ np.kron(S, S)
+    worst = 0.0
+    for j in range(Y.shape[1]):
+        ev = np.linalg.eigvalsh(rho_from_pauli_column(Y[:, j]))
+        worst = max(worst, float(np.sum(np.abs(ev))))
+    return 2.0 * worst / dt
+
+
 def framability(blochs, J: float, gamma: float, h: float, gamma_p: float, dt: float,
                 field: str = 'plain', gate_kind: str = 'euler'
                 ) -> tuple[float, np.ndarray]:
@@ -451,13 +546,42 @@ def _x_phi(phi: float) -> np.ndarray:
     return np.cos(phi) * _SX - np.sin(phi) * _SY
 
 
+def _tilt_ket(eps: float, phi: float) -> np.ndarray:
+    """cos(eps/2)|0> + sin(eps/2) e^{-i phi}|1>: Bloch polar angle eps, azimuth phi.
+
+    eps = pi/2 gives (|0> + e^{-i phi}|1>)/sqrt(2), the +1 eigenvector of X_phi
+    (the equatorial square).
+    """
+    return np.array([np.cos(0.5 * eps),
+                     np.sin(0.5 * eps) * np.exp(-1j * phi)], dtype=complex)
+
+
 def _equator_ket(phi: float) -> np.ndarray:
     """(|0> + e^{-i phi}|1>)/sqrt(2): the +1 eigenvector of X_phi."""
-    return np.array([1.0, np.exp(-1j * phi)], dtype=complex) / np.sqrt(2.0)
+    return _tilt_ket(0.5 * np.pi, phi)
+
+
+def optimal_tilt(a: float, dt: float) -> float:
+    """Bloch polar angle of the minimal-cost product family: tan(eps/2) = sqrt(dt a).
+
+    Matching the phase-averaged family |a(phi)> = |Psi> + e^{i phi} alpha |Psi^perp>,
+    |b(phi)> = |Psi_1^perp> + e^{i phi} beta |Psi_1> to rho~ at the threshold fixes
+    |alpha beta| = |w| / a_1, and the 00-population budget forces
+    |alpha|^2 >= dt a_0.  The l1 excess is 2 dt a_1 |alpha|^2, so the optimum is
+    |alpha|^2 = dt a_0, giving excess 2 dt^2 a_0 a_1 = 2 dt^2 |w|^2 -- exactly
+    negativity_floor.  The equatorial square (eps = pi/2, i.e. |alpha| = 1) instead
+    costs 4 dt |w|, larger by a factor ~ 2/(dt|w|).
+
+    Qubit i takes a_i, its own flip rate: a_0 = A[2,2] (flip qubit 0),
+    a_1 = A[1,1] (flip qubit 1).  a = 0 (a dark, undamped direction) returns 0 and
+    the candidate degenerates onto Psi, where the dedup screen drops it.
+    """
+    return 2.0 * float(np.arctan(np.sqrt(max(a, 0.0) * dt)))
 
 
 def extract_candidates(r0, r1, J: float, gamma: float, h: float, gamma_p: float,
-                       dt: float = DT_DEFAULT,
+                       dt: float = DT_DEFAULT, tilt: str = 'optimal',
+                       include_poles: bool = False,
                        struct_tol: float = STRUCT_TOL) -> dict:
     """Candidate single-qubit states from the Euler step of Psi_0 (x) Psi_1.
 
@@ -507,17 +631,38 @@ def extract_candidates(r0, r1, J: float, gamma: float, h: float, gamma_p: float,
     M = np.array([[a1, w], [np.conj(w), a0]], dtype=complex)
     U0, U1 = res['U0'](dt), res['U1'](dt)
     theta = 0.5 * float(np.angle(w)) if abs(w) > struct_tol * scale else float('nan')
+    # Polar angles of the coherence states, per qubit (see optimal_tilt): one
+    # ring of four per angle, all sharing the azimuths theta + k pi/2.
+    quarter = 0.5 * np.pi
+    if tilt == 'optimal':
+        eps = ((optimal_tilt(a0, dt),), (optimal_tilt(a1, dt),))
+    elif tilt == 'equatorial':
+        eps = ((quarter,), (quarter,))
+    elif tilt == 'both':
+        eps = ((optimal_tilt(a0, dt), quarter), (optimal_tilt(a1, dt), quarter))
+    else:
+        raise ValueError(f"tilt must be 'optimal', 'equatorial' or 'both', "
+                         f'got {tilt!r}')
     out = dict(w=w, chi=float(np.angle(w)), a0=a0, a1=a1, M=M, theta=theta,
-               struct_err=struct_err, U0=U0, U1=U1, groups=[], groups_local=[])
+               struct_err=struct_err, U0=U0, U1=U1, tilt=tilt, eps=eps,
+               groups=[], groups_local=[])
 
-    # The four local 2x2 blocks carrying the coherence are X_theta,
-    # X_{theta+pi/2} on qubit 0 and X_theta, X_{theta-pi/2} on qubit 1; their
-    # eigenvectors are the same four quarter-phase equatorial kets for both
-    # qubits.  The two poles carry the three diagonal terms.
-    local = ([_equator_ket(theta + 0.5 * np.pi * m) for m in range(4)]
-             if np.isfinite(theta) else [])
-    local += [np.array([1.0, 0.0], dtype=complex), np.array([0.0, 1.0], dtype=complex)]
-    for psi, U in ((k0, U0), (k1, U1)):
+    # Same four azimuths theta + k pi/2 for both qubits (the local 2x2 blocks
+    # carrying the coherence are X_theta, X_{theta+pi/2} on qubit 0 and X_theta,
+    # X_{theta-pi/2} on qubit 1, whose eigenvector phases coincide as a set);
+    # only the polar angle differs.  The two poles close the three diagonal
+    # terms P_0(x)P_1, P_0(x)P_1^perp, P_0^perp(x)P_1.
+    # The poles are NOT emitted by default: see "THE ROTATED POLES ARE FREE" in
+    # the module docstring.  include_poles=True restores them (as the last two
+    # states of each group), which the exactness checks of --self_check need.
+    poles = [np.array([1.0, 0.0], dtype=complex), np.array([0.0, 1.0], dtype=complex)]
+    for q, (psi, U) in enumerate(((k0, U0), (k1, U1))):
+        local = []
+        if np.isfinite(theta):
+            for e in eps[q]:
+                local += [_tilt_ket(float(e), theta + quarter * m) for m in range(4)]
+        if include_poles:
+            local += poles
         B = np.column_stack([psi, perp_ket(psi)])
         kets = [B @ lk for lk in local]
         out['groups_local'].append([bloch_of_ket(k) for k in kets])
@@ -526,23 +671,25 @@ def extract_candidates(r0, r1, J: float, gamma: float, h: float, gamma_p: float,
 
 
 def candidate_groups(blochs, J: float, gamma: float, h: float, gamma_p: float,
-                     dt: float = DT_DEFAULT, struct_tol: float = STRUCT_TOL) -> list:
+                     dt: float = DT_DEFAULT, tilt: str = 'optimal',
+                     struct_tol: float = STRUCT_TOL) -> list:
     """All candidate groups of one growth round.
 
     Visits the d_ext(d_ext+1)/2 unordered pairs (the swap symmetry of L makes
     the ordered pairs redundant) and returns a list of dicts
-    {pair, qubit, states, lam_min, abs_w}.
+    {pair, qubit, states, lam_min, abs_w, eps}.
     """
     d = len(blochs)
     groups = []
     for i in range(d):
         for j in range(i, d):
             ex = extract_candidates(blochs[i], blochs[j], J, gamma, h, gamma_p,
-                                    dt=dt, struct_tol=struct_tol)
+                                    dt=dt, tilt=tilt, struct_tol=struct_tol)
             lam = float(np.min(np.linalg.eigvalsh(ex['M'])))
             for q, states in enumerate(ex['groups']):
                 groups.append(dict(pair=(i, j), qubit=q, states=states,
-                                   lam_min=lam, abs_w=float(abs(ex['w']))))
+                                   lam_min=lam, abs_w=float(abs(ex['w'])),
+                                   eps=float(min(ex['eps'][q]))))
     return groups
 
 
@@ -553,8 +700,17 @@ def _is_new_bloch(r, blochs, tol: float = DEDUP_TOL) -> bool:
     return all(np.linalg.norm(np.asarray(r) - b) > tol for b in blochs)
 
 
+def _min_angle(r, blochs) -> float:
+    """Smallest Bloch angle between r and any element of blochs (pi if empty)."""
+    if not len(blochs):
+        return float(np.pi)
+    dots = [float(np.clip(np.dot(np.asarray(r), b), -1.0, 1.0)) for b in blochs]
+    return float(np.arccos(max(dots)))
+
+
 def screen_groups(groups: list, blochs: list, tol: float = DEDUP_TOL,
-                  gauge_tol: float = GAUGE_TOL) -> list:
+                  gauge_tol: float = GAUGE_TOL,
+                  min_sep_frac: float = MIN_SEP_FRAC_DEFAULT) -> list:
     """Drop duplicate and hull-redundant candidates; rank the groups.
 
     Per group: remove states already in the frame (or already kept in this
@@ -577,8 +733,15 @@ def screen_groups(groups: list, blochs: list, tol: float = DEDUP_TOL,
     out = []
     for g in groups:
         keep, gauges = [], []
+        # A candidate closer to an existing element than min_sep_frac * eps is a
+        # duplicate for coverage purposes and is covered by that element at cost
+        # O(angle^2); this is what removes the rotated poles, which sit at
+        # ~dt|kappa| while the tilt eps ~ 2 sqrt(dt a) is the scale that matters.
+        floor_ang = min_sep_frac * g.get('eps', 0.0)
         for r in g['states']:
             if not _is_new_bloch(r, blochs, tol) or not _is_new_bloch(r, keep, tol):
+                continue
+            if _min_angle(r, blochs + keep) < floor_ang:
                 continue
             gauge = frame_element_gauge(S, state_column(r))[0]
             if gauge <= 1.0 + gauge_tol:
@@ -624,6 +787,8 @@ def apply_criterion(blochs: list, states: list, gate: np.ndarray,
 def grow_frames(case: dict, dt: float = DT_DEFAULT,
                 d_ext_max: int = D_EXT_MAX_DEFAULT,
                 max_new_per_round: int = 12,
+                tilt: str = 'optimal',
+                min_sep_frac: float = MIN_SEP_FRAC_DEFAULT,
                 filter_mode: str = 'criterion',
                 criterion_max_dext: int = CRITERION_MAX_DEXT_DEFAULT,
                 accept: str = 'nonharmful',
@@ -637,7 +802,7 @@ def grow_frames(case: dict, dt: float = DT_DEFAULT,
     guarantees the stepped element is separable), so the frame sequence is
     shared by both evaluated parameter sets.  Groups are added atomically and
     ranked by gauge; at most max_new_per_round states are added per round (a
-    group is six states, so the default 12 means two groups), which is what
+    group is the four ring states, so the default 12 means three groups), which is what
     keeps the d_ext ladder -- and hence the plotted curve -- resolved: the
     unrestricted closure adds O(d_ext^2) states per round and would reach 100
     in a single step.
@@ -656,8 +821,8 @@ def grow_frames(case: dict, dt: float = DT_DEFAULT,
         d = len(blochs)
         if d >= d_ext_max:
             break
-        groups = candidate_groups(blochs, J, gamma, h, gamma_p, dt, struct_tol)
-        kept = screen_groups(groups, blochs)
+        groups = candidate_groups(blochs, J, gamma, h, gamma_p, dt, tilt, struct_tol)
+        kept = screen_groups(groups, blochs, min_sep_frac=min_sep_frac)
         if not kept:
             if verbose:
                 print(f'[{case["tag"]}] round {r}: d_ext={d}, no non-redundant '
@@ -698,6 +863,7 @@ def grow_frames(case: dict, dt: float = DT_DEFAULT,
                            n_groups=len(groups), n_groups_kept=len(kept),
                            n_shortlisted=used, n_added=len(new), filter=mode,
                            gauge_max=float(kept[0]['gauge_max']),
+                           eps=float(np.median([g['eps'] for g in groups])),
                            lam_min=float(min(g['lam_min'] for g in groups)),
                            records=recs))
         if verbose:
@@ -708,7 +874,8 @@ def grow_frames(case: dict, dt: float = DT_DEFAULT,
                   f'{time.perf_counter() - t0:.0f}s)', flush=True)
 
     return dict(tag=case['tag'], model=case['model'], J=J, gamma=gamma, h=h,
-                gamma_p_grow=gamma_p, dt=dt, gate_kind=gate_kind,
+                gamma_p_grow=gamma_p, dt=dt, gate_kind=gate_kind, tilt=tilt,
+                min_sep_frac=min_sep_frac,
                 frames=frames, d_exts=[f.shape[1] for f in frames],
                 rounds=rounds, version=GROW_VERSION)
 
@@ -753,6 +920,7 @@ def self_check(seed: int = 0, dt: float = DT_DEFAULT) -> None:
     coh_terms = [(0, 0, +1), (0, 2, -1), (2, 0, -1), (2, 2, +1),
                  (1, 3, +1), (1, 1, -1), (3, 3, -1), (3, 1, +1)]
     worst_rot = 0.0
+    per_case = {}      # (gamma, h) -> (max err_rot/dt^2, max ||L(rho)||)
     for trial in range(200):
         J, gamma = 1.0, float(rng.choice([0.0, 2.0, 10.0, 20.0]))
         h = float(rng.choice([0.0, MODEL4_H]))
@@ -760,7 +928,8 @@ def self_check(seed: int = 0, dt: float = DT_DEFAULT) -> None:
         r0, r1 = rng.standard_normal(3), rng.standard_normal(3)
         r0 /= np.linalg.norm(r0)
         r1 /= np.linalg.norm(r1)
-        ex = extract_candidates(r0, r1, J, gamma, h, gamma_p, dt=dt)
+        ex = extract_candidates(r0, r1, J, gamma, h, gamma_p, dt=dt,
+                                tilt='equatorial', include_poles=True)
         assert ex['struct_err'] < STRUCT_TOL, ex['struct_err']
         if not np.isfinite(ex['theta']):
             continue
@@ -804,6 +973,14 @@ def self_check(seed: int = 0, dt: float = DT_DEFAULT) -> None:
         err_rot = float(np.max(np.abs(_reconstruct(*ex['groups']) - rho_plain)))
         worst_rot = max(worst_rot, err_rot / dt ** 2)
         assert err_rot < 1e-9 + 1e3 * dt ** 2, (trial, gamma, err_rot)
+        # Per case: the second-order coefficient and the first-order scale it
+        # corrects, so their ratio * dt is the RELATIVE error of the first-order
+        # construction -- which has to sit well below the detuning being tested.
+        first = float(np.sum(np.abs(np.linalg.eigvalsh(
+            two_qubit_lindbladian_action(rho, J, gamma, h, gamma_p)))))
+        prev = per_case.get((gamma, h), (0.0, 0.0))
+        per_case[(gamma, h)] = (max(prev[0], err_rot / dt ** 2),
+                                max(prev[1], first))
 
         # (d) group geometry: the square is antipode-closed and orthogonal to r_i
         for r, states in zip((r0, r1), ex['groups_local']):
@@ -817,6 +994,17 @@ def self_check(seed: int = 0, dt: float = DT_DEFAULT) -> None:
           f'decomposition and group geometry OK')
     print(f'   rotated decomposition of rho + dt L(rho): residual <= '
           f'{worst_rot:.3g} * dt^2  (the O(dt^2) of the U conjugation)')
+    print('   per case: c2 = that coefficient, c1 = ||L(rho)||_1 it corrects, '
+          'and the RELATIVE error c2*dt/c1 of the first-order construction --')
+    print('   which must sit WELL BELOW the detuning being tested (1 - '
+          'GP_FACTOR = 1e-2), or the extracted states are the wrong states:')
+    print(f'   {"gamma":>7s} {"h":>5s} {"c2":>10s} {"c1":>8s}'
+          + ''.join(f'{f"dt={d:g}":>12s}' for d in (1e-2, 1e-3, 1e-4)))
+    for (gam, hh) in sorted(per_case):
+        c2, c1 = per_case[(gam, hh)]
+        print(f'   {gam:7g} {hh:5g} {c2:10.3g} {c1:8.3g}'
+              + ''.join(f'{c2 * d / max(c1, 1e-30):12.2e}'
+                        for d in (1e-2, 1e-3, 1e-4)))
 
     print("4) gamma' = J  =>  M PSD (tex threshold), gamma' = 0.99 J  =>  not")
     bad_at, bad_below = 0, 0
@@ -833,12 +1021,19 @@ def self_check(seed: int = 0, dt: float = DT_DEFAULT) -> None:
     print(f"   gamma' = J:      {bad_at}/400 elements with lambda_- < 0 (expect 0)")
     print(f"   gamma' = 0.99 J: {bad_below}/400 with lambda_- < 0 (expect > 0)")
     assert bad_at == 0
+    # The threshold has to be SHARP, or the detuned parameter set would have
+    # nothing to show: below it some element must violate.  At gamma = 0,
+    # det M = (0.99^2 - 1)(1-z_0^2)(1-z_1^2) < 0 for every pair, and gamma = 0
+    # is drawn about a quarter of the time, so this is not a flaky assertion.
+    assert bad_below > 0
 
     print('5) measured negativity floor of the Euler step vs dt, at '
           "gamma' = J, on the octahedron")
-    print('   (a certified lower bound on the framability rate for ANY frame: '
-          'a curve sitting on it means dt is too coarse, not that the frame is)')
-    print(f'   {"case":16s}' + ''.join(f'{f"dt={d:g}":>14s}'
+    print('   floor = certified lower bound on the framability RATE for ANY '
+          'frame (a curve sitting on it means dt is too coarse, not the frame);')
+    print('   bnd   = 2||expm(dt M) d_j - (1 + dt M) d_j||_1 / dt, the '
+          'truncation error, which UPPER bounds the floor but is not equal to it')
+    print(f'   {"case":16s}' + ''.join(f'{f"dt={d:g} floor":>16s}{"bnd":>12s}'
                                        for d in (1e-2, 1e-3, 1e-4)))
     for case in CASES:
         J, gamma = float(case['J']), float(case['gamma'])
@@ -847,12 +1042,49 @@ def self_check(seed: int = 0, dt: float = DT_DEFAULT) -> None:
         for d in (1e-2, 1e-3, 1e-4):
             Y = build_targets(blochs, J, gamma, hh, J, d, field='plain')
             fl = negativity_floor(Y)[0]
-            row += f'{(fl - 1.0) / d:14.4e}'
+            bnd = trotter_truncation_bound(blochs, J, gamma, hh, J, d)
+            row += f'{(fl - 1.0) / d:16.4e}{bnd:12.4e}'
+            assert (fl - 1.0) / d <= bnd + 1e-9, (case['tag'], d, fl, bnd)
         print(row)
     print("   compare with the gamma' = 0.99 J signal, rate 2|lambda_-| = "
           '2e-2: dt is usable only where the floor is well below that')
+    print('   (with --gate expm the floor is identically 1 -- the targets are '
+          'then genuine states -- which isolates the non-CP artefact)')
 
-    print('6) two growth rounds on the octahedron (model3, gamma = 2)')
+    print('6) the (+x, +x) octahedron pair at gamma = 0: worked example')
+    xp = np.array([1.0, 0.0, 0.0])
+    ex = extract_candidates(xp, xp, 1.0, 0.0, 0.0, 1.0, dt=dt, tilt='equatorial',
+                            include_poles=True)
+    print(f"   w = {ex['w']:.6g}  (expect 1j)    theta = {ex['theta']:.6f} "
+          f'(expect pi/4 = {np.pi / 4:.6f})')
+    print(f"   a0 = {ex['a0']:.6g}, a1 = {ex['a1']:.6g} (expect 1, 1)   "
+          f"eig M = {np.linalg.eigvalsh(ex['M']).round(12)} (expect [0, 2])")
+    assert abs(ex['w'] - 1j) < 1e-12 and abs(ex['theta'] - np.pi / 4) < 1e-12
+    assert abs(float(np.min(np.linalg.eigvalsh(ex['M'])))) < 1e-12
+    # kappa = 0 here, so the two poles come back as +-x itself: exactly redundant.
+    poles = [ex['groups'][0][4], ex['groups'][0][5]]
+    print(f'   rotated poles = {np.round(poles[0], 12)}, {np.round(poles[1], 12)} '
+          f'(expect +-x: EXACTLY the pair (id +- sigma^x)/2, so free -- and not '
+          f'emitted unless include_poles=True)')
+    assert np.linalg.norm(poles[0] - xp) < 1e-12
+    assert np.linalg.norm(poles[1] + xp) < 1e-12
+    ring = np.round(np.array(ex['groups'][0][:4]), 12)
+    print(f'   equatorial ring = {ring.tolist()}')
+    print(f'   (expect the four (0, +-1/sqrt2, +-1/sqrt2), gauge sqrt(2) = '
+          f'{np.sqrt(2):.6f})')
+    for st in ring:
+        assert abs(st[0]) < 1e-12 and abs(abs(st[1]) - 1 / np.sqrt(2)) < 1e-12
+        assert abs(frame_element_gauge(frame_matrix(blochs),
+                                       state_column(st))[0] - np.sqrt(2)) < 1e-9
+    for name, tl in (('optimal', 'optimal'), ('equatorial', 'equatorial')):
+        exx = extract_candidates(xp, xp, 1.0, 0.0, 0.0, 1.0, dt=dt, tilt=tl)
+        assert len(exx['groups'][0]) == 4, 'poles must not be emitted by default'
+        ang = np.degrees(_min_angle(exx['groups'][0][0], [xp]))
+        print(f'   tilt={name:11s} ring polar angle = {ang:8.4f} deg  '
+              f'(eps = {exx["eps"][0][0]:.6g} rad)')
+        assert abs(np.radians(ang) - exx['eps'][0][0]) < 1e-9
+
+    print('7) two growth rounds on the octahedron (model3, gamma = 2)')
     out = grow_frames(CASE_BY_TAG['model3_gam2'], dt=dt, d_ext_max=20,
                       max_new_per_round=12, filter_mode='criterion', max_rounds=2)
     print(f'   d_ext ladder {out["d_exts"]}')
