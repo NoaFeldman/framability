@@ -769,8 +769,23 @@ def apply_criterion(blochs: list, states: list, gate: np.ndarray,
     cur = list(blochs)
     taken, recs = [], []
     for r in states:
-        crit = frame_element_criterion(frame_matrix(cur), state_column(r),
-                                       np.asarray(gate).real.T, n_bond=2)
+        try:
+            crit = frame_element_criterion(frame_matrix(cur), state_column(r),
+                                           np.asarray(gate).real.T, n_bond=2)
+        except RuntimeError as e:
+            # The criterion's gauge LPs can still fail outright on a badly
+            # conditioned frame (near-parallel columns at small tilt), even with
+            # the solver ladder in product_frame_trick._min_l1.  Degrade to the
+            # gauge filter for this candidate rather than losing the whole
+            # ladder: screen_groups has already certified it non-redundant, so
+            # accepting it is the same decision --filter gauge would make.
+            print(f'  WARNING frame_element_criterion failed ({e}); '
+                  f'falling back to the gauge verdict for this candidate',
+                  flush=True)
+            recs.append(dict(verdict='lp_failed', accepted=True, error=str(e)))
+            cur.append(np.asarray(r, dtype=float))
+            taken.append(np.asarray(r, dtype=float))
+            continue
         ok = (crit['verdict'] == 'useful' if accept == 'useful'
               else crit['verdict'] != 'harmful')
         recs.append(dict(verdict=crit['verdict'], f_before=float(crit['f_before']),

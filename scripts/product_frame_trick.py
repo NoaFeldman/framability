@@ -245,12 +245,35 @@ def _min_l1(M: np.ndarray, y: np.ndarray) -> tuple[float, np.ndarray | None,
     b_ub = np.zeros(2 * m)
     A_eq = np.hstack([M, np.zeros((nrows, m))])
     bounds = [(None, None)] * m + [(0.0, None)] * m
-    res = linprog(c_obj, A_ub=A_ub, b_ub=b_ub, A_eq=A_eq, b_eq=y,
-                  bounds=bounds, method='highs')
-    if res.status == 2:            # infeasible: y is not in the span of M
-        return float('inf'), None, None
-    if not res.success:
-        raise RuntimeError(f'gauge LP failed (status {res.status}): {res.message}')
+
+    # Solver ladder, the same remedy dissipative_PT._framability_lp already
+    # carries (_HIGHS_ATTEMPTS): a single 'highs' call reports status 4
+    # ("HiGHS Status 15: model_status is Unknown; primal_status is Infeasible")
+    # on feasible but ill-conditioned problems, which is a solver failure and
+    # NOT the status 2 that means y is genuinely outside span(M).  Product
+    # frames with near-parallel columns -- exactly what the small tilt
+    # eps ~ 2 sqrt(dt a) of product_frame_grow produces at small dt -- hit this
+    # routinely, so retry with interior point, dual simplex and presolve off
+    # before giving up.  Only if EVERY attempt fails is the problem reported.
+    attempts = (dict(method='highs'),
+                dict(method='highs-ipm'),
+                dict(method='highs-ds'),
+                dict(method='highs', options={'presolve': False}))
+    res, failures = None, []
+    for kw in attempts:
+        cand = linprog(c_obj, A_ub=A_ub, b_ub=b_ub, A_eq=A_eq, b_eq=y,
+                       bounds=bounds, **kw)
+        if cand.status == 2:       # infeasible: y is not in the span of M
+            return float('inf'), None, None
+        if cand.success:
+            res = cand
+            break
+        failures.append(f'{kw.get("method")}'
+                        f'{"/nopresolve" if kw.get("options") else ""}'
+                        f' -> status {cand.status}: {cand.message}')
+    if res is None:
+        raise RuntimeError('gauge LP failed on every HiGHS configuration; '
+                           + ' | '.join(failures))
 
     c = np.asarray(res.x[:m], dtype=float)
     gauge = float(np.abs(c).sum())
