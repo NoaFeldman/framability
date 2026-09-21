@@ -56,7 +56,7 @@ OUT_DIR_DEFAULT = 'results_product_frame_grow'
 
 # The growth parameters an existing frames file must agree on to be reused.
 _KEYS = ('dt', 'd_ext_max', 'max_new_per_round', 'filter', 'criterion_max_dext',
-         'accept', 'gate_kind', 'tilt', 'min_sep_frac', 'version')
+         'accept', 'gate_kind', 'tilt', 'min_sep_frac', 'field', 'version')
 
 
 def frames_path(out_dir, tag: str) -> Path:
@@ -98,7 +98,7 @@ def load_frames(out_dir, tag: str) -> dict | None:
 def _meta(args) -> dict:
     return dict(dt=args.dt, d_ext_max=args.d_ext_max,
                 max_new_per_round=args.max_new_per_round, filter=args.filter,
-                tilt=args.tilt, min_sep_frac=args.min_sep_frac,
+                tilt=args.tilt, min_sep_frac=args.min_sep_frac, field=args.field,
                 criterion_max_dext=args.criterion_max_dext, accept=args.accept,
                 gate_kind=args.gate, version=GROW_VERSION)
 
@@ -136,7 +136,11 @@ def main() -> None:
                         "'both' = emit each ring")
     p.add_argument('--min_sep_frac', type=float, default=MIN_SEP_FRAC_DEFAULT,
                    help='drop a candidate closer than this fraction of the ring '
-                        'tilt to an existing element (removes the rotated poles)')
+                        'tilt to an existing element (guards against near-copies)')
+    p.add_argument('--field', type=str, default='free', choices=('free', 'plain'),
+                   help="target the frame is grown for; must match stage 2's "
+                        "--fields ('free': unrotated states, poles free; "
+                        "'plain': U-rotated states)")
     p.add_argument('--filter', type=str, default='criterion',
                    choices=('criterion', 'gauge'),
                    help="'criterion' = product_frame_trick.frame_element_criterion "
@@ -172,7 +176,7 @@ def main() -> None:
 
     print(f'[{tag}] growing: model={case["model"]} J={case["J"]} '
           f'gamma={case["gamma"]} gamma_p=J dt={args.dt} '
-          f'tilt={args.tilt} min_sep_frac={args.min_sep_frac} '
+          f'field={args.field} tilt={args.tilt} min_sep_frac={args.min_sep_frac} '
           f'filter={args.filter} (criterion up to d_ext {args.criterion_max_dext}) '
           f'budget={args.max_new_per_round}/round -> d_ext >= {args.d_ext_max}',
           flush=True)
@@ -180,7 +184,7 @@ def main() -> None:
     grown = grow_frames(case, dt=args.dt, d_ext_max=args.d_ext_max,
                         max_new_per_round=args.max_new_per_round,
                         tilt=args.tilt, min_sep_frac=args.min_sep_frac,
-                        filter_mode=args.filter,
+                        field=args.field, filter_mode=args.filter,
                         criterion_max_dext=args.criterion_max_dext,
                         accept=args.accept, gate_kind=args.gate,
                         max_rounds=args.max_rounds)

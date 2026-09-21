@@ -45,21 +45,23 @@ for the gate handed to product_frame_trick.frame_element_criterion.
 
 TWO TARGET VARIANTS
 -------------------
-field='plain'  (the default, and what the pipeline is about) targets are G d_j:
-               the framability of the bare Euler gate, which is also what
-               frame_element_criterion scores.  It can reach 1 at gamma' = |J|
-               because the candidate states are U-ROTATED -- see below.
-field='free'   an optional reference: targets are the Pauli columns of
+field='free'   (the DEFAULT, for growth and evaluation alike) targets are the
+               Pauli columns of
 
                    rho_j + dt ( L(rho_j) - i[H_0 + H_1, rho_j] ),
 
-               i.e. rho~ itself, with the element-dependent local generator
-               pair (H_0, H_1) of product_frame_trick.  This is the dt -> 0
-               idealisation (not the image of D under any single gate, hence
-               the explicit target matrix), useful only as a cross-check: once
-               the frame is rich enough the two agree to O(dt^2).  For model4
-               the local field h X sits entirely in the cancelled starred
-               entries, so 'free' is h-independent while 'plain' is not.
+               i.e. rho~, with the element-dependent local generator pair
+               (H_0, H_1) of product_frame_trick.  This is the quantity for a
+               protocol that CARRIES the free local rotation along with the
+               trajectory's product state -- the reading under which the
+               rotated poles cost nothing (see "WHICH TARGET THE FRAME IS
+               GROWN FOR").  It is not the image of D under any single gate,
+               hence the explicit target matrix.  For model4 the local field
+               h X sits entirely in the cancelled starred entries, so 'free'
+               is h-independent.
+field='plain'  targets are G d_j: the bare Euler gate, the quantity for a
+               protocol that must represent the rotation inside the finite
+               frame.  Meaningful only for frames grown with --field plain.
 
 CANDIDATE EXTRACTION (the growth step)
 --------------------------------------
@@ -168,14 +170,27 @@ from S" is the frame that is actually available, and the poles are inside it by
 construction.  We therefore skip computing and storing them (include_poles=True
 restores them for the exactness checks in --self_check).
 
-The quantitative version of the same statement, for the finite frame the LP
-actually sees: a pole sits at angle dt|kappa_i| from its parent, and a state at
-angle x from a frame element is represented by that element at cost O(x^2), so
-omitting it costs O(dt^2 kappa^2) -- the order of negativity_floor itself, i.e.
-nothing at the resolution this pipeline works at.  For scale, at dt = 1e-4 a
-pole sits ~1e-3 rad from its parent while the ring sits at eps ~ 2 sqrt(dt a)
-~ 2e-2 rad, so keeping the poles would spend a third of the per-round budget on
-states that shrink the frame's angular resolution by nothing.
+WHICH TARGET THE FRAME IS GROWN FOR (--field, default 'free')
+-------------------------------------------------------------
+"The poles are free" is a statement about the PROTOCOL, and it fixes the
+quantity to compute: the 'free' target, rho~, from which the rotation has been
+removed.  Its product factors are the UNROTATED ring (and the unrotated poles
+Psi, Psi^perp -- present already, or added as candidates when an antipode is
+missing).  Growth, the criterion and the evaluation must all use that target;
+product_frame_trick.frame_element_criterion takes a single gate and cannot
+express it, so apply_free_criterion applies the same verdicts by exact sparse
+recompute.
+
+Skipping the poles while evaluating the PLAIN target is inconsistent, and the
+first cluster run (grow_version 1.0) showed it: the plain rate came out at
+exactly gamma for model3 (10, 20) and exactly gamma + 4h for model4 (16, 26),
+barely moving with d_ext -- the uncovered local drift |kappa|.  The earlier
+estimate here, that omitting a pole at angle x = dt|kappa| costs O(x^2), was
+WRONG for a finite frame: O(x^2) holds only for a point surrounded by frame
+elements, while the parent Psi is a VERTEX of the hull, and a pure state a
+distance x off a vertex costs O(x).  Linear in dt|kappa| per step is a rate
+~|kappa|, which is exactly what came out.  field='plain' therefore only makes
+sense together with the U-rotated candidates it selects (and its poles).
 
 When kappa = 0 the pole is not merely close to its parent but IS its parent:
 for the octahedron pair (+x, +x) at gamma = 0, z = 0 kills both the ZZ and the
@@ -254,7 +269,7 @@ from product_frame_trick import (bloch_to_ket, perp_ket, product_frame_trick,  #
                                  two_qubit_lindbladian_action,
                                  frame_element_gauge, frame_element_criterion)
 
-GROW_VERSION = '1.0'
+GROW_VERSION = '1.1'   # 1.1: frames grown for the 'free' target by default
 
 DT_DEFAULT = 1e-2          # the requested Euler step
 D_EXT_MAX_DEFAULT = 100    # stop once d_ext >= this
@@ -672,21 +687,31 @@ def extract_candidates(r0, r1, J: float, gamma: float, h: float, gamma_p: float,
 
 def candidate_groups(blochs, J: float, gamma: float, h: float, gamma_p: float,
                      dt: float = DT_DEFAULT, tilt: str = 'optimal',
-                     struct_tol: float = STRUCT_TOL) -> list:
+                     struct_tol: float = STRUCT_TOL, field: str = 'free') -> list:
     """All candidate groups of one growth round.
 
     Visits the d_ext(d_ext+1)/2 unordered pairs (the swap symmetry of L makes
     the ordered pairs redundant) and returns a list of dicts
     {pair, qubit, states, lam_min, abs_w, eps}.
+
+    field selects which decomposition the candidates serve (see "WHICH TARGET
+    THE FRAME IS GROWN FOR" in the module docstring):
+      'free'  -> the UNROTATED states (the product factors of rho~), plus the
+                 unrotated poles, so that a missing antipode Psi^perp -- which
+                 the diagonal term P_0^perp (x) P_1 needs -- becomes a candidate
+                 (Psi itself is always a duplicate and is dropped);
+      'plain' -> the U^dag-rotated ring, poles skipped.
     """
     d = len(blochs)
     groups = []
     for i in range(d):
         for j in range(i, d):
             ex = extract_candidates(blochs[i], blochs[j], J, gamma, h, gamma_p,
-                                    dt=dt, tilt=tilt, struct_tol=struct_tol)
+                                    dt=dt, tilt=tilt, struct_tol=struct_tol,
+                                    include_poles=(field == 'free'))
             lam = float(np.min(np.linalg.eigvalsh(ex['M'])))
-            for q, states in enumerate(ex['groups']):
+            src = ex['groups_local'] if field == 'free' else ex['groups']
+            for q, states in enumerate(src):
                 groups.append(dict(pair=(i, j), qubit=q, states=states,
                                    lam_min=lam, abs_w=float(abs(ex['w'])),
                                    eps=float(min(ex['eps'][q]))))
@@ -733,10 +758,9 @@ def screen_groups(groups: list, blochs: list, tol: float = DEDUP_TOL,
     out = []
     for g in groups:
         keep, gauges = [], []
-        # A candidate closer to an existing element than min_sep_frac * eps is a
-        # duplicate for coverage purposes and is covered by that element at cost
-        # O(angle^2); this is what removes the rotated poles, which sit at
-        # ~dt|kappa| while the tilt eps ~ 2 sqrt(dt a) is the scale that matters.
+        # A candidate closer to an existing element than min_sep_frac * eps adds
+        # no coverage at the ring's scale: pure bookkeeping against near-copies
+        # (e.g. a tilt that collapsed because a = 0 on a dark direction).
         floor_ang = min_sep_frac * g.get('eps', 0.0)
         for r in g['states']:
             if not _is_new_bloch(r, blochs, tol) or not _is_new_bloch(r, keep, tol):
@@ -796,6 +820,50 @@ def apply_criterion(blochs: list, states: list, gate: np.ndarray,
     return taken, recs
 
 
+def apply_free_criterion(blochs: list, states: list, J: float, gamma: float,
+                         h: float, gamma_p: float, dt: float,
+                         accept: str = 'nonharmful',
+                         tol: float = 1e-9) -> tuple[list, list]:
+    """Useful / useless / harmful for the 'free' targets, by exact recompute.
+
+    product_frame_trick.frame_element_criterion takes a single gate, and the
+    free targets are element dependent (one (H_0, H_1) per frame element), so
+    they cannot be passed to it.  This applies the same verdict definitions --
+    useful: f strictly down, harmful: f strictly up, useless: otherwise -- by
+    recomputing f with framability_targets (sparse, so no dense O(d_ext^4)
+    epigraph block).  f is evaluated once for the starting frame and once per
+    candidate; it is carried forward whenever a candidate is accepted.
+    """
+    cur = list(blochs)
+    f_before = framability(cur, J, gamma, h, gamma_p, dt, field='free')[0]
+    taken, recs = [], []
+    for r in states:
+        trial = cur + [np.asarray(r, dtype=float)]
+        f_after = framability(trial, J, gamma, h, gamma_p, dt, field='free')[0]
+        thr = tol * max(1.0, abs(f_before)) if np.isfinite(f_before) else 0.0
+        if not np.isfinite(f_after):
+            verdict = 'lp_failed'
+        elif f_after < f_before - thr:
+            verdict = 'useful'
+        elif f_after > f_before + thr:
+            verdict = 'harmful'
+        else:
+            verdict = 'useless'
+        if verdict == 'lp_failed':
+            ok = True                 # same fallback as apply_criterion
+        else:
+            ok = (verdict == 'useful' if accept == 'useful'
+                  else verdict != 'harmful')
+        recs.append(dict(verdict=verdict, f_before=float(f_before),
+                         f_after=float(f_after), accepted=bool(ok)))
+        if ok:
+            cur = trial
+            taken.append(np.asarray(r, dtype=float))
+            if np.isfinite(f_after):
+                f_before = f_after
+    return taken, recs
+
+
 # ---------------------------------------------------------------------------
 #  The growth loop
 # ---------------------------------------------------------------------------
@@ -804,6 +872,7 @@ def grow_frames(case: dict, dt: float = DT_DEFAULT,
                 max_new_per_round: int = 12,
                 tilt: str = 'optimal',
                 min_sep_frac: float = MIN_SEP_FRAC_DEFAULT,
+                field: str = 'free',
                 filter_mode: str = 'criterion',
                 criterion_max_dext: int = CRITERION_MAX_DEXT_DEFAULT,
                 accept: str = 'nonharmful',
@@ -836,7 +905,8 @@ def grow_frames(case: dict, dt: float = DT_DEFAULT,
         d = len(blochs)
         if d >= d_ext_max:
             break
-        groups = candidate_groups(blochs, J, gamma, h, gamma_p, dt, tilt, struct_tol)
+        groups = candidate_groups(blochs, J, gamma, h, gamma_p, dt, tilt, struct_tol,
+                                  field=field)
         kept = screen_groups(groups, blochs, min_sep_frac=min_sep_frac)
         if not kept:
             if verbose:
@@ -856,10 +926,13 @@ def grow_frames(case: dict, dt: float = DT_DEFAULT,
         if filter_mode == 'criterion' and d > criterion_max_dext:
             mode = 'gauge'                 # see CRITERION_MAX_DEXT_DEFAULT
         gate = (trotter_gate(J, gamma, h, gamma_p, dt, gate_kind)
-                if mode == 'criterion' else None)
+                if mode == 'criterion' and field == 'plain' else None)
         new, recs = [], []
         for g in short:
-            if mode == 'criterion':
+            if mode == 'criterion' and field == 'free':
+                taken, rec = apply_free_criterion(blochs + new, g['states'], J, gamma,
+                                                  h, gamma_p, dt, accept)
+            elif mode == 'criterion':
                 taken, rec = apply_criterion(blochs + new, g['states'], gate, accept)
             else:
                 taken, rec = list(g['states']), []
@@ -890,7 +963,7 @@ def grow_frames(case: dict, dt: float = DT_DEFAULT,
 
     return dict(tag=case['tag'], model=case['model'], J=J, gamma=gamma, h=h,
                 gamma_p_grow=gamma_p, dt=dt, gate_kind=gate_kind, tilt=tilt,
-                min_sep_frac=min_sep_frac,
+                min_sep_frac=min_sep_frac, field=field,
                 frames=frames, d_exts=[f.shape[1] for f in frames],
                 rounds=rounds, version=GROW_VERSION)
 

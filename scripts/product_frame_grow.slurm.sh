@@ -44,7 +44,7 @@
 OUT_DIR=${OUT_DIR:-results_product_frame_grow}
 N_CHUNKS=${N_CHUNKS:-200}            # must match the --array size above
 GP_FACTOR=${GP_FACTOR:-0.99}         # gamma'/J of the detuned set
-FIELDS=${FIELDS:-"plain"}            # add "free" for the dt->0 reference variant
+FIELDS=${FIELDS:-"free"}             # must match stage 1's FIELD
 GPS=${GPS:-"at lo"}
 FORCE=${FORCE:-0}
 

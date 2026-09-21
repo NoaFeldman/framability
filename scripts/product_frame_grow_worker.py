@@ -13,9 +13,10 @@ cheap one and the array load balances.
 The two gamma' variants are
     at : gamma' = J             -- the continuous_simulation.tex threshold
     lo : gamma' = GP_FACTOR * J -- the detuned set (0.99 J by default)
-and the target variants are 'plain' (the default: the bare Euler gate
-rho -> rho + dt L(rho), which the U-rotated frame elements of stage 1 are built
-for) and 'free' (an optional dt -> 0 reference; see product_frame_grow).
+and the target variants are 'free' (the default: rho~, the step with the free
+local rotation carried along, which frames grown with --field free are built
+for) and 'plain' (the bare Euler gate, meaningful only for frames grown with
+--field plain); see "WHICH TARGET THE FRAME IS GROWN FOR" in product_frame_grow.
 
 Every unit also records negativity_floor(Y): a certified lower bound on the
 framability that no frame can beat, because the Euler step is not a positive
@@ -73,7 +74,7 @@ def gamma_p_of(variant: str, J: float, gp_factor: float) -> float:
     raise ValueError(f'gamma_p variant must be one of {GP_VARIANTS}, got {variant!r}')
 
 
-def work_list(out_dir, tags=None, fields=('plain',), gps=GP_VARIANTS) -> list:
+def work_list(out_dir, tags=None, fields=('free',), gps=GP_VARIANTS) -> list:
     """Flat unit list [(tag, round, d_ext, gp, field)], most expensive first.
 
     Only cases whose stage-1 ladder exists contribute; a missing ladder is
@@ -191,10 +192,12 @@ def main() -> None:
     p.add_argument('--out_dir', type=str, default=OUT_DIR_DEFAULT)
     p.add_argument('--tags', type=str, nargs='*', default=None,
                    help='restrict to these case tags (default: all seven)')
-    p.add_argument('--fields', type=str, nargs='*', default=['plain'],
+    p.add_argument('--fields', type=str, nargs='*', default=['free'],
                    choices=list(FIELDS),
-                   help="'plain' (default) is the requested Euler-gate "
-                        "framability; add 'free' for the dt -> 0 reference")
+                   help="'free' (default) matches frames grown with --field free "
+                        "(free local rotation carried along); 'plain' is the bare "
+                        "Euler gate, meaningful only for frames grown with "
+                        "--field plain")
     p.add_argument('--gps', type=str, nargs='*', default=list(GP_VARIANTS),
                    choices=list(GP_VARIANTS))
     p.add_argument('--gp_factor', type=float, default=GP_FACTOR_DEFAULT,
