@@ -389,15 +389,33 @@ def pauli_column_2q(rho) -> np.ndarray:
 # ---------------------------------------------------------------------------
 #  Framability (Schroedinger) with explicit per-column targets
 # ---------------------------------------------------------------------------
-def framability_targets(D: np.ndarray, Y: np.ndarray) -> tuple[float, np.ndarray]:
-    """max_j min{ ||c||_1 : D c = Y[:, j] }, the sparse per-column LP.
+def framability_targets(D: np.ndarray, Y: np.ndarray,
+                        method: str = 'split') -> tuple[float, np.ndarray]:
+    """max_j min{ ||c||_1 : D c = Y[:, j] }, one LP per column.
 
-    A transcription of dissipative_PT._framability_lp (same HiGHS ladder, same
-    full-support guard, same sparse epigraph block) that accepts a caller-built
-    target matrix instead of forming gate.T @ D -- needed for the 'free' variant,
-    whose targets are not the image of D under any single gate.  Returns
-    (framability, per-column gauges); the framability is +inf if any column is
-    unreachable or the frame lacks full Pauli support.
+    Accepts a caller-built target matrix instead of forming gate.T @ D -- needed
+    for the 'free' variant, whose targets are not the image of D under any single
+    gate.  Same HiGHS ladder and full-support guard as
+    dissipative_PT._framability_lp.  Returns (framability, per-column gauges);
+    the framability is +inf if any column is unreachable or the frame lacks full
+    Pauli support.
+
+    method='split' (default) solves the standard split-variable form
+
+        min sum(p + n)   s.t.   D (p - n) = y,   p, n >= 0,
+
+    which has only nrows = 16 equality rows and no inequality block.  It is
+    EXACTLY the same optimum as the epigraph form (c free, t >= |c|, min sum t)
+    that dissipative_PT._framability_lp uses -- at an optimum p_k n_k = 0, so
+    p + n = |c| -- but the epigraph form adds 2 m inequality ROWS (m = d_ext
+    columns of D), so each column LP costs ~m^2 and the whole evaluation
+    ~d_ext_single^6: measured 18-20 h per rung at d_ext_single = 78, i.e. ~92 h
+    at 102, past the 24 h wall.  The split form keeps every LP at 16 rows.
+
+    This is NOT the batched min-t formulation of
+    optimize_framability._get_framability_fast, which under-reports on some
+    frames: each column here is still its own independent LP.
+    method='epigraph' keeps the old form for cross-checks (--self_check).
     """
     D = np.asarray(D, dtype=float)
     Y = np.asarray(Y, dtype=float)
@@ -406,6 +424,29 @@ def framability_targets(D: np.ndarray, Y: np.ndarray) -> tuple[float, np.ndarray
         raise ValueError(f'target matrix has {Y.shape[0]} rows, frame has {nrows}')
     if not _has_full_support(D):
         return float('inf'), np.full(Y.shape[1], np.inf)
+
+    if method == 'split':
+        c_obj = np.ones(2 * d_ext)
+        A_eq = csc_matrix(np.hstack([D, -D]))
+        bounds = [(0.0, None)] * (2 * d_ext)
+        lp = _clean_inputs(_LPProblem(c_obj, None, None, A_eq, np.zeros(nrows),
+                                      bounds, None))
+        vals = np.full(Y.shape[1], np.inf)
+        for j in range(Y.shape[1]):
+            lp_j = lp._replace(b_eq=Y[:, j].copy())
+            r = None
+            for kw in _HIGHS_ATTEMPTS:
+                cand = _linprog_highs(lp_j, **kw)
+                if cand['status'] == 0:
+                    r = cand
+                    break
+            if r is None:
+                return float('inf'), vals
+            x = np.asarray(r['x'], dtype=float)
+            vals[j] = float(np.sum(np.abs(x[:d_ext] - x[d_ext:])))
+        return float(np.max(vals)), vals
+    if method != 'epigraph':
+        raise ValueError(f"method must be 'split' or 'epigraph', got {method!r}")
 
     c_obj = np.concatenate([np.zeros(d_ext), np.ones(d_ext)])
     A_eq = csc_matrix(np.hstack([D, np.zeros((nrows, d_ext))]))
@@ -996,6 +1037,31 @@ def self_check(seed: int = 0, dt: float = DT_DEFAULT) -> None:
     f_mine = framability_targets(np.kron(S, S), plain_targets(S, G))[0]
     assert abs(f_ref - f_mine) < 1e-9 * max(1.0, f_ref), (f_ref, f_mine)
     print(f'   {f_mine:.12f} vs {f_ref:.12f}')
+
+    print("2b) split-variable LP == epigraph LP, per column (plain and free "
+          "targets, random frames incl. near-parallel pairs)")
+    worst, t_split, t_epi = 0.0, 0.0, 0.0
+    for trial in range(3):
+        extra = [v / np.linalg.norm(v) for v in rng.standard_normal((8, 3))]
+        # near-parallel pairs, as produced by the small-tilt rings at dt = 1e-4
+        extra += [(v + 0.02 * rng.standard_normal(3)) for v in extra[:4]]
+        fr = start_octahedron() + [v / np.linalg.norm(v) for v in extra]
+        Sx = frame_matrix(fr)
+        Dx = np.kron(Sx, Sx)
+        for field in FIELDS:
+            Y = build_targets(fr, 1.0, 10.0, MODEL4_H, 1.0, dt, field=field)
+            t0 = time.perf_counter()
+            fs, cs = framability_targets(Dx, Y, method='split')
+            t1 = time.perf_counter()
+            fe, ce = framability_targets(Dx, Y, method='epigraph')
+            t2 = time.perf_counter()
+            t_split += t1 - t0
+            t_epi += t2 - t1
+            err = float(np.max(np.abs(cs - ce)))
+            worst = max(worst, err)
+            assert err < 1e-8, (trial, field, err)
+    print(f'   d_ext_single = {len(fr)}: max per-column |split - epigraph| = '
+          f'{worst:.2e};  time split {t_split:.1f}s vs epigraph {t_epi:.1f}s')
 
     print('3) A_cancelled pattern, the exact decomposition of rho~, and the '
           'U-rotated decomposition of the plain Euler step')
