@@ -297,6 +297,14 @@ CRITERION_MAX_DEXT_DEFAULT = 24
 
 FIELDS = ('plain', 'free')
 
+# HiGHS defaults to 1e-7 ABSOLUTE primal/dual feasibility.  With near-parallel
+# frame columns (the small-tilt rings) that residual shifts a column's l1 norm by
+# ~5e-8 in f, i.e. ~5e-4 in rate at dt = 1e-4 -- only ~40x below the 2e-2
+# gamma'-detuning signal.  Tightening to 1e-10 buys three more orders of margin;
+# the solver ladder still covers the rare column that fails to converge.
+_LP_TOL = dict(primal_feasibility_tolerance=1e-10, dual_feasibility_tolerance=1e-10,
+               ipm_optimality_tolerance=1e-10)
+
 # The seven requested parameter sets.  J = gamma' = 1 throughout; the growth
 # step always runs at gamma' = J (the tex threshold), and the framability is
 # evaluated at gamma' = J and gamma' = GP_FACTOR * J.
@@ -436,7 +444,7 @@ def framability_targets(D: np.ndarray, Y: np.ndarray,
             lp_j = lp._replace(b_eq=Y[:, j].copy())
             r = None
             for kw in _HIGHS_ATTEMPTS:
-                cand = _linprog_highs(lp_j, **kw)
+                cand = _linprog_highs(lp_j, **kw, **_LP_TOL)
                 if cand['status'] == 0:
                     r = cand
                     break
@@ -462,7 +470,7 @@ def framability_targets(D: np.ndarray, Y: np.ndarray,
         lp_j = lp._replace(b_eq=Y[:, j].copy())
         r = None
         for kw in _HIGHS_ATTEMPTS:
-            cand = _linprog_highs(lp_j, **kw)
+            cand = _linprog_highs(lp_j, **kw, **_LP_TOL)
             if cand['status'] == 0:
                 r = cand
                 break
@@ -1059,9 +1067,14 @@ def self_check(seed: int = 0, dt: float = DT_DEFAULT) -> None:
             t_epi += t2 - t1
             err = float(np.max(np.abs(cs - ce)))
             worst = max(worst, err)
-            assert err < 1e-8, (trial, field, err)
+            # Judge in RATE units, (f-1)/dt: the quantity the pipeline compares,
+            # whose smallest feature is the 2e-2 gamma'-detuning signal.  Require
+            # the two LP forms to agree to 1e-2 of that signal.
+            assert err / dt < 2e-4, (trial, field, err, err / dt)
     print(f'   d_ext_single = {len(fr)}: max per-column |split - epigraph| = '
-          f'{worst:.2e};  time split {t_split:.1f}s vs epigraph {t_epi:.1f}s')
+          f'{worst:.2e} in f = {worst / dt:.2e} in rate '
+          f"(gamma'-detuning signal: 2e-2);  time split {t_split:.1f}s vs "
+          f'epigraph {t_epi:.1f}s')
 
     print('3) A_cancelled pattern, the exact decomposition of rho~, and the '
           'U-rotated decomposition of the plain Euler step')
