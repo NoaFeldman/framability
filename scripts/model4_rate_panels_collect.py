@@ -151,6 +151,9 @@ def load_group(pt_dir: Path, keys, stride: int, label: str, *,
             if not base.exists():
                 continue
             rounds = sorted(pt_dir.glob(f'pt_{ix:03d}_{iy:03d}_*refine_r*.npz'))
+            # global re-optimisation (scripts/rate_gopt_worker.py): same
+            # certified-upper-bound status as a refine round
+            rounds += sorted(pt_dir.glob(f'pt_{ix:03d}_{iy:03d}_gopt*.npz'))
             improved = False
             for f in [base, *rounds]:
                 try:

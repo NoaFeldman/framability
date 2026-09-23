@@ -224,6 +224,53 @@ def osc_rate_panels(model: str, osc_dir: Path, stride: int = 1) -> list:
                  cmap='magma', vmin=0.0)]
 
 
+def rate_gopt_panels(model: str, rate_dir: Path, stride: int = 1,
+                     d_exts=(4, 6, 8)) -> list:
+    """Panels of the globally re-optimised Heisenberg framability RATES
+    (scripts/rate_gopt_worker.py, results_<model>_rate/<model>/pt_*_gopt.npz)
+    drawn as exp(mu*), the dt = 0 value of framability^(1/dt), so they sit on
+    the same scale and floor (1) as the extrapolated measures.  [] when no
+    data exists."""
+    try:
+        import rate_gopt_collect
+    except ImportError:
+        return []
+    if not (rate_dir / model).is_dir():
+        return []
+    g = rate_gopt_collect.load_gopt_grids(model, rate_dir, stride, d_exts)
+    if g['n_points'] == 0:
+        return []
+    return [dict(kind='fra', p1_vals=g['p1_vals'], p2_vals=g['p2_vals'],
+                 Z=np.exp(g[f'rate_heis_{m}']),
+                 label=f'opt Heisenberg rate $d_{{\\rm ext}}={m}$ '
+                       f'(global optimiser): $e^{{\\mu^*}}$')
+            for m in d_exts]
+
+
+def load_cached_extrapolation(in_dir: Path, model: str, suffix: str):
+    """(data, rf) from a previously saved <model>_dtbase_<suffix>.npz, or
+    (None, None).  Lets --from_npz replot without re-reading the ~26k per-base
+    files behind extrapolate_model."""
+    npz = in_dir / f'{model}_dtbase_{suffix}.npz'
+    if not npz.is_file():
+        return None, None
+    try:
+        d = np.load(npz, allow_pickle=True)
+        p1, p2 = np.asarray(d['p1_vals'], float), np.asarray(d['p2_vals'], float)
+    except Exception:
+        return None, None
+    data = dict(p1_vals=p1, p2_vals=p2,
+                found=int(d['found']) if 'found' in d.files else 0)
+    for k, _ in MEASURES:
+        data[k] = (np.asarray(d[k], float) if k in d.files
+                   else np.full((len(p1), len(p2)), np.nan))
+    rf = None
+    rf_keys = [str(k) for k in d['randframe_measures']] if 'randframe_measures' in d.files else []
+    if rf_keys and all(k in d.files for k in rf_keys):
+        rf = {k: np.asarray(d[k], float) for k in rf_keys}
+    return data, rf
+
+
 def q_panels_and_contour(model: str, q_dir: Path, stride: int = 1):
     """(extra panel specs, contour spec) for the Lindbladian quality factor
     Q_max of `model` (scripts/liouvillian_q_worker.py), or ([], None) when no
@@ -441,6 +488,16 @@ def main() -> None:
                          'its six random-frame framability panels (mixed product '
                          'states, random Heisenberg frames) are added right after '
                          'the MEASURES panels when data exists there')
+    ap.add_argument('--from_npz', action='store_true',
+                    help='reuse the cached <in_dir>/<model>_dtbase_extrap.npz '
+                         'instead of re-extrapolating from the per-base files '
+                         '(fast replot; falls back to extrapolating if absent)')
+    ap.add_argument('--rate_dir', type=str, default=None,
+                    help='results_<model>_rate directory holding '
+                         '<model>/pt_*_gopt.npz (scripts/rate_gopt_worker.py); '
+                         'its exp(mu*) panels are appended when given and data '
+                         'exists')
+    ap.add_argument('--rate_d_exts', type=int, nargs='+', default=[4, 6, 8])
     args = ap.parse_args()
     import dtbase_randframe_collect as randframe
 
@@ -450,26 +507,42 @@ def main() -> None:
     suffix = 'extrap_raw' if args.raw else 'extrap'
 
     for model in args.models:
-        data = extrapolate_model(model, in_dir, fit_n=args.fit_n, deg=args.deg,
-                                 raw=args.raw, stride=args.stride,
-                                 max_dt_base=args.max_dt_base)
-        rf = randframe.extrapolate_model(model, Path(args.rf_dir),
-                                         fit_n=args.fit_n, deg=args.deg,
-                                         raw=args.raw, stride=args.stride,
-                                         max_dt_base=args.max_dt_base)
-        npz = out_dir / f'{model}_dtbase_{suffix}.npz'
+        data = rf = None
+        if args.from_npz:
+            data, rf = load_cached_extrapolation(in_dir, model, suffix)
+            if data is None:
+                print(f'[extrap] {model}: no cached npz in {in_dir}; '
+                      f'extrapolating from the per-base files', flush=True)
+            else:
+                print(f'[extrap] {model}: reusing cached extrapolation '
+                      f'({data["found"]} points)', flush=True)
+                if rf is not None and not all(k in rf for k, _ in randframe.MEASURES):
+                    rf = None
+        if data is None:
+            data = extrapolate_model(model, in_dir, fit_n=args.fit_n, deg=args.deg,
+                                     raw=args.raw, stride=args.stride,
+                                     max_dt_base=args.max_dt_base)
+            rf = randframe.extrapolate_model(model, Path(args.rf_dir),
+                                             fit_n=args.fit_n, deg=args.deg,
+                                             raw=args.raw, stride=args.stride,
+                                             max_dt_base=args.max_dt_base)
+            npz = out_dir / f'{model}_dtbase_{suffix}.npz'
+            np.savez(npz, model=model, fit_n=args.fit_n, deg=args.deg,
+                     raw=args.raw, measures=[k for k, _ in MEASURES],
+                     randframe_measures=[k for k, _ in randframe.MEASURES] if rf else [],
+                     **data, **(rf or {}))
+            print(f'[extrap] saved {npz}', flush=True)
         png = out_dir / f'{model}_dtbase_{suffix}.png'
-        np.savez(npz, model=model, fit_n=args.fit_n, deg=args.deg,
-                 raw=args.raw, measures=[k for k, _ in MEASURES],
-                 randframe_measures=[k for k, _ in randframe.MEASURES] if rf else [],
-                 **data, **(rf or {}))
-        print(f'[extrap] saved {npz}', flush=True)
+        rate_panels = (rate_gopt_panels(model, Path(args.rate_dir), args.stride,
+                                        tuple(args.rate_d_exts))
+                       if args.rate_dir else [])
         q_panels, q_contour = q_panels_and_contour(model, Path(args.q_dir),
                                                    args.stride)
         obs_panels, obs_contours = obs_panels_and_contours(
             model, Path(args.obs_dir), args.stride)
         plot_model(model, data, png, raw=args.raw, fra_tol=args.fra_tol,
                    extra=randframe.panels(model, rf, args.stride)
+                   + rate_panels
                    + osc_rate_panels(model, Path(args.osc_dir), args.stride)
                    + q_panels + obs_panels,
                    q_contour=q_contour, obs_contours=obs_contours)
