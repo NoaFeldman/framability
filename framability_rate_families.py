@@ -41,6 +41,10 @@ Public API
 affine_polygon(n, a1, a2, phi, theta0)   2 x n polygon vertices
 Family                                   parametrised frame family
 families_for(m)                          the families with m columns
+yz_xy_poly(n_yz, n_xy)                   two-plane family (YZ + XY polygons)
+winning_families_for(m)                  families that won at d_ext = 8 (model10)
+transfer_params(fam, famp)               starts from smaller-d_ext optima
+candidate_columns(S), greedy_augment(S, A, m)   grow a frame column by column
 model10_weights(d1, d2, J, h)            closed-form (x_B, y_B, x_C)
 model10_family_starts(fam, d1, d2, J, h) analytic parameter starts
 model10_frames(d1, d2, J, h, m)          closed-form frames B / C / P
@@ -183,6 +187,24 @@ def yz_poly_xy_pair(n: int) -> Family:
                   (1.0, 1.0, 1.0, np.pi / 2, h, 1.0, np.pi / 2))
 
 
+def yz_xy_poly(n_yz: int, n_xy: int) -> Family:
+    """Two planes at once: {I, xX, affine-regular YZ n_yz-gon, affine-regular
+    XY n_xy-gon}; p = (x, a1, a2, phi, theta0, b1, b2, psi, theta1).  The YZ
+    polygon makes the field rotation cheap, the XY polygon the ZZ conditional
+    rotation (the perpendicular-plane conflict of the finite frames)."""
+    def build(p):
+        x, a1, a2, phi, th, b1, b2, psi, th1 = p
+        V = affine_polygon(n_yz, _w(a1), _w(a2), phi, th)
+        W = affine_polygon(n_xy, _w(b1), _w(b2), psi, th1)
+        return _frame([[0.0, _w(x), 0.0, 0.0]] + _plane_cols(V, 'yz')
+                      + _plane_cols(W, 'xy'))
+    h1, h2 = np.pi / (2 * n_yz), np.pi / (2 * n_xy)
+    return Family(f'yz{n_yz}xy{n_xy}', 'yz+xy', n_yz, n_yz + n_xy + 2, build,
+                  (WEIGHT_FLOOR, WEIGHT_FLOOR, WEIGHT_FLOOR, -np.pi / 2, -h1,
+                   WEIGHT_FLOOR, WEIGHT_FLOOR, -np.pi / 2, -h2),
+                  (1.0, 1.0, 1.0, np.pi / 2, h1, 1.0, 1.0, np.pi / 2, h2))
+
+
 def families_for(m: int) -> list:
     """The structured families with exactly m columns (identity included)."""
     fams = [yz_poly(m - 2)] if m >= 4 else []
@@ -191,6 +213,39 @@ def families_for(m: int) -> list:
     if m - 4 >= 2:
         fams.append(yz_poly_xy_pair(m - 4))
     return fams
+
+
+def winning_families_for(m: int) -> list:
+    """The families worth optimising at large m, chosen from the d_ext = 8
+    model10 run: YZ affine polygons won most of the positive-rate region and
+    'YZ polygon + XY pair' the rate-0 islands, while the X-pair and Z-pair
+    families never won.  So: the finer YZ polygon, YZ polygon + XY pair, and
+    the two-plane frame (YZ hexagon + XY (m-8)-gon)."""
+    fams = [yz_poly(m - 2)]
+    if m - 4 >= 2:
+        fams.append(yz_poly_xy_pair(m - 4))
+    if m - 8 >= 2:
+        fams.append(yz_xy_poly(6, m - 8))
+    return fams
+
+
+def transfer_params(fam: Family, famp: dict) -> list:
+    """Starts for `fam` from optimised parameters of the same kind at a
+    smaller size (famp: {family name: params} of the d_ext = 8 run).  The
+    parameters of an affine-regular polygon do not depend on its vertex
+    count, so they carry over unchanged; the two-plane family takes the YZ
+    part of a 'yz' optimum and an XY polygon matching its X / Y extents."""
+    out = []
+    for name, p in famp.items():
+        p = np.asarray(p, float)
+        if fam.kind in ('yz', 'yzxy') and name.startswith(fam.kind) and \
+                name[len(fam.kind):].isdigit() and len(p) == len(fam.lo):
+            out.append(p.copy())
+        elif fam.kind == 'yz+xy' and name.startswith('yz') and \
+                name[2:].isdigit() and len(p) == 5:
+            x, a1 = float(p[0]), float(p[1])
+            out.append(np.concatenate([p, [x, a1, 0.0, 0.0]]))
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -231,7 +286,66 @@ def model10_family_starts(fam: Family, d1: float, d2: float, J: float,
         return [np.array(p, float) for p in (
             (x_b, y_b, 1.0, 0.0, 0.0, 0.3, np.pi / 4),
             (x_c, 1.0, 1.0, 0.0, 0.0, 0.3, np.pi / 4))]
+    if fam.kind == 'yz+xy':
+        # XY polygon with the same X / Y extents as the YZ part (ellipsoid)
+        return [np.array(p, float) for p in (
+            (x_b, y_b, 1.0, 0.0, 0.0, x_b, y_b, 0.0, 0.0),
+            (x_c, 1.0, 1.0, 0.0, 0.0, x_c, 1.0, 0.0, 0.0),
+            (x_c, 1.0, 1.0, 0.0, off, x_c, 1.0, 0.0, np.pi / 8))]
     return []
+
+
+# ---------------------------------------------------------------------------
+#  Greedy column augmentation
+# ---------------------------------------------------------------------------
+def candidate_columns(S) -> list:
+    """New-column candidates for a frame S (identity first): the normalised
+    sums and differences of every pair of free columns (a polygon's edge
+    midpoints, the bisectors between planes), rescaled to the pair's mean
+    size, and the three Pauli axes at the frame's largest extent along each."""
+    free = np.asarray(S, float)[:, 1:]
+    size = np.abs(free[0]) + np.linalg.norm(free[1:], axis=0)
+    out = []
+    k = free.shape[1]
+    for i in range(k):
+        for j in range(i + 1, k):
+            r = 0.5 * (size[i] + size[j])
+            for s in (1.0, -1.0):
+                v = free[:, i] + s * free[:, j]
+                nv = abs(v[0]) + np.linalg.norm(v[1:])
+                if nv > 1e-9:
+                    out.append(v * (r / nv))
+    for a in (1, 2, 3):
+        ext = float(np.max(np.abs(free[a]))) if k else 1.0
+        if ext > 1e-9:
+            e = np.zeros(4)
+            e[a] = min(ext, 1.0)
+            out.append(e)
+    return out
+
+
+def greedy_augment(S, A, m: int, *, tol: float = _TOL):
+    """Grow S to m columns one column at a time, each time adding the
+    candidate_columns entry with the lowest rate.  Adding a column also adds
+    new product columns to S (x) S, so the rate is not monotone; duplicating
+    the last column (rate unchanged) is always among the choices, so the
+    result is never worse than padding.  Returns (value, S_m, n_evals)."""
+    A = np.asarray(A, float)
+    S = np.asarray(S, float).copy()
+    v = float(frame_rate_value(S, A))
+    n_ev = 1
+    while S.shape[1] < m:
+        if v <= tol:
+            return v, fit_columns(S, m), n_ev
+        best_v, best_S = v, fit_columns(S, S.shape[1] + 1)   # duplicate
+        for c in candidate_columns(S):
+            T = np.hstack([S, _project_columns_bloch(np.asarray(c)[:, None])])
+            val = frame_rate_value(T, A)
+            n_ev += 1
+            if np.isfinite(val) and val < best_v - tol:
+                best_v, best_S = float(val), T
+        S, v = best_S, best_v
+    return v, S, n_ev
 
 
 def model10_frames(d1: float, d2: float, J: float, h: float, m: int) -> dict:

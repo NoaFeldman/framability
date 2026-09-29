@@ -1,6 +1,7 @@
 """
 Collect scripts/model10_seeded_worker.py, cross-evaluate neighbouring frames,
-and redraw the model10 rate figure with the seeded rates appended.
+and draw the seeded-analysis figure (the main model10 figure is drawn by
+scripts/model10_seeded_panels_collect.py).
 
 1. Load the per-point files <out_dir>/model10_seeded[_s<stride>]/pt_*.npz
    (plus the _xeval files of earlier collects).
@@ -12,23 +13,18 @@ and redraw the model10 rate figure with the seeded rates appended.
    certified upper bound.  Jacobi sweeps repeat over the neighbourhoods of the
    changed points until nothing changes (or --max_sweeps).  Improved points
    are written to pt_<ix>_<iy>_xeval.npz (read back by the next collect).
-3. Redraw the figure of scripts/model4_rate_panels_collect.py (same loaders,
-   same panels, same order) and append two rows:
+3. Draw two rows:
       row A | seeded d_ext=4 | seeded d_ext=8 | gain d=4 | gain d=8
       row B | closed-form/structured d=4 | d=8 | origin d=4 | origin d=8
    The seeded-rate panels carry the analytic rate-zero curves of frame B
    (red) and of the continuous YZ-circle frame C (yellow dashed).
    Gains: previous optimised d_ext=4 minus seeded d_ext=4, and
-   min(previous optimised d_ext=4, 6) minus seeded d_ext=8.
-
-The base panels come from the per-point directories of the original pipeline
-(first of --base_in_dirs holding a model10/ subdirectory, with --q_dir,
---obs_dir), exactly as model4_rate_panels_collect.py reads them; failing that
-from the stored figure data --base_npz.  If neither exists the figure is NOT
-written over --out_png but to <out_dir>/model10_seeded_only.png.
+   min(previous optimised d_ext=4, 6) minus seeded d_ext=8, the previous
+   values read by scripts/model10_panels_common.load_base (first of
+   --base_in_dirs holding a model10/ subdirectory, else --base_npz).
 
 Outputs:
-    --out_png (default results_model4_rate/model10_rate_panels.png)
+    --out_png (default <out_dir>/model10_seeded_extended.png)
     <out_dir>/model10_seeded_rates.npz      the new grids
 
 Usage:
@@ -57,13 +53,10 @@ from framability_rate_global import frame_rate_value, fit_columns        # noqa:
 from framability_rate_families import b_boundary, c_boundary             # noqa: E402
 from model10_seeded_worker import (MODEL, TOL, grid_vals, pt_dir_name,   # noqa: E402
                                    generator)
-import model4_rate_panels_collect as base                                # noqa: E402
+import model10_panels_common as common                                   # noqa: E402
 
-qcollect = base.qcollect
 D_EXTS = (4, 8)
 XEVAL_SUFFIX = '_xeval'
-Q_RING_SITES = 6        # liouvillian_q_worker's default ring for RING_MODELS
-                        # (only used when the base panels come from --base_npz)
 
 # coarse origin categories for the label panels: (label prefix, category)
 _CATEGORIES = [
@@ -123,63 +116,6 @@ def load_seeded(pt: Path, nx: int, ny: int, d_exts=D_EXTS) -> dict:
                             g[f'famlabel_{m}'][ix, iy] = str(d[f'famlabel_{m}'])
     print(f'[{MODEL} seeded] {found}/{nx * ny} points loaded from {pt}', flush=True)
     return dict(n_points=found, **g)
-
-
-def load_base(args) -> dict | None:
-    """The data behind the existing figure: per-point directories first
-    (identical to model4_rate_panels_collect.main), else the stored npz."""
-    model = MODEL
-    for d in args.base_in_dirs:
-        root = Path(d)
-        if not (root / model).is_dir():
-            continue
-        rates = base.load_group(root / model, [k for k, _ in base.RATE_KEYS],
-                                args.base_stride, f'{model}-rates',
-                                refine_keys=base.RATE_REFINE_KEYS, model=model)
-        if rates['n_points'] == 0:
-            continue
-        mb = base.load_group(root / base.mb_tag(model),
-                             [k for k, _ in base.MB_KEYS], args.mb_stride,
-                             f'{model}-{base.N_QUBITS}q', model=model)
-        prod = base.load_group(root / base.prod_tag(model),
-                               [k for k, _ in base.PROD_RATE_KEYS],
-                               args.prod_stride, f'{model}-product', model=model)
-        if prod['n_points'] == 0:
-            prod = None
-        q = qcollect.load(model, Path(args.q_dir), args.q_stride)
-        obs = qcollect.load_obs(model, Path(args.obs_dir), args.obs_stride)
-        return dict(rates=rates, mb=mb, prod=prod, q=q, obs=obs,
-                    stride=args.base_stride, source=str(root / model))
-    for f in args.base_npz:
-        f = Path(f)
-        if not f.exists():
-            continue
-        d = np.load(f, allow_pickle=True)
-        x, y = MODELS[model].p1_name, MODELS[model].p2_name
-        rates = dict(p1_vals=d[f'{x}_vals'], p2_vals=d[f'{y}_vals'],
-                     n_points=int(np.isfinite(d['rate_pauli']).sum()),
-                     **{k: d[k] for k, _ in base.RATE_KEYS})
-        mb = dict(p1_vals=d[f'mb_{x}_vals'], p2_vals=d[f'mb_{y}_vals'],
-                  **{k: d[k] for k, _ in base.MB_KEYS})
-        q = obs = prod = None
-        if 'bond_Q_max' in d.files:
-            q = dict(p1_vals=d[f'q_{x}_vals'], p2_vals=d[f'q_{y}_vals'],
-                     bond_Q_max=d['bond_Q_max'], lat_Q_max=d['lat_Q_max'],
-                     lat_Ly=1, lat_Lx=Q_RING_SITES, lat_topology='ring')
-        if 'obs_Q' in d.files:
-            obs = dict(p1_vals=d[f'obs_{x}_vals'], p2_vals=d[f'obs_{y}_vals'],
-                       **{k: d[k] for k, _ in qcollect.OBS_GROUPS},
-                       **{lk: np.asarray(d[lk], dtype=object)
-                          for _, lk in qcollect.OBS_GROUPS})
-        pk = [k for k, _ in base.PROD_RATE_KEYS]
-        if all(k in d.files for k in pk):
-            prod = dict(p1_vals=d[f'prod_{x}_vals'], p2_vals=d[f'prod_{y}_vals'],
-                        **{k: d[k] for k in pk})
-        stride = int(d['stride']) if 'stride' in d.files else 1
-        print(f'[{model} seeded] base panels from {f}', flush=True)
-        return dict(rates=rates, mb=mb, prod=prod, q=q, obs=obs, stride=stride,
-                    source=str(f))
-    return None
 
 
 # ---------------------------------------------------------------------------
@@ -328,7 +264,7 @@ def draw_category_panel(fig, ax, xv, yv, cats, title, *, xlabel, ylabel):
         if c:
             Z[idx] = code[c]
     colors = [colormaps['tab20'](i % 20) for i in range(len(names))]
-    ax.pcolormesh(base._edges(xv), base._edges(yv), Z,
+    ax.pcolormesh(common.edges(xv), common.edges(yv), Z,
                   cmap=ListedColormap(colors), vmin=-0.5,
                   vmax=len(names) - 0.5, shading='flat')
     ax.legend(handles=[Patch(color=colors[i], label=c)
@@ -352,8 +288,8 @@ def draw_analytic(ax, xv, yv, J, h) -> None:
     ax.legend(fontsize=6, loc='upper right', framealpha=0.6)
 
 
-def plot_extended(bd: dict | None, new: dict, png: Path, *, floor: float,
-                  q_levels) -> None:
+def plot_extended(new: dict, png: Path, *, floor: float) -> None:
+    """The eight seeded-analysis panels (two rows of four)."""
     import matplotlib
     matplotlib.use('Agg')
     import matplotlib.pyplot as plt
@@ -361,27 +297,6 @@ def plot_extended(bd: dict | None, new: dict, png: Path, *, floor: float,
     model = MODEL
     m = MODELS[model]
     lab = dict(xlabel=m.p1_label, ylabel=m.p2_label)
-    q = obs = prod = None
-    extra = []
-    if bd is not None:
-        q, obs, prod = bd['q'], bd['obs'], bd['prod']
-        # --- identical to model4_rate_panels_collect.plot -----------------
-        if prod is not None:
-            extra += [('rate', prod, key, label, None)
-                      for key, label in base.PROD_RATE_KEYS]
-        if q is not None:
-            titles = qcollect.labels(q)
-            extra += [('q', q, key, titles[key], q_levels)
-                      for key, _ in qcollect.Q_GROUPS]
-        if obs is not None:
-            titles = qcollect.obs_titles(obs)
-            extra += [('q', obs, key, titles[key], (1.0,))
-                      for key, _ in qcollect.OBS_GROUPS]
-            extra += [('label', obs, lkey, titles[lkey], None)
-                      for _, lkey in qcollect.OBS_GROUPS]
-    n_base = 0 if bd is None else 8 + len(extra)
-    base_rows = int(np.ceil(n_base / 4))
-
     dl = r'$d_{\rm ext}'
     new_panels = [
         ('rate', 'rate_4', rf'Seeded Heisenberg rate ({dl}=4$)' '\n'
@@ -395,65 +310,30 @@ def plot_extended(bd: dict | None, new: dict, png: Path, *, floor: float,
         ('cat', 'cat_4', rf'origin of the best {dl}=4$ frame'),
         ('cat', 'cat_8', rf'origin of the best {dl}=8$ frame'),
     ]
-    nrow = base_rows + int(np.ceil(len(new_panels) / 4))
+    nrow = int(np.ceil(len(new_panels) / 4))
     fig, axes = plt.subplots(nrow, 4, figsize=(22, 5 * nrow),
                              constrained_layout=True)
-    axes = np.atleast_2d(axes)
-    notes = []
-    if q is not None:
-        levels_txt = ','.join(f'{lev:g}' for lev in q_levels)
-        notes.append(rf"$Q_{{\max}}$: most coherent damped mode (exact spectra), "
-                     rf"dashed cyan = bond $Q_{{\max}}={levels_txt}$")
-    if obs is not None:
-        notes.append(r"$Q_{\rm obs}$: observable quality factor, $=1$ as "
-                     r"magenta dash-dot (Pauli basis) / orange dotted "
-                     r"(optimised basis)")
     fig.suptitle(
         f'{model}:  {m.title}'
-        "\n"
-        rf"framability rates $\mu^*=\lim_{{dt\to0}}({{\rm fra}}-1)/dt$ of the bond "
-        rf"generator  |  panels 7-8: full {base.N_QUBITS}-qubit "
-        rf"{base.mb_geometry(model)['label']} Lindbladian"
-        + ('\n' + '  |  '.join(notes) if notes else '')
-        + '\nlast two rows: seeded optimisation from the analytic rate-zero '
-          'frames (red: frame B boundary, yellow dashed: continuous YZ-circle '
-          'frame C, sufficient)',
+        '\n'
+        r'seeded optimisation from the analytic rate-zero frames of the bond '
+        r'generator (white: $\mu^*=0$; red: frame B boundary, yellow dashed: '
+        r'continuous YZ-circle frame C, sufficient)',
         fontsize=13)
-
-    rate_kw = dict(floor=floor, q=q, q_levels=q_levels, obs=obs, **lab)
-    flat = list(axes.flat)
-    if bd is not None:
-        rates, mb = bd['rates'], bd['mb']
-        for ax, (key, label) in zip(flat[:6], base.RATE_KEYS):
-            base._rate_panel(fig, ax, rates, key, label, **rate_kw)
-        for ax, (key, label) in zip(flat[6:8], base.MB_KEYS):
-            base._panel(fig, ax, mb['p1_vals'], mb['p2_vals'], mb[key], label,
-                        base.MB_CMAP, **lab)
-        for ax, (kind, d, key, title, levels) in zip(flat[8:n_base], extra):
-            if kind == 'rate':
-                base._rate_panel(fig, ax, d, key, title, **rate_kw)
-            elif kind == 'q':
-                qcollect.draw_q_panel(fig, ax, d['p1_vals'], d['p2_vals'], d[key],
-                                      title, cmap=base.MB_CMAP, levels=levels,
-                                      **lab)
-            else:
-                qcollect.draw_label_panel(fig, ax, d['p1_vals'], d['p2_vals'],
-                                          d[key], title, **lab)
-        for ax in flat[n_base:base_rows * 4]:
-            ax.axis('off')
-
+    flat = list(np.atleast_1d(axes).flat)
     J, h = MODEL10_J, MODEL10_H
-    for ax, (kind, key, title) in zip(flat[base_rows * 4:], new_panels):
+    xv, yv = new['p1_vals'], new['p2_vals']
+    for ax, (kind, key, title) in zip(flat, new_panels):
         if kind == 'rate':
-            base._rate_panel(fig, ax, new, key, title, **rate_kw)
-            draw_analytic(ax, new['p1_vals'], new['p2_vals'], J, h)
+            common.draw_panel(fig, ax, xv, yv, new[key], title, common.FRA_CMAP,
+                              floor_contour=floor, **lab)
+            draw_analytic(ax, xv, yv, J, h)
         elif kind == 'gain':
-            base._panel(fig, ax, new['p1_vals'], new['p2_vals'], new[key], title,
-                        base.MB_CMAP, **lab)
+            common.draw_panel(fig, ax, xv, yv, new[key], title, common.MB_CMAP,
+                              **lab)
         else:
-            draw_category_panel(fig, ax, new['p1_vals'], new['p2_vals'], new[key],
-                                title, **lab)
-    for ax in flat[base_rows * 4 + len(new_panels):]:
+            draw_category_panel(fig, ax, xv, yv, new[key], title, **lab)
+    for ax in flat[len(new_panels):]:
         ax.axis('off')
 
     png.parent.mkdir(parents=True, exist_ok=True)
@@ -486,25 +366,18 @@ def main() -> None:
                     help='worker output root (holds model10_seeded/)')
     ap.add_argument('--stride', type=int, default=1,
                     help='stride the seeded worker ran with')
-    ap.add_argument('--out_png', type=str,
-                    default='results_model4_rate/model10_rate_panels.png')
+    ap.add_argument('--out_png', type=str, default=None,
+                    help='default <out_dir>/model10_seeded_extended.png')
     ap.add_argument('--base_in_dirs', type=str, nargs='*',
                     default=['results_model10_rate', 'results_model4_rate'],
                     help='original rate pipeline roots, first with a model10/ '
-                         'subdirectory wins')
+                         'subdirectory wins (previous values for the gains)')
     ap.add_argument('--base_npz', type=str, nargs='*',
                     default=['results_model4_rate/model10_rate_panels.npz',
                              'results_model10_rate/model10_rate_panels.npz'],
                     help='fallback: stored data of the existing figure')
     ap.add_argument('--base_stride', type=int, default=1)
     ap.add_argument('--mb_stride', type=int, default=5)
-    ap.add_argument('--prod_stride', type=int, default=1)
-    ap.add_argument('--q_dir', type=str, default='results_liouvillian_q')
-    ap.add_argument('--q_stride', type=int, default=1)
-    ap.add_argument('--q_levels', type=float, nargs='+',
-                    default=list(qcollect.Q_LEVELS_DEFAULT))
-    ap.add_argument('--obs_dir', type=str, default='results_observable_q')
-    ap.add_argument('--obs_stride', type=int, default=1)
     ap.add_argument('--floor', type=float, default=0.0)
     ap.add_argument('--no_xeval', action='store_true')
     ap.add_argument('--radius4', type=int, default=2)
@@ -530,10 +403,11 @@ def main() -> None:
         print(f'[{MODEL} seeded] neighbour cross-evaluation improved '
               f'{n_imp} point(s)', flush=True)
 
-    bd = load_base(args)
+    bd = common.load_base(args.base_in_dirs, args.base_npz,
+                          base_stride=args.base_stride, mb_stride=args.mb_stride)
     if bd is None:
         print(f'[{MODEL} seeded] WARNING: no base data (dirs {args.base_in_dirs}, '
-              f'npz {args.base_npz}); drawing the new panels alone', flush=True)
+              f'npz {args.base_npz}); the gain panels stay empty', flush=True)
     old4 = _old_on_new_grid(bd, 'rate_heis_4', args.stride, nx, ny)
     old6 = _old_on_new_grid(bd, 'rate_heis_6', args.stride, nx, ny)
     old46 = np.fmin(old4, old6)
@@ -571,8 +445,8 @@ def main() -> None:
              **{f'prev_best_{m}': g[f'prev_best_{m}'] for m in D_EXTS})
     print(f'[{MODEL} seeded] wrote {npz}', flush=True)
 
-    png = Path(args.out_png) if bd is not None else out_dir / f'{MODEL}_seeded_only.png'
-    plot_extended(bd, new, png, floor=args.floor, q_levels=tuple(args.q_levels))
+    png = Path(args.out_png or out_dir / f'{MODEL}_seeded_extended.png')
+    plot_extended(new, png, floor=args.floor)
 
 
 if __name__ == '__main__':

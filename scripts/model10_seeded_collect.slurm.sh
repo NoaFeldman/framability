@@ -1,17 +1,17 @@
 #!/bin/bash
 # ============================================================
 #  SLURM job: collect the seeded model10 rates, cross-evaluate neighbouring
-#  frames (N_PROC processes, certified with the per-column LP), and redraw
-#  the model10 rate figure with two rows of new panels appended
-#  (scripts/model10_seeded_collect.py).
+#  frames (N_PROC processes, certified with the per-column LP), and draw the
+#  seeded-analysis figure (scripts/model10_seeded_collect.py).  The main
+#  model10 figure is drawn by scripts/model10_seeded_panels_collect.slurm.sh.
 #
 #  Submitted by scripts/submit_model10_seeded.sh with
 #      --dependency=afterok:<array job id>
-#  By hand (any time; missing points are left blank):
+#  and as stage 2 of scripts/submit_model10_seeded_refine.sh.  By hand:
 #      sbatch scripts/model10_seeded_collect.slurm.sh
 #      NO_XEVAL=1 sbatch scripts/model10_seeded_collect.slurm.sh   # plot only
 #
-#  Output: $OUT_PNG (default results_model4_rate/model10_rate_panels.png)
+#  Output: $EXT_PNG (default $OUT_DIR/model10_seeded_extended.png)
 #          $OUT_DIR/model10_seeded_rates.npz
 #          $OUT_DIR/model10_seeded/pt_<ix>_<iy>_xeval.npz  (improved points)
 # ============================================================
@@ -25,14 +25,11 @@
 #SBATCH --error=logs/m10seed_collect_%x_%A.err
 
 OUT_DIR=${OUT_DIR:-results_model10_rate}
-OUT_PNG=${OUT_PNG:-results_model4_rate/model10_rate_panels.png}
+EXT_PNG=${EXT_PNG:-$OUT_DIR/model10_seeded_extended.png}
 BASE_IN_DIRS=${BASE_IN_DIRS:-"results_model10_rate results_model4_rate"}
 BASE_NPZ=${BASE_NPZ:-"results_model4_rate/model10_rate_panels.npz results_model10_rate/model10_rate_panels.npz"}
 STRIDE=${STRIDE:-1}               # must match the seeded worker array
 MB_STRIDE=${MB_STRIDE:-5}         # must match the original model10 pipeline
-Q_DIR=${Q_DIR:-results_liouvillian_q}
-OBS_DIR=${OBS_DIR:-results_observable_q}
-Q_LEVELS=${Q_LEVELS:-1}
 RADIUS4=${RADIUS4:-2}
 RADIUS8=${RADIUS8:-1}
 MAX_SWEEPS=${MAX_SWEEPS:-6}
@@ -45,14 +42,11 @@ export MPLCONFIGDIR="/tmp/matplotlib-${SLURM_JOB_ID}"
 
 python scripts/model10_seeded_collect.py \
     --out_dir      "$OUT_DIR" \
-    --out_png      "$OUT_PNG" \
+    --out_png      "$EXT_PNG" \
     --base_in_dirs $BASE_IN_DIRS \
     --base_npz     $BASE_NPZ \
     --stride       "$STRIDE" \
     --mb_stride    "$MB_STRIDE" \
-    --q_dir        "$Q_DIR" \
-    --obs_dir      "$OBS_DIR" \
-    --q_levels     $Q_LEVELS \
     --radius4      "$RADIUS4" \
     --radius8      "$RADIUS8" \
     --max_sweeps   "$MAX_SWEEPS" \

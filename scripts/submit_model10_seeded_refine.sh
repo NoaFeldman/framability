@@ -70,8 +70,7 @@ fi
 # ---- 2. whole-grid neighbour cross-evaluation --------------------------------
 if [ "${SKIP_XEVAL:-0}" != "1" ]; then
     echo "$TAG stage 2: neighbour cross-evaluation"
-    OUT_PNG="$OUT_DIR/model10_seeded_extended.png" \
-        sbatch --wait scripts/model10_seeded_collect.slurm.sh \
+    sbatch --wait scripts/model10_seeded_collect.slurm.sh \
         || echo "$TAG warning: cross-evaluation job failed; continuing"
 fi
 
