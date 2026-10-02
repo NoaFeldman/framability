@@ -42,16 +42,17 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from trotter_lindbladian_scan import MODELS                               # noqa: E402
 from model10_seeded_worker import MODEL, grid_vals, pt_dir_name           # noqa: E402
-from model10_seeded_qrefine_worker import ROUND_TAG, best_known           # noqa: E402
+from model10_seeded_qrefine_worker import (ROUND_TAG, MARGIN_TAG,         # noqa: E402
+                                           best_known)
 from model10_d12_worker import d12_dir                                    # noqa: E402
 import model10_panels_common as common                                    # noqa: E402
 
 D_EXTS = (4, 8, 12)
 
 
-def rounds_on_disk(pt: Path) -> list:
-    return sorted({int(m.group(1)) for f in pt.glob(f'pt_*{ROUND_TAG}*.npz')
-                   if (m := re.search(rf'{ROUND_TAG}(\d\d)\.npz$', f.name))})
+def rounds_on_disk(pt: Path, tag: str = ROUND_TAG) -> list:
+    return sorted({int(m.group(1)) for f in pt.glob(f'pt_*{tag}*.npz')
+                   if (m := re.search(rf'{tag}(\d\d)\.npz$', f.name))})
 
 
 def load_best(pt: Path, nx: int, ny: int, m: int) -> dict:
@@ -67,9 +68,11 @@ def load_best(pt: Path, nx: int, ny: int, m: int) -> dict:
             if np.isfinite(v):
                 g[ix, iy] = v
     rounds = rounds_on_disk(pt) if pt.is_dir() else []
+    margin = rounds_on_disk(pt, MARGIN_TAG) if pt.is_dir() else []
     print(f'[{MODEL} panels] d_ext={m}: {found}/{nx * ny} points in {pt}; '
-          f'refine rounds on disk: {rounds or "none"}', flush=True)
-    return dict(grid=g, n_points=found, rounds=rounds)
+          f'refine rounds on disk: {rounds or "none"}; margin rounds: '
+          f'{margin or "none"}', flush=True)
+    return dict(grid=g, n_points=found, rounds=rounds, margin=margin)
 
 
 def on_base_grid(Z, stride: int, base_stride: int, shape) -> np.ndarray:
@@ -86,8 +89,10 @@ def on_base_grid(Z, stride: int, base_stride: int, shape) -> np.ndarray:
     return out
 
 
-def _rounds_txt(n: int, what: str) -> str:
-    return f'{what} + {n} refine round{"s" if n != 1 else ""}'
+def _rounds_txt(s: dict, what: str) -> str:
+    n, k = len(s['rounds']), len(s['margin'])
+    txt = f'{what} + {n} refine round{"s" if n != 1 else ""}'
+    return txt + (f' + {k} margin round{"s" if k != 1 else ""}' if k else '')
 
 
 def plot(panels: list, png: Path) -> None:
@@ -184,14 +189,15 @@ def main() -> None:
               f'{[str(Path(d) / "model10_product") for d in args.prod_dirs]}; '
               'those panels are left empty', flush=True)
 
-    t4 = _rounds_txt(len(s4['rounds']), 'seeded')
-    t12 = _rounds_txt(len(s12['rounds']), 'seeded from $d=8$')
+    t4 = _rounds_txt(s4, 'seeded')
+    t8 = _rounds_txt(s8, 'seeded')
+    t12 = _rounds_txt(s12, 'seeded from $d=8$')
     dl = r'$d_{\rm ext}'
     panels = [
         ('rate', xv, yv, rates['rate_stab3'], 'Stabilizer-3 framability rate'),
         ('rate', xv, yv, rates['rate_pauli'], 'Pauli framability rate'),
         ('rate', xv, yv, panel[4], rf'Opt Heisenberg rate ({dl}=4$)' f'\n{t4}'),
-        ('rate', xv, yv, panel[8], rf'Opt Heisenberg rate ({dl}=8$)' f'\n{t4}'),
+        ('rate', xv, yv, panel[8], rf'Opt Heisenberg rate ({dl}=8$)' f'\n{t8}'),
         ('rate', xv, yv, panel[12], rf'Opt Heisenberg rate ({dl}=12$)' f'\n{t12}'),
     ]
     for key, label in common.PROD_RATE_KEYS:
