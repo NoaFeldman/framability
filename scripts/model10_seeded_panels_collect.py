@@ -43,7 +43,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from trotter_lindbladian_scan import MODELS                               # noqa: E402
 from model10_seeded_worker import MODEL, grid_vals, pt_dir_name           # noqa: E402
 from model10_seeded_qrefine_worker import (ROUND_TAG, MARGIN_TAG,         # noqa: E402
-                                           best_known)
+                                           RREFINE_TAG, best_known)
 from model10_d12_worker import d12_dir                                    # noqa: E402
 import model10_panels_common as common                                    # noqa: E402
 
@@ -69,10 +69,11 @@ def load_best(pt: Path, nx: int, ny: int, m: int) -> dict:
                 g[ix, iy] = v
     rounds = rounds_on_disk(pt) if pt.is_dir() else []
     margin = rounds_on_disk(pt, MARGIN_TAG) if pt.is_dir() else []
+    rref = rounds_on_disk(pt, RREFINE_TAG) if pt.is_dir() else []
     print(f'[{MODEL} panels] d_ext={m}: {found}/{nx * ny} points in {pt}; '
           f'refine rounds on disk: {rounds or "none"}; margin rounds: '
-          f'{margin or "none"}', flush=True)
-    return dict(grid=g, n_points=found, rounds=rounds, margin=margin)
+          f'{margin or "none"}; randomised rounds: {rref or "none"}', flush=True)
+    return dict(grid=g, n_points=found, rounds=rounds, margin=margin, rref=rref)
 
 
 def on_base_grid(Z, stride: int, base_stride: int, shape) -> np.ndarray:
@@ -90,9 +91,10 @@ def on_base_grid(Z, stride: int, base_stride: int, shape) -> np.ndarray:
 
 
 def _rounds_txt(s: dict, what: str) -> str:
-    n, k = len(s['rounds']), len(s['margin'])
+    n, k, r = len(s['rounds']), len(s['margin']), len(s['rref'])
     txt = f'{what} + {n} refine round{"s" if n != 1 else ""}'
-    return txt + (f' + {k} margin round{"s" if k != 1 else ""}' if k else '')
+    txt += f' + {k} margin round{"s" if k != 1 else ""}' if k else ''
+    return txt + (f' + {r} randomised round{"s" if r != 1 else ""}' if r else '')
 
 
 def plot(panels: list, png: Path) -> None:
@@ -178,10 +180,15 @@ def main() -> None:
         ok = np.isfinite(new[mm])
         fb = np.isfinite(panel[mm]) & ~ok
         both = ok & np.isfinite(ref)
+        R = panel[mm]
+        # rate rising one grid step towards MORE noise (a likely missed minimum)
+        up = int((R[1:, :] - R[:-1, :] > 1e-4).sum() + (R[:, 1:] - R[:, :-1] > 1e-4).sum())
+        near = int(((R > common.CONTOUR_TOL) & (R < 1e-3)).sum())
         print(f'  d{mm}: own data at {int(ok.sum())} pts, fallback at '
-              f'{int(fb.sum())}; rate 0 at {int((panel[mm] <= common.CONTOUR_TOL).sum())}; '
+              f'{int(fb.sum())}; rate 0 at {int((R <= common.CONTOUR_TOL).sum())}; '
               f'below the {"previous" if mm < 12 else "d_ext=8"} value at '
-              f'{int(((ref - panel[mm])[both] > 1e-6).sum())}', flush=True)
+              f'{int(((ref - R)[both] > 1e-6).sum())}; non-monotone steps {up}; '
+              f'near-zero (1e-6..1e-3) {near}', flush=True)
 
     prod = common.load_prod(args.prod_dirs, args.prod_stride)
     if prod is None:

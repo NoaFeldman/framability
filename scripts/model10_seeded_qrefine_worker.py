@@ -65,17 +65,20 @@ RATE_FLOOR = 0.0
 KEYS = {'rate_4': ('S_4', 4), 'rate_8': ('S_8', 8)}   # rate key -> (frame key, d_ext)
 ROUND_TAG = '_qrefine_r'
 MARGIN_TAG = '_margin_r'      # scripts/model10_margin_worker.py
+RREFINE_TAG = '_rrefine_r'    # scripts/model10_rrefine_worker.py
 
 
 def pt_paths(pt: Path, ix: int, iy: int):
     """Every file of the point: margin rounds (newest first), the seeded
-    worker file, the collect cross-evaluation file, every refine round.
-    best_known keeps the FIRST file attaining the minimum, so on the rate-0
-    plateau (all values 0) a margin frame -- the one with slack -- wins."""
+    worker file, the collect cross-evaluation file, every quick-refine and
+    randomised-refine round.  best_known keeps the FIRST file attaining the
+    minimum, so on the rate-0 plateau (all values 0) a margin frame -- the one
+    with slack -- wins."""
     stem = f'pt_{ix:03d}_{iy:03d}'
     files = sorted(pt.glob(f'{stem}{MARGIN_TAG}[0-9][0-9].npz'), reverse=True)
     files += [pt / f'{stem}.npz', pt / f'{stem}_xeval.npz']
     files += sorted(pt.glob(f'{stem}{ROUND_TAG}[0-9][0-9].npz'))
+    files += sorted(pt.glob(f'{stem}{RREFINE_TAG}[0-9][0-9].npz'))
     return [f for f in files if f.exists()]
 
 
