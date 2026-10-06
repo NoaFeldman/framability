@@ -42,6 +42,8 @@ margin_polish(S, A)                 trust-region bundle descent on F
 
 from __future__ import annotations
 
+import os
+
 import numpy as np
 from scipy.optimize import linprog
 from scipy.sparse import (csc_matrix, kron as sp_kron, eye as sp_eye,
@@ -55,6 +57,12 @@ from framability_rate_global import column_witness, column_grad
 RATE_MARGIN_VERSION = '1.0-margin-bundle'
 IDENTITY_COL = 0          # column (I, I) of D = S (x) S when S[:, 0] = I
 _TOL = 1e-9
+# Wall-clock cap (s) of every HiGHS solve here.  A normal d_ext = 12 solve
+# takes seconds; a solve that hits the cap returns a non-optimal status and the
+# frame is treated as failed (+inf), so one pathological frame cannot stall an
+# array task for hours.  Override with the env var RATE_LP_TIME_LIMIT.
+LP_TIME_LIMIT = float(os.environ.get('RATE_LP_TIME_LIMIT', '300'))
+_LP_OPTIONS = dict(time_limit=LP_TIME_LIMIT)
 
 
 # ---------------------------------------------------------------------------
@@ -79,7 +87,7 @@ def column_values(S, A):
     c = np.ones(M + 2 * M * M)
     bounds = [(None, None)] * M + [(0.0, None)] * (2 * M * M)
     res = linprog(c, A_eq=A_eq, b_eq=Y.ravel(order='F'), bounds=bounds,
-                  method='highs')
+                  method='highs', options=_LP_OPTIONS)
     if res.status != 0:
         return None, None, None
     x = res.x
@@ -162,7 +170,7 @@ def margin_polish(S, A, *, n_iter: int = 40, radius: float = 0.05,
         c[-1] = 1.0
         res = linprog(c, A_ub=np.hstack([Gm, -np.ones((len(mu), 1))]), b_ub=-mu,
                       bounds=[(-radius, radius)] * nvar + [(None, None)],
-                      method='highs')
+                      method='highs', options=_LP_OPTIONS)
         n_lp += 1
         if not res.success:
             radius *= shrink
