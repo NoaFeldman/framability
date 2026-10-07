@@ -7,7 +7,10 @@ fixed frames in order of cost, stopping as soon as one is at the floor:
   1. the point's best d_ext = 8 frame (min over the seeded worker, xeval and
      qrefine files), padded to 12 columns  ->  rate_12 <= rate_8 always
   2. the 8 neighbours' best d_ext = 8 frames, padded; the closed-form frames
-     B, C10, P9 (framability_rate_families.model10_frames)
+     B, C10, P9 (framability_rate_families.model10_frames); with --xfer_dirs
+     (off by default) also the best d_ext = 8 / 12 frames of another
+     full-grid seeded run (e.g. the dim = 1 chain) at the point and its
+     neighbours within --xfer_radius (model10_seeded_worker.xfer_frames)
   3. the point's d_ext = 8 frame grown greedily by 4 columns
      (framability_rate_families.greedy_augment: at each step the best of the
      pairwise sums / differences of its columns and the Pauli axes)
@@ -58,7 +61,8 @@ from framability_rate_families import (model10_frames, optimize_family,   # noqa
                                        model10_family_starts, greedy_augment,
                                        winning_families_for, transfer_params,
                                        RATE_FAMILIES_VERSION)
-from model10_seeded_worker import MODEL, grid_vals, pt_dir_name, generator  # noqa: E402
+from model10_seeded_worker import (MODEL, grid_vals, pt_dir_name,         # noqa: E402
+                                   generator, xfer_frames)
 from model10_seeded_qrefine_worker import best_known, ROUND_TAG           # noqa: E402
 
 M = 12
@@ -157,6 +161,14 @@ def compute_seed(ix, iy, nx, ny, args) -> dict:
                 best.offer(f'd8 {labn}', fit_columns(Sn, M))
     for name, S in model10_frames(d1, d2, J, h, M).items():
         best.offer(f'analytic {name}', S)
+    xfer = Best(A)
+    for lab, S in xfer_frames(args.xfer_dirs, ix * args.stride, iy * args.stride,
+                              M, args.xfer_radius):
+        xfer.offer(lab, S)
+    if xfer.S is not None:
+        out[f'xfer_best_{M}'] = xfer.v
+        best.n += xfer.n
+        best.offer(xfer.label, xfer.S, xfer.v)
     if best.at_floor():
         return done('cheap seed at floor')
 
@@ -302,6 +314,12 @@ def main() -> None:
                    help='stride of the seeded d_ext = 4 / 8 run')
     p.add_argument('--dim', type=int, default=None)
     p.add_argument('--seed', type=int, default=0)
+    p.add_argument('--xfer_dirs', type=str, nargs='*', default=[],
+                   help='seed stage: roots of other full-grid seeded runs (e.g. '
+                        'the dim=1 results_model10_rate) whose best d_ext 8/12 '
+                        'frames near the point are tried (read-only; default none)')
+    p.add_argument('--xfer_radius', type=int, default=1,
+                   help='Chebyshev radius (full-grid steps) of the transfers')
     p.add_argument('--no_greedy', action='store_true')
     p.add_argument('--fam_random', type=int, default=4)
     p.add_argument('--fam_polish', type=int, default=2)

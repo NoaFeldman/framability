@@ -18,6 +18,10 @@ Per grid point (Delta1, Delta2) and per d_ext m:
   3. every frame already stored for the point by the base scan / refine /
      gopt pipelines (read-only; S_heis_4, S_heis_6, S_heis_8), and at m = 8
      the point's own m = 4 optimum padded (so rate_8 <= rate_4)
+     --xfer_dirs (off by default): also the best frames of ANOTHER full-grid
+     seeded run (e.g. the dim = 1 chain when this run is dim = 2) at the
+     point and its neighbours within --xfer_radius, every source d_ext in
+     XFER_SRC[m], padded to m (xfer_frames; read-only)
   4. unless a seed already sits at the floor mu* = 0:
      framability_rate_global.minimize_rate_global seeded with all of the
      above (its own seed library -- exact rescaled-Pauli optimum, pump / Z
@@ -27,11 +31,20 @@ Per grid point (Delta1, Delta2) and per d_ext m:
 The value "structured" (fam_<m>) is the best of 1-2 alone, i.e. frames written
 down directly; "rate" (rate_<m>) is the certified final value.
 
+The closed forms are written for the dim = 1 bond.  A dim-d bond is the
+dim = 1 bond at (D1/d, h/d), and the B / C weights depend on h/D1 and D2/J
+only, so the same frames serve every --dim.
+
+--fixed_frames (off by default) also stores the fixed-frame rates rate_pauli
+and rate_stab3 (framability_rate_frames), for runs without a base scan.
+
 Output: <out_dir>/<model>_seeded[_s<stride>]/pt_<ix:03d>_<iy:03d>.npz
     rate_<m>, S_<m>, label_<m>   certified rate, frame, origin of the frame
     fam_<m>, famS_<m>, famlabel_<m>   best closed-form / structured frame
     famval_<name>_<m>            per-family optimum,  famp_<name>_<m> params
     prev_best_<m>                best stored (old) value for the same m
+    xfer_best_<m>                best transferred frame (--xfer_dirs only)
+    rate_pauli, rate_stab3       (--fixed_frames only)
     t_<m>                        seconds
 Nothing is written into the directories of the existing pipelines, so their
 collect / refine scripts never see these files.
@@ -65,12 +78,14 @@ from framability_rate_global import (minimize_rate_global, fit_columns,   # noqa
 from framability_rate_families import (families_for, model10_frames,      # noqa: E402
                                        model10_family_starts, optimize_family,
                                        self_check, RATE_FAMILIES_VERSION)
+from framability_rate_frames import pauli_rate, stabilizer_3_rate         # noqa: E402
 from rate_gopt_worker import stored_frames                                # noqa: E402
 
 MODEL = 'model10'
 D_EXTS_DEFAULT = (4, 8)
 STORED_D_EXTS = (4, 6, 8)             # stored frame sizes used as seeds
 STORED_DIRS_DEFAULT = ('results_model10_rate', 'results_model4_rate')
+XFER_SRC = {4: (4,), 8: (4, 8), 12: (8, 12)}   # source d_ext transferred to m
 TOL = 1e-9
 
 
@@ -105,6 +120,37 @@ def load_stored(stored_dirs, ix_full: int, iy_full: int) -> dict:
     return out
 
 
+def xfer_frames(xfer_dirs, ix_full: int, iy_full: int, m: int,
+                radius: int = 1) -> list:
+    """[(label, frame)]: the best frames another full-grid seeded run (e.g.
+    the dim = 1 chain) holds at the full-grid point (ix_full, iy_full) and its
+    neighbours within Chebyshev `radius`, for every source d_ext in
+    XFER_SRC[m], padded to m columns.  Per source point the frame is the
+    minimum over its worker / xeval / refine / margin files
+    (model10_seeded_qrefine_worker.best_known) in <dir>/model10_seeded
+    (d_ext 4, 8) or <dir>/model10_seeded_d12 (d_ext 12).  Read-only."""
+    # imported here: model10_seeded_qrefine_worker imports this module
+    from model10_seeded_qrefine_worker import best_known
+    spec = MODELS[MODEL]
+    out = []
+    for d in xfer_dirs:
+        for k in XFER_SRC.get(m, ()):
+            name = pt_dir_name(1)
+            pt = Path(d) / (name if k < 12 else name.replace('_seeded', '_seeded_d12', 1))
+            if not pt.is_dir():
+                continue
+            for dx in range(-radius, radius + 1):
+                for dy in range(-radius, radius + 1):
+                    jx, jy = ix_full + dx, iy_full + dy
+                    if not (0 <= jx < spec.N_X and 0 <= jy < spec.N_Y):
+                        continue
+                    _, S, _ = best_known(pt, jx, jy, f'rate_{k}', f'S_{k}')
+                    if S is not None:
+                        lab = f'xfer d{k}' + ('' if dx == dy == 0 else ' nb')
+                        out.append((lab, fit_columns(S, m)))
+    return out
+
+
 def _certify(S, A) -> float:
     """Independent per-column LP value, clipped at the floor 0."""
     v = frame_rate_value(S, A, reference=True)
@@ -117,6 +163,11 @@ def compute_point(d1: float, d2: float, ix: int, iy: int, args) -> dict:
     rng = np.random.default_rng([args.seed, ix, iy])
     out: dict = dict(delta1=d1, delta2=d2, dim=args.dim,
                      floor=spectral_abscissa(A))
+    if args.fixed_frames:
+        t0 = time.perf_counter()
+        out['rate_pauli'] = pauli_rate(A.T)
+        out['rate_stab3'] = stabilizer_3_rate(A.T)
+        out['t_fixed'] = time.perf_counter() - t0
     stored = load_stored(args.stored_dirs, ix * args.stride, iy * args.stride)
     prev_S, prev_label = None, None
 
@@ -142,15 +193,20 @@ def compute_point(d1: float, d2: float, ix: int, iy: int, args) -> dict:
                 break                                    # already at the floor
 
         n_struct = len(cands)
-        # ---- 3. stored frames, padded smaller optimum -------------------
+        # ---- 3. stored frames, padded smaller optimum, transfers --------
         for k in STORED_D_EXTS:
             for _, S in stored[k]:
                 cands.append(('stored', fit_columns(S, m)))
         if prev_S is not None:
             cands.append((prev_label, fit_columns(prev_S, m)))
+        n_pre_xfer = len(cands)
+        cands += xfer_frames(args.xfer_dirs, ix * args.stride, iy * args.stride,
+                             m, args.xfer_radius)
 
         vals = np.array([frame_rate_value(S, A) for _, S in cands], float)
         vals = np.where(np.isfinite(vals), vals, np.inf)
+        if len(cands) > n_pre_xfer:
+            out[f'xfer_best_{m}'] = float(vals[n_pre_xfer:].min())
         i_s = int(np.argmin(vals[:n_struct]))
         out[f'fam_{m}'] = _certify(cands[i_s][1], A)
         out[f'famS_{m}'] = cands[i_s][1]
@@ -238,6 +294,15 @@ def main() -> None:
                    default=list(STORED_DIRS_DEFAULT),
                    help='existing rate dirs whose <dir>/model10 frames seed '
                         'the search (read-only; missing dirs are skipped)')
+    p.add_argument('--xfer_dirs', type=str, nargs='*', default=[],
+                   help='roots of other full-grid seeded runs (e.g. the dim=1 '
+                        'results_model10_rate) whose best frames near the point '
+                        '(d_ext in XFER_SRC[m]) seed the search (read-only; '
+                        'default none)')
+    p.add_argument('--xfer_radius', type=int, default=1,
+                   help='Chebyshev radius (full-grid steps) of the transfers')
+    p.add_argument('--fixed_frames', action='store_true',
+                   help='also store rate_pauli and rate_stab3')
     p.add_argument('--stride', type=int, default=1)
     p.add_argument('--d_exts', type=int, nargs='+', default=list(D_EXTS_DEFAULT))
     p.add_argument('--dim', type=int, default=None,
