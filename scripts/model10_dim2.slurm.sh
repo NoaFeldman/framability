@@ -16,6 +16,9 @@
 #                             with this run's d_ext = 8 and the dim = 1 d_ext = 8 / 12
 #    STAGE=d12_refine ROUND=r one d_ext = 12 refine round
 #    STAGE=margin D_EXT=8|12 ROUND=r   one margin round (model10_margin_worker)
+#    STAGE=rrefine D_EXT=8|12 ROUND=r  one randomised refine round
+#                             (model10_rrefine_worker, TARGETS=nonmono: points
+#                             above a less-noisy neighbour or next to rate 0)
 #
 #  Driven by scripts/submit_model10_dim2.sh (which sets --job-name / --time per
 #  stage); by hand, e.g.
@@ -36,7 +39,7 @@
 #SBATCH --output=logs/m10dim2_%x_%A_%a.out
 #SBATCH --error=logs/m10dim2_%x_%A_%a.err
 
-STAGE=${STAGE:?set STAGE (seed | qrefine | d12_seed | d12_refine | margin)}
+STAGE=${STAGE:?set STAGE (seed | qrefine | d12_seed | d12_refine | margin | rrefine)}
 ROUND=${ROUND:-0}
 D_EXT=${D_EXT:-8}
 DIM=${DIM:-2}
@@ -73,6 +76,12 @@ REFINE_BUNDLE=${REFINE_BUNDLE:-25}
 RADIUS=${RADIUS:-2}
 MARGIN_ITERS=${MARGIN_ITERS:-40}
 PUSH_ITERS=${PUSH_ITERS:-40}
+# randomised refine (defaults of scripts/model10_rrefine.slurm.sh, but nonmono targets)
+TARGETS=${TARGETS:-nonmono}
+RR_POLISH_ITERS=${RR_POLISH_ITERS:-100}
+HOPS=${HOPS:-6}
+SCALES=${SCALES:-"0.02 0.06 0.15"}
+MAX_SECONDS=${MAX_SECONDS:-1800}
 
 source "${SLURM_SUBMIT_DIR}/.venv/bin/activate"
 cd "${SLURM_SUBMIT_DIR}"
@@ -161,6 +170,23 @@ margin)
         --tol          "$RATE_TOL" \
         --margin_iters "$MARGIN_ITERS" \
         --push_iters   "$PUSH_ITERS"
+    ;;
+rrefine)
+    python scripts/model10_rrefine_worker.py \
+        --d_ext        "$D_EXT" \
+        --round        "$ROUND" \
+        --task_id      "$TASK" \
+        --n_chunks     "$N_CHUNKS" \
+        --dim          "$DIM" \
+        --out_dir      "$OUT_DIR" \
+        --stride       "$STRIDE" \
+        --targets      "$TARGETS" \
+        --polish_iters "$RR_POLISH_ITERS" \
+        --hops         "$HOPS" \
+        --scales       $SCALES \
+        --max_seconds  "$MAX_SECONDS" \
+        --tol          "$RATE_TOL" \
+        --seed         "$SEED"
     ;;
 *)
     echo "unknown STAGE=${STAGE}"; exit 1 ;;

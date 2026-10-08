@@ -21,8 +21,13 @@
 #    4. d12 seed    seeded with this run's d_ext=8 and the dim=1 d_ext=8/12
 #    5. d12 refine  up to N_D12_REF rounds
 #    6. margin      up to N_MARGIN rounds at d_ext=8, then at d_ext=12
-#    7. plot        scripts/model10_dim2_collect.slurm.sh MODE=plot (1 job)
+#    7. rrefine     up to N_RREF randomised refine rounds at d_ext=8, then at
+#                   d_ext=12 (TARGETS=nonmono: points above a less-noisy
+#                   neighbour or next to rate 0, which quick refine / margin
+#                   cannot reach away from the rate-0 region)
+#    8. plot        scripts/model10_dim2_collect.slurm.sh MODE=plot (1 job)
 #  EARLY_STOP=1 (default) ends a round loop after a round that writes nothing.
+#  scripts/model10_refine_status.py tells which loops are still moving.
 #  Every stage skips finished work and round numbers continue from the disk,
 #  so re-running the script picks up where it stopped.
 #
@@ -36,8 +41,9 @@
 #
 #  Knobs (env): DIM (2), OUT_DIR (results_model10_rate_dim$DIM), XFER_DIRS
 #  (results_model10_rate), XFER_RADIUS (1), STRIDE (1; 5 = 11x11 preview),
-#  N_QREF (12), N_D12_REF (4), N_MARGIN (4), EARLY_STOP (1), SKIP_SEED=1,
-#  SKIP_XEVAL=1, SKIP_QREF=1, SKIP_D12=1, SKIP_MARGIN=1, OUT_PNG,
+#  N_QREF (12), N_D12_REF (4), N_MARGIN (4), N_RREF (6), EARLY_STOP (1),
+#  SKIP_SEED=1, SKIP_XEVAL=1, SKIP_QREF=1, SKIP_D12=1, SKIP_MARGIN=1,
+#  SKIP_RREF=1, TARGETS (nonmono | all), OUT_PNG,
 #  SEED_TIME (16:00:00), D12_TIME (24:00:00), and every variable of the two
 #  slurm scripts (OPTIMIZER, DE_MAXITER, BUNDLE_ITERS, RADIUS, N_PROC, ...).
 # ============================================================
@@ -53,6 +59,7 @@ export OUT_PNG="${OUT_PNG:-results_model4_rate/model10_dim${DIM}_rate_panels.png
 N_QREF="${N_QREF:-12}"
 N_D12_REF="${N_D12_REF:-4}"
 N_MARGIN="${N_MARGIN:-4}"
+N_RREF="${N_RREF:-6}"
 EARLY_STOP="${EARLY_STOP:-1}"
 JP="m10d${DIM}"                       # job names, distinct from the dim=1 jobs
 TAG="[m10 dim=${DIM}]"
@@ -164,7 +171,15 @@ if [ "${SKIP_MARGIN:-0}" != "1" ]; then
         "${JP}_margin" 12:00:00 STAGE=margin D_EXT=12
 fi
 
-# ---- 7. figure ---------------------------------------------------------------
+# ---- 7. randomised refine, d_ext = 8 then 12 -------------------------------
+if [ "${SKIP_RREF:-0}" != "1" ]; then
+    round_loop "d_ext=8 rrefine" "$D8_DIR" _rrefine_r "$N_RREF" \
+        "${JP}_rref" 12:00:00 STAGE=rrefine D_EXT=8
+    round_loop "d_ext=12 rrefine" "$D12_DIR" _rrefine_r "$N_RREF" \
+        "${JP}_rref" 12:00:00 STAGE=rrefine D_EXT=12
+fi
+
+# ---- 8. figure ---------------------------------------------------------------
 pid=$(MODE=plot sbatch --parsable --cpus-per-task=1 --time=01:00:00 \
           --job-name="${JP}_plot" scripts/model10_dim2_collect.slurm.sh)
-echo "$TAG stage 7: figure job ${pid%%;*} submitted -> ${OUT_PNG}"
+echo "$TAG stage 8: figure job ${pid%%;*} submitted -> ${OUT_PNG}"
