@@ -56,6 +56,7 @@ python scripts/model10_dim2_collect.py \
     --radius8     "$RADIUS8" \
     --max_sweeps  "$MAX_SWEEPS" \
     --n_proc      "$N_PROC" \
-    $EXTRA
+    $EXTRA \
+    || { echo "[model10 dim=${DIM} collect] ${MODE} FAILED"; exit 1; }
 
 echo "[model10 dim=${DIM} collect] ${MODE} done"

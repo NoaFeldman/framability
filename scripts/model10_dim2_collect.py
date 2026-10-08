@@ -90,9 +90,11 @@ def summary(R, ref, m: int) -> None:
     """Log line per optimised panel (same counters as the dim = 1 figure)."""
     up = int((R[1:, :] - R[:-1, :] > 1e-4).sum() + (R[:, 1:] - R[:, :-1] > 1e-4).sum())
     near = int(((R > common.CONTOUR_TOL) & (R < 1e-3)).sum())
-    both = np.isfinite(R) & np.isfinite(ref)
-    txt = (f'; below d_ext={m - 4 if m == 8 else 8} at '
-           f'{int(((ref - R)[both] > 1e-6).sum())}' if ref is not None else '')
+    txt = ''
+    if ref is not None:
+        both = np.isfinite(R) & np.isfinite(ref)
+        txt = (f'; below d_ext={m - 4 if m == 8 else 8} at '
+               f'{int(((ref - R)[both] > 1e-6).sum())}')
     print(f'  d{m}: data at {int(np.isfinite(R).sum())} pts; rate 0 at '
           f'{int((R <= common.CONTOUR_TOL).sum())}{txt}; non-monotone steps {up}; '
           f'near-zero (1e-6..1e-3) {near}', flush=True)
