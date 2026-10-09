@@ -26,7 +26,11 @@
 #                   neighbour or next to rate 0, which quick refine / margin
 #                   cannot reach away from the rate-0 region)
 #    8. plot        scripts/model10_dim2_collect.slurm.sh MODE=plot (1 job)
-#  EARLY_STOP=1 (default) ends a round loop after a round that writes nothing.
+#  EARLY_STOP=1 (default) ends a round loop after a round that writes nothing,
+#  or after PATIENCE (2) rounds in a row that made no new rate-0 point and no
+#  drop above MIN_GAIN (1e-3, invisible on the colour scale).  MIN_GAIN=0 runs
+#  until no round lowers anything.  With N_* = 99 every loop runs until it
+#  stops this way (99 = the 2-digit round limit).
 #  scripts/model10_refine_status.py tells which loops are still moving.
 #  Every stage skips finished work and round numbers continue from the disk,
 #  so re-running the script picks up where it stopped.
@@ -42,6 +46,7 @@
 #  Knobs (env): DIM (2), OUT_DIR (results_model10_rate_dim$DIM), XFER_DIRS
 #  (results_model10_rate), XFER_RADIUS (1), STRIDE (1; 5 = 11x11 preview),
 #  N_QREF (12), N_D12_REF (4), N_MARGIN (4), N_RREF (6), EARLY_STOP (1),
+#  MIN_GAIN (1e-3), PATIENCE (2), PY (.venv/bin/python),
 #  SKIP_SEED=1, SKIP_XEVAL=1, SKIP_QREF=1, SKIP_D12=1, SKIP_MARGIN=1,
 #  SKIP_RREF=1, TARGETS (nonmono | all), OUT_PNG,
 #  SEED_TIME (16:00:00), D12_TIME (24:00:00), and every variable of the two
@@ -61,6 +66,9 @@ N_D12_REF="${N_D12_REF:-4}"
 N_MARGIN="${N_MARGIN:-4}"
 N_RREF="${N_RREF:-6}"
 EARLY_STOP="${EARLY_STOP:-1}"
+MIN_GAIN="${MIN_GAIN:-1e-3}"          # a round "improves" only above this drop ...
+PATIENCE="${PATIENCE:-2}"             # ... and this many quiet rounds in a row stop a loop
+PY="${PY:-.venv/bin/python}"          # for the stop rule (login node)
 JP="m10d${DIM}"                       # job names, distinct from the dim=1 jobs
 TAG="[m10 dim=${DIM}]"
 mkdir -p logs "$OUT_DIR"
@@ -93,18 +101,34 @@ run_array() {     # run_array <job name> <time> VAR=value ...   (blocks)
 round_loop() {    # round_loop <label> <dir> <file tag> <max rounds> <job name> <time> VAR=value ...
     local label="$1" dir="$2" ftag="$3" n="$4" name="$5" time="$6"; shift 6
     [ "$n" -gt 0 ] || return 0
-    local start end round n_new
+    local start end round mx nz nf quiet=0
     start=$(( $(last_round "$dir" "$ftag") + 1 ))
     end=$(( start + n - 1 ))
     [ "$end" -le 99 ] || end=99                       # 2-digit round tags
     echo "$TAG ${label}: rounds ${start}..${end}"
     for round in $(seq "$start" "$end"); do
         run_array "$name" "$time" ROUND="$round" "$@"
-        n_new=$(count "$dir" "*${ftag}$(printf '%02d' "$round").npz")
-        echo "$TAG ${label} round ${round}: ${n_new} point file(s) written"
-        if [ "$EARLY_STOP" = "1" ] && [ "$n_new" -eq 0 ]; then
+        # (if the check itself fails: count the files and keep going)
+        read -r mx nz nf < <("$PY" scripts/model10_refine_status.py \
+                                 --round_gain "$dir" "$ftag" "$round" \
+            || echo "nan 0 $(count "$dir" "*${ftag}$(printf '%02d' "$round").npz")") || true
+        mx=${mx:-nan}; nz=${nz:-0}; nf=${nf:-0}
+        echo "$TAG ${label} round ${round}: ${nf} file(s), largest drop ${mx}," \
+             "${nz} new rate-0 point(s)"
+        [ "$EARLY_STOP" = "1" ] || continue
+        if [ "$nf" -eq 0 ]; then
             echo "$TAG ${label}: round ${round} wrote nothing -- stopping"
             break
+        fi
+        if [ "$nz" -gt 0 ] || awk -v a="$mx" -v b="$MIN_GAIN" 'BEGIN { exit !(a > b) }'; then
+            quiet=0
+        else
+            quiet=$(( quiet + 1 ))
+            if [ "$quiet" -ge "$PATIENCE" ]; then
+                echo "$TAG ${label}: ${quiet} round(s) in a row without a new rate-0" \
+                     "point or a drop above ${MIN_GAIN} -- stopping"
+                break
+            fi
         fi
     done
 }

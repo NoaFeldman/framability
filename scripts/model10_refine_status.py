@@ -29,9 +29,15 @@ dim = 1 run with --out_dir results_model10_rate).  Read-only.
                   --targets nonmono)
 3. A verdict per loop from its last round on disk.
 
+--round_gain DIR TAG ROUND prints only "<largest drop> <new rate-0 points>
+<files>" of one round (every rate_<m> in its files); the stop rule of
+scripts/submit_model10_dim2.sh.
+
 Usage (on the cluster, from the repo root; a minute or so of file reading):
     python scripts/model10_refine_status.py
     python scripts/model10_refine_status.py --out_dir results_model10_rate
+    python scripts/model10_refine_status.py --round_gain \\
+        results_model10_rate_dim2/model10_seeded _rrefine_r 7
 """
 from __future__ import annotations
 
@@ -89,6 +95,26 @@ def history(pt: Path, tag: str, d_exts, tol: float, gain: float) -> dict:
             if prev > tol >= new:
                 s['zeros'] += 1
     return dict(sorted(out.items()))
+
+
+def round_gain(pt: Path, tag: str, r: int, tol: float):
+    """(largest drop, new rate-0 points, files) of round r, over every
+    rate_<m> with a stored rate_<m>_prev."""
+    mx, zeros, n = 0.0, 0, 0
+    for f in pt.glob(f'pt_*{tag}{r:02d}.npz'):
+        try:
+            d = np.load(f, allow_pickle=True)
+        except Exception:                                   # noqa: BLE001
+            continue
+        n += 1
+        for k in d.files:
+            if not re.fullmatch(r'rate_\d+_prev', k) or k[:-5] not in d.files:
+                continue
+            new, prev = float(d[k[:-5]]), float(d[k])
+            if np.isfinite(new) and np.isfinite(prev):
+                mx = max(mx, prev - new)
+                zeros += prev > tol >= new
+    return mx, zeros, n
 
 
 def report_loop(label: str, hist: dict, visible: float) -> str:
@@ -160,7 +186,15 @@ def main() -> None:
                     help='a drop below this does not show on the colour scale')
     ap.add_argument('--n_show', type=int, default=5,
                     help='non-monotone steps / near-zero points listed per d_ext')
+    ap.add_argument('--round_gain', nargs=3, metavar=('DIR', 'TAG', 'ROUND'),
+                    help='only print "<largest drop> <new rate-0> <files>" of '
+                         'one round and exit')
     args = ap.parse_args()
+    if args.round_gain:
+        d, tag, r = args.round_gain
+        mx, zeros, n = round_gain(Path(d), tag, int(r), args.tol)
+        print(f'{mx:.6e} {zeros} {n}')
+        return
 
     pt8 = Path(args.out_dir) / pt_dir_name(args.stride)
     pt12 = d12_dir(args.out_dir, args.stride)
