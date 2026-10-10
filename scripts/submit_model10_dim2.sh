@@ -26,9 +26,10 @@
 #                   neighbour or next to rate 0, which quick refine / margin
 #                   cannot reach away from the rate-0 region)
 #    8. plot        scripts/model10_dim2_collect.slurm.sh MODE=plot (1 job)
-#  EARLY_STOP=1 (default) ends a round loop after a round that writes nothing,
-#  or after PATIENCE (2) rounds in a row that made no new rate-0 point and no
-#  drop above MIN_GAIN (1e-3, invisible on the colour scale).  MIN_GAIN=0 runs
+#  EARLY_STOP=1 (default) ends a round loop after PATIENCE (2) rounds in a row
+#  that made no new rate-0 point and no drop above MIN_GAIN (1e-3, invisible
+#  on the colour scale); the deterministic loops (d12 refine, margin) also
+#  end after a single round that writes nothing.  MIN_GAIN=0 runs
 #  until no round lowers anything.  With N_* = 99 every loop runs until it
 #  stops this way (99 = the 2-digit round limit).
 #  scripts/model10_refine_status.py tells which loops are still moving.
@@ -98,8 +99,10 @@ run_array() {     # run_array <job name> <time> VAR=value ...   (blocks)
         || echo "$TAG warning: some ${name} tasks failed; continuing"
 }
 
-round_loop() {    # round_loop <label> <dir> <file tag> <max rounds> <job name> <time> VAR=value ...
-    local label="$1" dir="$2" ftag="$3" n="$4" name="$5" time="$6"; shift 6
+round_loop() {    # round_loop <label> <dir> <file tag> <max rounds> <job name> <time> <det|rand> VAR=value ...
+    # det : a round that writes nothing ends the loop (the next one would repeat it)
+    # rand: fresh random seeds every round, so an empty round only counts as quiet
+    local label="$1" dir="$2" ftag="$3" n="$4" name="$5" time="$6" kind="$7"; shift 7
     [ "$n" -gt 0 ] || return 0
     local start end round mx nz nf quiet=0
     start=$(( $(last_round "$dir" "$ftag") + 1 ))
@@ -116,7 +119,7 @@ round_loop() {    # round_loop <label> <dir> <file tag> <max rounds> <job name> 
         echo "$TAG ${label} round ${round}: ${nf} file(s), largest drop ${mx}," \
              "${nz} new rate-0 point(s)"
         [ "$EARLY_STOP" = "1" ] || continue
-        if [ "$nf" -eq 0 ]; then
+        if [ "$nf" -eq 0 ] && [ "$kind" = "det" ]; then
             echo "$TAG ${label}: round ${round} wrote nothing -- stopping"
             break
         fi
@@ -171,7 +174,7 @@ fi
 # ---- 3. d_ext = 4 / 8 quick-refine rounds ----------------------------------
 if [ "${SKIP_QREF:-0}" != "1" ]; then
     round_loop "d_ext=4/8 qrefine" "$D8_DIR" _qrefine_r "$N_QREF" \
-        "${JP}_qref" 08:00:00 STAGE=qrefine
+        "${JP}_qref" 08:00:00 rand STAGE=qrefine
 fi
 
 # ---- 4-5. d_ext = 12: seed stage, refine rounds ----------------------------
@@ -184,23 +187,23 @@ if [ "${SKIP_D12:-0}" != "1" ]; then
     done
     echo "$TAG stage 4: $(count "$D12_DIR" "$BASE_PAT")/${N_TOTAL} d_ext=12 points"
     round_loop "d_ext=12 refine" "$D12_DIR" _qrefine_r "$N_D12_REF" \
-        "${JP}_d12_qref" 08:00:00 STAGE=d12_refine
+        "${JP}_d12_qref" 08:00:00 det STAGE=d12_refine
 fi
 
 # ---- 6. margin rounds, d_ext = 8 then 12 -----------------------------------
 if [ "${SKIP_MARGIN:-0}" != "1" ]; then
     round_loop "d_ext=8 margin" "$D8_DIR" _margin_r "$N_MARGIN" \
-        "${JP}_margin" 12:00:00 STAGE=margin D_EXT=8
+        "${JP}_margin" 12:00:00 det STAGE=margin D_EXT=8
     round_loop "d_ext=12 margin" "$D12_DIR" _margin_r "$N_MARGIN" \
-        "${JP}_margin" 12:00:00 STAGE=margin D_EXT=12
+        "${JP}_margin" 12:00:00 det STAGE=margin D_EXT=12
 fi
 
 # ---- 7. randomised refine, d_ext = 8 then 12 -------------------------------
 if [ "${SKIP_RREF:-0}" != "1" ]; then
     round_loop "d_ext=8 rrefine" "$D8_DIR" _rrefine_r "$N_RREF" \
-        "${JP}_rref" 12:00:00 STAGE=rrefine D_EXT=8
+        "${JP}_rref" 12:00:00 rand STAGE=rrefine D_EXT=8
     round_loop "d_ext=12 rrefine" "$D12_DIR" _rrefine_r "$N_RREF" \
-        "${JP}_rref" 12:00:00 STAGE=rrefine D_EXT=12
+        "${JP}_rref" 12:00:00 rand STAGE=rrefine D_EXT=12
 fi
 
 # ---- 8. figure ---------------------------------------------------------------
