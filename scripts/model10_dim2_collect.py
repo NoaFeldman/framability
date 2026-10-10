@@ -55,7 +55,7 @@ from trotter_lindbladian_scan import MODELS                               # noqa
 from model10_seeded_worker import MODEL, grid_vals, pt_dir_name           # noqa: E402
 from model10_d12_worker import d12_dir                                    # noqa: E402
 from model10_seeded_collect import load_seeded, xeval                     # noqa: E402
-from model10_seeded_panels_collect import load_best, _rounds_txt          # noqa: E402
+from model10_seeded_panels_collect import load_best                       # noqa: E402
 import model10_panels_common as common                                    # noqa: E402
 
 DIM_DEFAULT = 2
@@ -98,6 +98,14 @@ def summary(R, ref, m: int) -> None:
     print(f'  d{m}: data at {int(np.isfinite(R).sum())} pts; rate 0 at '
           f'{int((R <= common.CONTOUR_TOL).sum())}{txt}; non-monotone steps {up}; '
           f'near-zero (1e-6..1e-3) {near}', flush=True)
+
+
+def rounds_txt(s: dict, what: str) -> str:
+    """Two short title lines: frame source, then the rounds behind it."""
+    parts = [f'{len(s["rounds"])} refine']
+    parts += [f'{len(s["margin"])} margin'] if s['margin'] else []
+    parts += [f'{len(s["rref"])} randomised'] if s['rref'] else []
+    return f'{what}\n+ ' + ' + '.join(parts) + ' rounds'
 
 
 def plot(panels: list, png: Path, dim: int) -> None:
@@ -194,11 +202,11 @@ def main() -> None:
     panels = [(p1, p2, fixed[k], label) for k, label in FIXED_KEYS]
     panels += [
         (p1, p2, panel[4], rf'Opt Heisenberg rate ({dl}=4$)'
-                           f'\n{_rounds_txt(s4, "seeded from 1D")}'),
+                           f'\n{rounds_txt(s4, "seeded from 1D")}'),
         (p1, p2, panel[8], rf'Opt Heisenberg rate ({dl}=8$)'
-                           f'\n{_rounds_txt(s8, "seeded from 1D")}'),
+                           f'\n{rounds_txt(s8, "seeded from 1D")}'),
         (p1, p2, panel[12], rf'Opt Heisenberg rate ({dl}=12$)'
-                            f'\n{_rounds_txt(s12, "seeded from 1D + $d=8$")}'),
+                            f'\n{rounds_txt(s12, "seeded from 1D + $d=8$")}'),
     ]
     for key, label in common.PROD_RATE_KEYS:
         if prod is None:
