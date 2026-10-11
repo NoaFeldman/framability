@@ -28,7 +28,12 @@ fixed frames in order of cost, stopping as soon as one is at the floor:
   boundary points (a 4-neighbour at the floor) are then re-optimised with
   minimize_rate_global (no DE) seeded with their own and the neighbour frames.
 
-Reads   <out_dir>/model10_seeded[_s<stride>]/                 (d_ext = 4 / 8)
+Other models (--model, default model10): the closed forms become the exact
+rescaled-Pauli optimum, the family starts weight_family_starts, and step 4
+optimises every 12-column family (families_for(12): YZ 10-gon, Z pair + XY
+9-gon, X pair + YZ 9-gon, YZ 8-gon + XY pair) instead of model10's winners.
+
+Reads   <out_dir>/<model>_seeded[_s<stride>]/                 (d_ext = 4 / 8)
 Writes  <out_dir>/model10_seeded_d12[_s<stride>]/pt_<ix>_<iy>.npz
         ... /pt_<ix>_<iy>_qrefine_r<NN>.npz   (refine: improved points only)
         keys rate_12, S_12, label_12 (+ diagnostics)
@@ -53,16 +58,16 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from trotter_lindbladian_scan import MODELS, MODEL10_J, MODEL10_H         # noqa: E402
+from trotter_lindbladian_scan import MODELS                               # noqa: E402
 from framability_rate import RATE_VERSION                                 # noqa: E402
 from framability_rate_global import (minimize_rate_global, fit_columns,   # noqa: E402
                                      frame_rate_value, RATE_GLOBAL_VERSION)
-from framability_rate_families import (model10_frames, optimize_family,   # noqa: E402
-                                       model10_family_starts, greedy_augment,
-                                       winning_families_for, transfer_params,
-                                       RATE_FAMILIES_VERSION)
+from framability_rate_families import (optimize_family, greedy_augment,   # noqa: E402
+                                       families_for, winning_families_for,
+                                       transfer_params, RATE_FAMILIES_VERSION)
 from model10_seeded_worker import (MODEL, grid_vals, pt_dir_name,         # noqa: E402
-                                   generator, xfer_frames)
+                                   generator, xfer_frames, weights_frame,
+                                   closed_forms, family_starts)
 from model10_seeded_qrefine_worker import best_known, ROUND_TAG           # noqa: E402
 
 M = 12
@@ -73,12 +78,19 @@ NEIGHBORS4 = [(-1, 0), (1, 0), (0, -1), (0, 1)]
 NEIGHBORS8 = [(dx, dy) for dx in (-1, 0, 1) for dy in (-1, 0, 1) if (dx, dy) != (0, 0)]
 
 
-def d12_dir(out_dir: str, stride: int) -> Path:
-    return Path(out_dir) / (pt_dir_name(stride).replace('_seeded', '_seeded_d12', 1))
+def d12_dir(out_dir: str, stride: int, model: str = MODEL) -> Path:
+    return Path(out_dir) / (pt_dir_name(stride, model).replace('_seeded', '_seeded_d12', 1))
 
 
-def d8_dir(out_dir: str, stride: int) -> Path:
-    return Path(out_dir) / pt_dir_name(stride)
+def d8_dir(out_dir: str, stride: int, model: str = MODEL) -> Path:
+    return Path(out_dir) / pt_dir_name(stride, model)
+
+
+def d12_families(model: str) -> list:
+    """Families optimised at d_ext = 12: the ones that won at d_ext = 8 on
+    model10; every 12-column family elsewhere (the X-pair family, i.e. pump
+    projectors + YZ polygon, is expected to matter for models 3 / 4)."""
+    return winning_families_for(M) if model == 'model10' else families_for(M)
 
 
 def _certify(S, A) -> float:
@@ -127,12 +139,13 @@ class Best:
 #  Stage: seed
 # ---------------------------------------------------------------------------
 def compute_seed(ix, iy, nx, ny, args) -> dict:
-    p1, p2 = grid_vals(args.stride)
+    spec = MODELS[args.model]
+    p1, p2 = grid_vals(args.stride, args.model)
     d1, d2 = float(p1[ix]), float(p2[iy])
-    A = generator(d1, d2, args.dim)
-    J, h = MODEL10_J, MODEL10_H
-    pt8 = d8_dir(args.out_dir, args.stride)
-    out = dict(delta1=d1, delta2=d2, dim=args.dim)
+    A = generator(d1, d2, args.dim, args.model)
+    Sw = weights_frame(args.model, A)
+    pt8 = d8_dir(args.out_dir, args.stride, args.model)
+    out = {spec.p1_name: d1, spec.p2_name: d2, 'dim': args.dim}
     best = Best(A)
     t0 = time.perf_counter()
 
@@ -159,11 +172,11 @@ def compute_seed(ix, iy, nx, ny, args) -> dict:
             _, Sn, labn = best_known(pt8, jx, jy, f'rate_{M_SRC}', f'S_{M_SRC}')
             if Sn is not None:
                 best.offer(f'd8 {labn}', fit_columns(Sn, M))
-    for name, S in model10_frames(d1, d2, J, h, M).items():
+    for name, S in closed_forms(args.model, d1, d2, M, Sw).items():
         best.offer(f'analytic {name}', S)
     xfer = Best(A)
     for lab, S in xfer_frames(args.xfer_dirs, ix * args.stride, iy * args.stride,
-                              M, args.xfer_radius):
+                              M, args.xfer_radius, args.model):
         xfer.offer(lab, S)
     if xfer.S is not None:
         out[f'xfer_best_{M}'] = xfer.v
@@ -186,8 +199,8 @@ def compute_seed(ix, iy, nx, ny, args) -> dict:
     # 4. winning structured families
     rng = np.random.default_rng([args.seed, ix, iy, M])
     famp = _family_params_d8(pt8, ix, iy)
-    for fam in winning_families_for(M):
-        starts = transfer_params(fam, famp) + model10_family_starts(fam, d1, d2, J, h)
+    for fam in d12_families(args.model):
+        starts = transfer_params(fam, famp) + family_starts(args.model, fam, d1, d2, Sw)
         v, S, p, n = optimize_family(fam, A, starts, n_random=args.fam_random,
                                      n_polish=args.fam_polish,
                                      maxfev=args.fam_maxfev, rng=rng)
@@ -217,8 +230,9 @@ def compute_seed(ix, iy, nx, ny, args) -> dict:
 #  Stage: refine (one round)
 # ---------------------------------------------------------------------------
 def compute_refine(ix, iy, nx, ny, args):
-    pt = d12_dir(args.out_dir, args.stride)
-    pt8 = d8_dir(args.out_dir, args.stride)
+    spec = MODELS[args.model]
+    pt = d12_dir(args.out_dir, args.stride, args.model)
+    pt8 = d8_dir(args.out_dir, args.stride, args.model)
     v_own, S_own, lab_own = best_known(pt, ix, iy, KEY, S_KEY)
     if S_own is None or v_own <= args.rate_tol:
         return None                                     # nothing to do
@@ -231,9 +245,9 @@ def compute_refine(ix, iy, nx, ny, args):
                 nb.append((v, S, lab))
     boundary = any(v <= args.rate_tol for v, _, _ in nb)
 
-    p1, p2 = grid_vals(args.stride)
+    p1, p2 = grid_vals(args.stride, args.model)
     d1, d2 = float(p1[ix]), float(p2[iy])
-    A = generator(d1, d2, args.dim)
+    A = generator(d1, d2, args.dim, args.model)
     t0 = time.perf_counter()
     best = Best(A)
     best.v, best.S, best.label = v_own, S_own, lab_own
@@ -264,12 +278,12 @@ def compute_refine(ix, iy, nx, ny, args):
                     boundary=boundary, v_own=v_own)
     return {KEY: best.v, S_KEY: best.S, LAB_KEY: best.label,
             f'{KEY}_prev': v_own, 'boundary': boundary, 'improved': True,
-            'delta1': d1, 'delta2': d2, 't': time.perf_counter() - t0}
+            spec.p1_name: d1, spec.p2_name: d2, 't': time.perf_counter() - t0}
 
 
 # ---------------------------------------------------------------------------
 def run_point(ix, iy, nx, ny, args) -> None:
-    pt = d12_dir(args.out_dir, args.stride)
+    pt = d12_dir(args.out_dir, args.stride, args.model)
     stem = f'pt_{ix:03d}_{iy:03d}'
     if args.stage == 'seed':
         out_f = pt / f'{stem}.npz'
@@ -292,7 +306,7 @@ def run_point(ix, iy, nx, ny, args) -> None:
             return
     pt.mkdir(parents=True, exist_ok=True)
     tmp = out_f.with_suffix('.tmp.npz')
-    np.savez(tmp, model=MODEL, ix=ix, iy=iy, stride=args.stride, d_ext=M,
+    np.savez(tmp, model=args.model, ix=ix, iy=iy, stride=args.stride, d_ext=M,
              stage=args.stage, round=args.round, rate_version=RATE_VERSION,
              rate_global_version=RATE_GLOBAL_VERSION,
              rate_families_version=RATE_FAMILIES_VERSION, **res)
@@ -309,6 +323,7 @@ def main() -> None:
                    help='refine round (1..99); round r reads rounds < r')
     p.add_argument('--task_id', type=int, required=True)
     p.add_argument('--n_chunks', type=int, default=1)
+    p.add_argument('--model', type=str, default=MODEL, choices=sorted(MODELS))
     p.add_argument('--out_dir', type=str, default='results_model10_rate')
     p.add_argument('--stride', type=int, default=1,
                    help='stride of the seeded d_ext = 4 / 8 run')
@@ -333,11 +348,11 @@ def main() -> None:
                    help='seed stage: recompute points that already have a file')
     args = p.parse_args()
     if args.dim is None:
-        args.dim = MODELS[MODEL].dim
+        args.dim = MODELS[args.model].dim
     if args.stage == 'refine' and args.round < 1:
         sys.exit('--stage refine needs --round >= 1')
 
-    p1, p2 = grid_vals(args.stride)
+    p1, p2 = grid_vals(args.stride, args.model)
     nx, ny = len(p1), len(p2)
     n_total = nx * ny
     if args.n_chunks <= 1:

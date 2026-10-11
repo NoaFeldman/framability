@@ -36,6 +36,7 @@ scripts/submit_model10_dim2.sh.
 Usage (on the cluster, from the repo root; a minute or so of file reading):
     python scripts/model10_refine_status.py
     python scripts/model10_refine_status.py --out_dir results_model10_rate
+    python scripts/model10_refine_status.py --model model4 --out_dir results_model4_seeded
     python scripts/model10_refine_status.py --round_gain \\
         results_model10_rate_dim2/model10_seeded _rrefine_r 7
 """
@@ -52,7 +53,8 @@ from scipy.ndimage import binary_dilation
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from model10_seeded_worker import grid_vals, pt_dir_name                  # noqa: E402
+from trotter_lindbladian_scan import MODELS                               # noqa: E402
+from model10_seeded_worker import MODEL, grid_vals, pt_dir_name           # noqa: E402
 from model10_seeded_qrefine_worker import (ROUND_TAG, MARGIN_TAG,         # noqa: E402
                                            RREFINE_TAG)
 from model10_d12_worker import d12_dir                                    # noqa: E402
@@ -176,6 +178,7 @@ def indicators(R, m: int, p1, p2, tol: float, n_show: int) -> None:
 
 def main() -> None:
     ap = argparse.ArgumentParser()
+    ap.add_argument('--model', type=str, default=MODEL, choices=sorted(MODELS))
     ap.add_argument('--out_dir', type=str, default='results_model10_rate_dim2')
     ap.add_argument('--stride', type=int, default=1)
     ap.add_argument('--tol', type=float, default=1e-6,
@@ -196,8 +199,8 @@ def main() -> None:
         print(f'{mx:.6e} {zeros} {n}')
         return
 
-    pt8 = Path(args.out_dir) / pt_dir_name(args.stride)
-    pt12 = d12_dir(args.out_dir, args.stride)
+    pt8 = Path(args.out_dir) / pt_dir_name(args.stride, args.model)
+    pt12 = d12_dir(args.out_dir, args.stride, args.model)
     loops = [('d4/d8 quick refine', pt8, ROUND_TAG, (4, 8)),
              ('d12 refine', pt12, ROUND_TAG, (12,)),
              ('d8 margin', pt8, MARGIN_TAG, (8,)),
@@ -210,11 +213,11 @@ def main() -> None:
         if hist or 'randomised' not in label:
             verdicts.append(report_loop(label, hist, args.visible))
 
-    p1, p2 = grid_vals(args.stride)
+    p1, p2 = grid_vals(args.stride, args.model)
     nx, ny = len(p1), len(p2)
     print('\n== current panels', flush=True)
-    s = {4: load_best(pt8, nx, ny, 4), 8: load_best(pt8, nx, ny, 8),
-         12: load_best(pt12, nx, ny, 12)}
+    s = {4: load_best(pt8, nx, ny, 4, args.model), 8: load_best(pt8, nx, ny, 8, args.model),
+         12: load_best(pt12, nx, ny, 12, args.model)}
     panel = {4: s[4]['grid']}
     panel[8] = np.fmin(s[8]['grid'], panel[4])
     panel[12] = np.fmin(s[12]['grid'], panel[8])

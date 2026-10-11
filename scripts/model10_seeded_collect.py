@@ -123,8 +123,8 @@ def load_seeded(pt: Path, nx: int, ny: int, d_exts=D_EXTS) -> dict:
 # ---------------------------------------------------------------------------
 def _xeval_task(task):
     """Best confirmed candidate per d_ext for one point (runs in a worker)."""
-    ix, iy, d1, d2, dim, own, cands = task
-    A = generator(d1, d2, dim)
+    ix, iy, d1, d2, dim, own, cands, model = task
+    A = generator(d1, d2, dim, model)
     res = {}
     for m, lst in cands.items():
         best_v, best = np.inf, None
@@ -141,7 +141,7 @@ def _xeval_task(task):
     return ix, iy, res
 
 
-def _build_task(ix, iy, g, p1, p2, dim, radius, d_exts):
+def _build_task(ix, iy, g, p1, p2, dim, radius, d_exts, model=MODEL):
     nx, ny = len(p1), len(p2)
     own, cands = {}, {}
     m_small = min(d_exts)
@@ -173,11 +173,11 @@ def _build_task(ix, iy, g, p1, p2, dim, radius, d_exts):
             cands[m] = lst
     if not cands:
         return None
-    return (ix, iy, float(p1[ix]), float(p2[iy]), dim, own, cands)
+    return (ix, iy, float(p1[ix]), float(p2[iy]), dim, own, cands, model)
 
 
 def xeval(g, p1, p2, pt: Path, *, dim, radius, n_proc, max_sweeps,
-          d_exts=D_EXTS) -> int:
+          d_exts=D_EXTS, model=MODEL) -> int:
     """Jacobi neighbour sweeps; returns the number of improved points."""
     nx, ny = len(p1), len(p2)
     active = {(ix, iy) for ix in range(nx) for iy in range(ny)}
@@ -187,7 +187,7 @@ def xeval(g, p1, p2, pt: Path, *, dim, radius, n_proc, max_sweeps,
         else mp.get_context()
     for sweep in range(1, max_sweeps + 1):
         t0 = time.perf_counter()
-        tasks = [t for t in (_build_task(ix, iy, g, p1, p2, dim, radius, d_exts)
+        tasks = [t for t in (_build_task(ix, iy, g, p1, p2, dim, radius, d_exts, model)
                              for ix, iy in sorted(active)) if t is not None]
         if not tasks:
             break
@@ -225,7 +225,7 @@ def xeval(g, p1, p2, pt: Path, *, dim, radius, n_proc, max_sweeps,
             payload[f'rate_{m}'] = g[f'rate_{m}'][ix, iy]
             payload[f'S_{m}'] = g[f'S_{m}'][ix, iy]
             payload[f'label_{m}'] = g[f'label_{m}'][ix, iy]
-        np.savez(tmp, model=MODEL, ix=ix, iy=iy, **payload)
+        np.savez(tmp, model=model, ix=ix, iy=iy, **payload)
         os.replace(tmp, f)
     return len(improved)
 

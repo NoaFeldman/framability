@@ -29,9 +29,11 @@ optimised rates.
 Other models: --model model8 runs the identical six measures on model8's
 (h, gamma') grid, --model model10 on the (Delta1, Delta2) grid of the
 Shibata-Katsura dissipative quantum Ising chain
-(https://arxiv.org/abs/1904.12505); default out_dir results_<model>_rate.
+(https://arxiv.org/abs/1904.12505), --model model11 / model12 / model13 on the
+(gamma_1, gamma) grid of the XXZ chain with Z dephasing and S^- decay
+(Delta = -2, 0, 1); default out_dir results_<model>_rate.
 The bond generator takes the model's own lattice dimension (ModelSpec.dim:
-2 for model4 / model8, 1 for the model10 chain) unless --dim is given.
+2 for model4 / model8, 1 for the model10-13 chains) unless --dim is given.
 
 Frame seeds (--frame_seeds)
 ---------------------------
@@ -84,7 +86,8 @@ from framability_rate_state import (minimize_state_rate,                 # noqa:
                                     RATE_STATE_VERSION)
 
 MODEL_NAME = 'model4'                   # default --model
-SUPPORTED_MODELS = ('model4', 'model8', 'model10')
+SUPPORTED_MODELS = ('model3', 'model4', 'model8', 'model10', 'model11', 'model12',
+                    'model13')
 
 # Ring frame seeds (see module docstring): model -> Pauli axis (1=X, 2=Y, 3=Z)
 # its single-site field rotates about; the ring lies in the other two axes.

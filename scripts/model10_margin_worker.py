@@ -61,11 +61,11 @@ from model10_d12_worker import d12_dir                                    # noqa
 NEIGHBORS4 = [(-1, 0), (1, 0), (0, -1), (0, 1)]
 
 
-def point_dir(out_dir: str, stride: int, m: int) -> Path:
+def point_dir(out_dir: str, stride: int, m: int, model: str = MODEL) -> Path:
     if m == 8:
-        return Path(out_dir) / pt_dir_name(stride)
+        return Path(out_dir) / pt_dir_name(stride, model)
     if m == 12:
-        return d12_dir(out_dir, stride)
+        return d12_dir(out_dir, stride, model)
     raise ValueError(f'd_ext {m}: only 8 and 12 have seeded runs')
 
 
@@ -94,7 +94,7 @@ def _plus(label: str, tag: str) -> str:
 def run_point(ix, iy, nx, ny, args) -> None:
     m = args.d_ext
     key, s_key = f'rate_{m}', f'S_{m}'
-    pt = point_dir(args.out_dir, args.stride, m)
+    pt = point_dir(args.out_dir, args.stride, m, args.model)
     stem = f'pt_{ix:03d}_{iy:03d}'
     out = pt / f'{stem}{MARGIN_TAG}{args.round:02d}.npz'
     if out.exists() or not (pt / f'{stem}.npz').exists():
@@ -120,7 +120,7 @@ def run_point(ix, iy, nx, ny, args) -> None:
                 if not zero_near:
                     zero_near = best_known(pt, jx, jy, key, s_key)[0] <= args.tol
             if m == 12 and args.use_d8:
-                mf = margin_frame(point_dir(args.out_dir, args.stride, 8),
+                mf = margin_frame(point_dir(args.out_dir, args.stride, 8, args.model),
                                   jx, jy, 8, None)
                 if mf is not None and mf[0] < 0:
                     near.append((abs(dx) + abs(dy), fit_columns(mf[1], m),
@@ -131,9 +131,10 @@ def run_point(ix, iy, nx, ny, args) -> None:
     if not zero and not near and not (args.push and zero_near):
         return                                  # nothing can reach this point
 
-    p1, p2 = grid_vals(args.stride)
+    spec = MODELS[args.model]
+    p1, p2 = grid_vals(args.stride, args.model)
     d1, d2 = float(p1[ix]), float(p2[iy])
-    A = generator(d1, d2, args.dim)
+    A = generator(d1, d2, args.dim, args.model)
     t0 = time.perf_counter()
 
     # score the candidates on this point's generator
@@ -191,7 +192,8 @@ def run_point(ix, iy, nx, ny, args) -> None:
 
     pt.mkdir(parents=True, exist_ok=True)
     tmp = out.with_suffix('.tmp.npz')
-    np.savez(tmp, model=MODEL, ix=ix, iy=iy, delta1=d1, delta2=d2, dim=args.dim,
+    np.savez(tmp, model=args.model, ix=ix, iy=iy, **{spec.p1_name: d1, spec.p2_name: d2},
+             dim=args.dim,
              d_ext=m, round=args.round, mode=payload['mode'],
              rate_version=RATE_VERSION, rate_margin_version=RATE_MARGIN_VERSION,
              **{key: payload['rate'], s_key: payload['S'],
@@ -210,6 +212,7 @@ def main() -> None:
                    help='margin round (1..99); round r reads rounds < r')
     p.add_argument('--task_id', type=int, required=True)
     p.add_argument('--n_chunks', type=int, default=1)
+    p.add_argument('--model', type=str, default=MODEL, choices=sorted(MODELS))
     p.add_argument('--out_dir', type=str, default='results_model10_rate')
     p.add_argument('--stride', type=int, default=1)
     p.add_argument('--dim', type=int, default=None)
@@ -227,7 +230,7 @@ def main() -> None:
                    help='chunk 0 logs framability_rate_margin.self_check first')
     args = p.parse_args()
     if args.dim is None:
-        args.dim = MODELS[MODEL].dim
+        args.dim = MODELS[args.model].dim
     if args.self_check and args.task_id == 0:
         try:
             print('[self-check] ' + ('passed' if self_check() else 'FAILED'),
@@ -235,7 +238,7 @@ def main() -> None:
         except Exception as e:                              # noqa: BLE001
             print(f'[self-check] ERROR {type(e).__name__}: {e}', flush=True)
 
-    p1, p2 = grid_vals(args.stride)
+    p1, p2 = grid_vals(args.stride, args.model)
     nx, ny = len(p1), len(p2)
     n_total = nx * ny
     if args.n_chunks <= 1:

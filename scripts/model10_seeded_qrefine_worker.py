@@ -147,7 +147,7 @@ def _qref(label: str) -> str:
 
 
 def run_point(ix: int, iy: int, nx: int, ny: int, args) -> None:
-    pt = Path(args.out_dir) / pt_dir_name(args.stride)
+    pt = Path(args.out_dir) / pt_dir_name(args.stride, args.model)
     out = pt / f'pt_{ix:03d}_{iy:03d}{ROUND_TAG}{args.round:02d}.npz'
     if out.exists():
         print(f'[skip] {out.name} already exists', flush=True)
@@ -172,14 +172,16 @@ def run_point(ix: int, iy: int, nx: int, ny: int, args) -> None:
     if not todo and not cross:
         return                      # interior point -- no file written
 
-    p1, p2 = grid_vals(args.stride)
+    spec = MODELS[args.model]
+    p1, p2 = grid_vals(args.stride, args.model)
     d1, d2 = float(p1[ix]), float(p2[iy])
     t0 = time.perf_counter()
     point_id = ix * ny + iy
-    print(f'[point {point_id}] round {args.round} delta1={d1:.3f} delta2={d2:.3f} '
+    print(f'[point {point_id}] round {args.round} {spec.p1_name}={d1:.3f} '
+          f'{spec.p2_name}={d2:.3f} '
           f'keys={todo or "none"} cross={cross}  best d4={v4:.6e} d8={v8:.6e}',
           flush=True)
-    A = generator(d1, d2, args.dim)
+    A = generator(d1, d2, args.dim, args.model)
     seed = args.seed + point_id + 100000 * args.round
     results = {k: (info[k][0], info[k][1], info[k][2]) for k in KEYS}
 
@@ -222,7 +224,8 @@ def run_point(ix: int, iy: int, nx: int, ny: int, args) -> None:
         print(f'  no improvement; nothing written '
               f'({time.perf_counter() - t0:.0f}s)', flush=True)
         return
-    payload = dict(model=MODEL, ix=ix, iy=iy, delta1=d1, delta2=d2, dim=args.dim,
+    payload = dict(model=args.model, ix=ix, iy=iy, **{spec.p1_name: d1, spec.p2_name: d2},
+                   dim=args.dim,
                    round=args.round, optimizer=args.optimizer,
                    rate_version=RATE_VERSION, rate_tol=args.rate_tol)
     for key, (s_key, m) in KEYS.items():
@@ -246,6 +249,7 @@ def main() -> None:
                    help='refine round (1..99); round r reads rounds < r')
     p.add_argument('--task_id', type=int, required=True)
     p.add_argument('--n_chunks', type=int, default=1)
+    p.add_argument('--model', type=str, default=MODEL, choices=sorted(MODELS))
     p.add_argument('--out_dir', type=str, default='results_model10_rate')
     p.add_argument('--stride', type=int, default=1,
                    help='stride the seeded worker ran with')
@@ -269,9 +273,9 @@ def main() -> None:
     p.add_argument('--seed', type=int, default=0)
     args = p.parse_args()
     if args.dim is None:
-        args.dim = MODELS[MODEL].dim
+        args.dim = MODELS[args.model].dim
 
-    p1, p2 = grid_vals(args.stride)
+    p1, p2 = grid_vals(args.stride, args.model)
     nx, ny = len(p1), len(p2)
     n_total = nx * ny
     if args.n_chunks <= 1:

@@ -38,6 +38,15 @@ only, so the same frames serve every --dim.
 --fixed_frames (off by default) also stores the fixed-frame rates rate_pauli
 and rate_stab3 (framability_rate_frames), for runs without a base scan.
 
+Other models (--model, default model10; every grid / folder / generator
+follows MODELS[model], the output keys are the model's p1 / p2 names): the
+model10 closed forms are replaced by the exact rescaled-Pauli optimum at the
+point (product_weight_optimum, label 'analytic weights'), and the family
+starts by framability_rate_families.weight_family_starts built from it.
+--dtbase_dirs adds the finite-dt optimised frames of the DT_BASE-line
+pipeline (scripts/trotter_dtbase_line_worker.py, opt_x_4 / opt_x_6 at the
+smallest DT_BASE) as stored seeds -- the only stored frames model3 has.
+
 Output: <out_dir>/<model>_seeded[_s<stride>]/pt_<ix:03d>_<iy:03d>.npz
     rate_<m>, S_<m>, label_<m>   certified rate, frame, origin of the frame
     fam_<m>, famS_<m>, famlabel_<m>   best closed-form / structured frame
@@ -62,6 +71,7 @@ for _v in ('OMP_NUM_THREADS', 'OPENBLAS_NUM_THREADS', 'MKL_NUM_THREADS',
     os.environ.setdefault(_v, '1')
 
 import argparse
+import re
 import sys
 import time
 from pathlib import Path
@@ -72,12 +82,15 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from trotter_lindbladian_scan import (MODELS, build_bond_lindbladian,     # noqa: E402
                                       MODEL10_J, MODEL10_H)
+from optimize_framability import _FIXED_COLS, _project_columns_bloch     # noqa: E402
 from framability_rate import RATE_VERSION, spectral_abscissa              # noqa: E402
 from framability_rate_global import (minimize_rate_global, fit_columns,   # noqa: E402
-                                     frame_rate_value, RATE_GLOBAL_VERSION)
+                                     frame_rate_value, product_weight_optimum,
+                                     RATE_GLOBAL_VERSION)
 from framability_rate_families import (families_for, model10_frames,      # noqa: E402
                                        model10_family_starts, optimize_family,
-                                       self_check, RATE_FAMILIES_VERSION)
+                                       weight_family_starts, self_check,
+                                       RATE_FAMILIES_VERSION)
 from framability_rate_frames import pauli_rate, stabilizer_3_rate         # noqa: E402
 from rate_gopt_worker import stored_frames                                # noqa: E402
 
@@ -89,30 +102,32 @@ XFER_SRC = {4: (4,), 8: (4, 8), 12: (8, 12)}   # source d_ext transferred to m
 TOL = 1e-9
 
 
-def grid_vals(stride: int):
-    spec = MODELS[MODEL]
+def grid_vals(stride: int, model: str = MODEL):
+    spec = MODELS[model]
     return (np.asarray(spec.p1_vals[::stride], float),
             np.asarray(spec.p2_vals[::stride], float))
 
 
-def pt_dir_name(stride: int) -> str:
+def pt_dir_name(stride: int, model: str = MODEL) -> str:
     """Per-point directory of this pipeline (stride-tagged off the full grid,
     so a preview run never shares file names with the full run)."""
-    return f'{MODEL}_seeded' + ('' if stride == 1 else f'_s{stride}')
+    return f'{model}_seeded' + ('' if stride == 1 else f'_s{stride}')
 
 
-def generator(d1: float, d2: float, dim: int):
-    spec = MODELS[MODEL]
+def generator(d1: float, d2: float, dim: int, model: str = MODEL):
+    """A = L^T of the model's bond generator at grid parameters (p1, p2)."""
+    spec = MODELS[model]
     L = build_bond_lindbladian(*spec.build(d1, d2), dim).real
     return L.T
 
 
-def load_stored(stored_dirs, ix_full: int, iy_full: int) -> dict:
-    """{m: [(value, frame), ...]} from every existing <dir>/model10 of the
+def load_stored(stored_dirs, ix_full: int, iy_full: int,
+                model: str = MODEL) -> dict:
+    """{m: [(value, frame), ...]} from every existing <dir>/<model> of the
     earlier pipelines (base scan, refine rounds, gopt), full-grid indices."""
     out = {m: [] for m in STORED_D_EXTS}
     for d in stored_dirs:
-        pt = Path(d) / MODEL
+        pt = Path(d) / model
         if not pt.is_dir():
             continue
         for m, lst in stored_frames(pt, ix_full, iy_full, STORED_D_EXTS).items():
@@ -120,8 +135,72 @@ def load_stored(stored_dirs, ix_full: int, iy_full: int) -> dict:
     return out
 
 
+def _dtbase_tag(model: str, p1: float, p2: float) -> str:
+    """Point folder of the DT_BASE-line pipeline (same as
+    scripts/trotter_dtbase_line_worker.point_tag)."""
+    def f(v: float) -> str:
+        return format(float(v), '.4f').replace('-', 'm').replace('.', 'p')
+    return f'{model}_p1_{f(p1)}_p2_{f(p2)}'
+
+
+def load_dtbase(dtbase_dirs, model: str, p1: float, p2: float) -> dict:
+    """{m: [frame, ...]} of the finite-dt optimised frames stored by the
+    DT_BASE-line pipeline for (model, p1, p2): opt_x_<m> in
+    <dir>/<tag>/base_000.npz (the smallest DT_BASE, closest to dt -> 0) and
+    its quick-refine rounds base_000_qrefine_rNN.npz.  The flat vectors are
+    dissipative_PT.optimise_framability's encoding, S = [I | x.reshape(4,
+    m-1)].  Read-only; missing folders are skipped."""
+    out: dict = {}
+    for d in dtbase_dirs:
+        pt = Path(d) / _dtbase_tag(model, p1, p2)
+        if not pt.is_dir():
+            continue
+        files = [pt / 'base_000.npz'] + sorted(pt.glob('base_000_qrefine_r*.npz'))
+        for f in files:
+            if not f.exists():
+                continue
+            try:
+                z = np.load(f, allow_pickle=True)
+            except Exception:                               # noqa: BLE001
+                continue
+            for k in z.files:
+                mt = re.fullmatch(r'opt_x_(\d+)', k)
+                if mt is None:
+                    continue
+                m = int(mt.group(1))
+                x = np.asarray(z[k], float).ravel()
+                if x.size != 4 * (m - 1) or not np.all(np.isfinite(x)):
+                    continue
+                S = np.hstack([_FIXED_COLS,
+                               _project_columns_bloch(x.reshape(4, m - 1))])
+                out.setdefault(m, []).append(S)
+    return out
+
+
+def weights_frame(model: str, A):
+    """The exact rescaled-Pauli optimum diag(1, sX, sY, sZ) at the point, the
+    model-independent stand-in for closed forms (None for model10)."""
+    return None if model == 'model10' else product_weight_optimum(A)[1]
+
+
+def closed_forms(model: str, d1: float, d2: float, m: int, Sw=None) -> dict:
+    """{name: frame} written down directly: the model10 closed forms B / C /
+    P, or for any other model the rescaled-Pauli optimum Sw padded."""
+    if model == 'model10':
+        return model10_frames(d1, d2, MODEL10_J, MODEL10_H, m)
+    return {'weights': fit_columns(Sw, m)}
+
+
+def family_starts(model: str, fam, d1: float, d2: float, Sw=None) -> list:
+    """Analytic starts of a structured family: model10's closed-form weights,
+    or (other models) the weights of the rescaled-Pauli optimum Sw."""
+    if model == 'model10':
+        return model10_family_starts(fam, d1, d2, MODEL10_J, MODEL10_H)
+    return weight_family_starts(fam, np.diag(Sw)[1:])
+
+
 def xfer_frames(xfer_dirs, ix_full: int, iy_full: int, m: int,
-                radius: int = 1) -> list:
+                radius: int = 1, model: str = MODEL) -> list:
     """[(label, frame)]: the best frames another full-grid seeded run (e.g.
     the dim = 1 chain) holds at the full-grid point (ix_full, iy_full) and its
     neighbours within Chebyshev `radius`, for every source d_ext in
@@ -131,11 +210,11 @@ def xfer_frames(xfer_dirs, ix_full: int, iy_full: int, m: int,
     (d_ext 4, 8) or <dir>/model10_seeded_d12 (d_ext 12).  Read-only."""
     # imported here: model10_seeded_qrefine_worker imports this module
     from model10_seeded_qrefine_worker import best_known
-    spec = MODELS[MODEL]
+    spec = MODELS[model]
     out = []
     for d in xfer_dirs:
         for k in XFER_SRC.get(m, ()):
-            name = pt_dir_name(1)
+            name = pt_dir_name(1, model)
             pt = Path(d) / (name if k < 12 else name.replace('_seeded', '_seeded_d12', 1))
             if not pt.is_dir():
                 continue
@@ -158,17 +237,22 @@ def _certify(S, A) -> float:
 
 
 def compute_point(d1: float, d2: float, ix: int, iy: int, args) -> dict:
-    A = generator(d1, d2, args.dim)
-    J, h = MODEL10_J, MODEL10_H
+    """d1, d2: the model's grid parameters (p1, p2) at the point."""
+    model = args.model
+    spec = MODELS[model]
+    A = generator(d1, d2, args.dim, model)
     rng = np.random.default_rng([args.seed, ix, iy])
-    out: dict = dict(delta1=d1, delta2=d2, dim=args.dim,
-                     floor=spectral_abscissa(A))
+    out: dict = {spec.p1_name: d1, spec.p2_name: d2, 'dim': args.dim,
+                 'floor': spectral_abscissa(A)}
     if args.fixed_frames:
         t0 = time.perf_counter()
         out['rate_pauli'] = pauli_rate(A.T)
         out['rate_stab3'] = stabilizer_3_rate(A.T)
         out['t_fixed'] = time.perf_counter() - t0
-    stored = load_stored(args.stored_dirs, ix * args.stride, iy * args.stride)
+    stored = load_stored(args.stored_dirs, ix * args.stride, iy * args.stride, model)
+    for m, lst in load_dtbase(args.dtbase_dirs, model, d1, d2).items():
+        stored.setdefault(m, []).extend((np.nan, S) for S in lst)
+    Sw = weights_frame(model, A)
     prev_S, prev_label = None, None
 
     for m in sorted(args.d_exts):
@@ -176,13 +260,13 @@ def compute_point(d1: float, d2: float, ix: int, iy: int, args) -> dict:
         cands = []                                       # (label, frame)
 
         # ---- 1. closed-form frames -------------------------------------
-        for name, S in model10_frames(d1, d2, J, h, m).items():
+        for name, S in closed_forms(model, d1, d2, m, Sw).items():
             cands.append((f'analytic {name}', S))
 
         # ---- 2. structured families ------------------------------------
         for fam in families_for(m):
             v, S, p, _ = optimize_family(
-                fam, A, model10_family_starts(fam, d1, d2, J, h),
+                fam, A, family_starts(model, fam, d1, d2, Sw),
                 n_random=args.fam_random, n_polish=args.fam_polish,
                 maxfev=args.fam_maxfev4 if m == 4 else args.fam_maxfev,
                 rng=rng)
@@ -194,14 +278,14 @@ def compute_point(d1: float, d2: float, ix: int, iy: int, args) -> dict:
 
         n_struct = len(cands)
         # ---- 3. stored frames, padded smaller optimum, transfers --------
-        for k in STORED_D_EXTS:
+        for k in sorted(stored):
             for _, S in stored[k]:
                 cands.append(('stored', fit_columns(S, m)))
         if prev_S is not None:
             cands.append((prev_label, fit_columns(prev_S, m)))
         n_pre_xfer = len(cands)
         cands += xfer_frames(args.xfer_dirs, ix * args.stride, iy * args.stride,
-                             m, args.xfer_radius)
+                             m, args.xfer_radius, model)
 
         vals = np.array([frame_rate_value(S, A) for _, S in cands], float)
         vals = np.where(np.isfinite(vals), vals, np.inf)
@@ -211,7 +295,7 @@ def compute_point(d1: float, d2: float, ix: int, iy: int, args) -> dict:
         out[f'fam_{m}'] = _certify(cands[i_s][1], A)
         out[f'famS_{m}'] = cands[i_s][1]
         out[f'famlabel_{m}'] = cands[i_s][0]
-        prev_vals = [v for k in STORED_D_EXTS if k <= m for v, _ in stored[k]
+        prev_vals = [v for k in sorted(stored) if k <= m for v, _ in stored[k]
                      if np.isfinite(v)]
         out[f'prev_best_{m}'] = min(prev_vals) if prev_vals else np.nan
 
@@ -254,16 +338,17 @@ def compute_point(d1: float, d2: float, ix: int, iy: int, args) -> dict:
 
 
 def run_point(ix: int, iy: int, args) -> None:
-    p1, p2 = grid_vals(args.stride)
+    spec = MODELS[args.model]
+    p1, p2 = grid_vals(args.stride, args.model)
     d1, d2 = float(p1[ix]), float(p2[iy])
-    pt = Path(args.out_dir) / pt_dir_name(args.stride)
+    pt = Path(args.out_dir) / pt_dir_name(args.stride, args.model)
     out_f = pt / f'pt_{ix:03d}_{iy:03d}.npz'
     if out_f.exists() and not args.force:
         print(f'[skip] {out_f.name}', flush=True)
         return
     t0 = time.perf_counter()
-    print(f'[{MODEL} seeded] ({ix},{iy}) delta1={d1:.3f} delta2={d2:.3f}',
-          flush=True)
+    print(f'[{args.model} seeded] ({ix},{iy}) {spec.p1_name}={d1:.3f} '
+          f'{spec.p2_name}={d2:.3f}', flush=True)
     try:
         res = compute_point(d1, d2, ix, iy, args)
     except Exception as e:                                  # noqa: BLE001
@@ -271,7 +356,7 @@ def run_point(ix: int, iy: int, args) -> None:
         return
     pt.mkdir(parents=True, exist_ok=True)
     tmp = out_f.with_suffix('.tmp.npz')
-    np.savez(tmp, model=MODEL, ix=ix, iy=iy, stride=args.stride,
+    np.savez(tmp, model=args.model, ix=ix, iy=iy, stride=args.stride,
              d_exts=np.array(sorted(args.d_exts)), rate_version=RATE_VERSION,
              rate_global_version=RATE_GLOBAL_VERSION,
              rate_families_version=RATE_FAMILIES_VERSION, **res)
@@ -289,11 +374,17 @@ def main() -> None:
     p.add_argument('--n_chunks', type=int, default=1,
                    help='<=1: task_id is a flat grid index; otherwise the grid '
                         'is strided over n_chunks array tasks')
+    p.add_argument('--model', type=str, default=MODEL, choices=sorted(MODELS),
+                   help='model of trotter_lindbladian_scan.MODELS (grid, bond '
+                        'generator, folder names); default model10')
     p.add_argument('--out_dir', type=str, default='results_model10_rate')
     p.add_argument('--stored_dirs', type=str, nargs='*',
                    default=list(STORED_DIRS_DEFAULT),
-                   help='existing rate dirs whose <dir>/model10 frames seed '
+                   help='existing rate dirs whose <dir>/<model> frames seed '
                         'the search (read-only; missing dirs are skipped)')
+    p.add_argument('--dtbase_dirs', type=str, nargs='*', default=[],
+                   help='DT_BASE-line roots (e.g. results_dtbase_line) whose '
+                        'finite-dt optimised frames seed the search (read-only)')
     p.add_argument('--xfer_dirs', type=str, nargs='*', default=[],
                    help='roots of other full-grid seeded runs (e.g. the dim=1 '
                         'results_model10_rate) whose best frames near the point '
@@ -306,7 +397,8 @@ def main() -> None:
     p.add_argument('--stride', type=int, default=1)
     p.add_argument('--d_exts', type=int, nargs='+', default=list(D_EXTS_DEFAULT))
     p.add_argument('--dim', type=int, default=None,
-                   help="bond convention dimension (default: model10's, 1)")
+                   help="bond convention dimension (default: the model's "
+                        'ModelSpec.dim; model10: 1)')
     p.add_argument('--seed', type=int, default=0)
     p.add_argument('--fam_random', type=int, default=12,
                    help='random starts per structured family')
@@ -330,9 +422,9 @@ def main() -> None:
                         '(chunk 0 only; logs, never aborts)')
     args = p.parse_args()
     if args.dim is None:
-        args.dim = MODELS[MODEL].dim
+        args.dim = MODELS[args.model].dim
 
-    if args.self_check and args.task_id == 0:
+    if args.self_check and args.task_id == 0 and args.model == 'model10':
         print('[self-check] framability_rate_families:', flush=True)
         try:
             print('[self-check] ' + ('passed' if self_check() else 'FAILED'),
@@ -340,7 +432,7 @@ def main() -> None:
         except Exception as e:                              # noqa: BLE001
             print(f'[self-check] ERROR {type(e).__name__}: {e}', flush=True)
 
-    p1, p2 = grid_vals(args.stride)
+    p1, p2 = grid_vals(args.stride, args.model)
     nx, ny = len(p1), len(p2)
     n_total = nx * ny
     if args.n_chunks <= 1:
@@ -351,7 +443,7 @@ def main() -> None:
     if not (0 <= args.task_id < args.n_chunks):
         sys.exit(f'chunk id must be in [0, {args.n_chunks})')
     ids = list(range(args.task_id, n_total, args.n_chunks))
-    print(f'[chunk {args.task_id}/{args.n_chunks}] {MODEL}: {len(ids)} of '
+    print(f'[chunk {args.task_id}/{args.n_chunks}] {args.model}: {len(ids)} of '
           f'{n_total} points ({nx}x{ny}), d_ext={sorted(args.d_exts)}', flush=True)
     for pid in ids:
         run_point(pid // ny, pid % ny, args)

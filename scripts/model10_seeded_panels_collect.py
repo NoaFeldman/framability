@@ -55,7 +55,7 @@ def rounds_on_disk(pt: Path, tag: str = ROUND_TAG) -> list:
                    if (m := re.search(rf'{tag}(\d\d)\.npz$', f.name))})
 
 
-def load_best(pt: Path, nx: int, ny: int, m: int) -> dict:
+def load_best(pt: Path, nx: int, ny: int, m: int, label: str = MODEL) -> dict:
     """rate_<m> grid: min over the worker, xeval and qrefine files of pt."""
     g = np.full((nx, ny), np.nan)
     found = 0
@@ -70,7 +70,7 @@ def load_best(pt: Path, nx: int, ny: int, m: int) -> dict:
     rounds = rounds_on_disk(pt) if pt.is_dir() else []
     margin = rounds_on_disk(pt, MARGIN_TAG) if pt.is_dir() else []
     rref = rounds_on_disk(pt, RREFINE_TAG) if pt.is_dir() else []
-    print(f'[{MODEL} panels] d_ext={m}: {found}/{nx * ny} points in {pt}; '
+    print(f'[{label} panels] d_ext={m}: {found}/{nx * ny} points in {pt}; '
           f'refine rounds on disk: {rounds or "none"}; margin rounds: '
           f'{margin or "none"}; randomised rounds: {rref or "none"}', flush=True)
     return dict(grid=g, n_points=found, rounds=rounds, margin=margin, rref=rref)

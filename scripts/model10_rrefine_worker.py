@@ -91,7 +91,7 @@ def is_target(pt, ix, iy, nx, ny, v_own, key, s_key, args) -> tuple:
 def run_point(ix, iy, nx, ny, args) -> None:
     m = args.d_ext
     key, s_key = f'rate_{m}', f'S_{m}'
-    pt = point_dir(args.out_dir, args.stride, m)
+    pt = point_dir(args.out_dir, args.stride, m, args.model)
     stem = f'pt_{ix:03d}_{iy:03d}'
     out = pt / f'{stem}{RREFINE_TAG}{args.round:02d}.npz'
     if out.exists() or not (pt / f'{stem}.npz').exists():
@@ -103,9 +103,10 @@ def run_point(ix, iy, nx, ny, args) -> None:
     if not target:
         return
 
-    p1, p2 = grid_vals(args.stride)
+    spec = MODELS[args.model]
+    p1, p2 = grid_vals(args.stride, args.model)
     d1, d2 = float(p1[ix]), float(p2[iy])
-    A = generator(d1, d2, args.dim)
+    A = generator(d1, d2, args.dim, args.model)
     t0 = time.perf_counter()
     rng = np.random.default_rng([args.seed, args.round, ix, iy, m])
 
@@ -117,7 +118,7 @@ def run_point(ix, iy, nx, ny, args) -> None:
             _, S, lab = best_known(pt, jx, jy, key, s_key)
             if S is not None:
                 cands.append((S, lab))
-    pt8 = point_dir(args.out_dir, args.stride, 8) if m == 12 else None
+    pt8 = point_dir(args.out_dir, args.stride, 8, args.model) if m == 12 else None
     for dx in (-1, 0, 1):
         for dy in (-1, 0, 1):
             jx, jy = ix + dx, iy + dy
@@ -171,7 +172,8 @@ def run_point(ix, iy, nx, ny, args) -> None:
     lab = label if label.endswith('+rref') else f'{label} +rref'
     pt.mkdir(parents=True, exist_ok=True)
     tmp = out.with_suffix('.tmp.npz')
-    np.savez(tmp, model=MODEL, ix=ix, iy=iy, delta1=d1, delta2=d2, dim=args.dim,
+    np.savez(tmp, model=args.model, ix=ix, iy=iy, **{spec.p1_name: d1, spec.p2_name: d2},
+             dim=args.dim,
              d_ext=m, round=args.round, target=why, hops=n_hops, hops_kept=n_kept,
              rate_version=RATE_VERSION, rate_margin_version=RATE_MARGIN_VERSION,
              **{key: rate, s_key: S_best, f'label_{m}': lab,
@@ -191,6 +193,7 @@ def main() -> None:
                         'disk (all pipelines), the RNG is seeded per round')
     p.add_argument('--task_id', type=int, required=True)
     p.add_argument('--n_chunks', type=int, default=1)
+    p.add_argument('--model', type=str, default=MODEL, choices=sorted(MODELS))
     p.add_argument('--out_dir', type=str, default='results_model10_rate')
     p.add_argument('--stride', type=int, default=1)
     p.add_argument('--dim', type=int, default=None)
@@ -211,9 +214,9 @@ def main() -> None:
     p.add_argument('--seed', type=int, default=0)
     args = p.parse_args()
     if args.dim is None:
-        args.dim = MODELS[MODEL].dim
+        args.dim = MODELS[args.model].dim
 
-    p1, p2 = grid_vals(args.stride)
+    p1, p2 = grid_vals(args.stride, args.model)
     nx, ny = len(p1), len(p2)
     n_total = nx * ny
     if args.n_chunks <= 1:

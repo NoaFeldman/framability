@@ -47,6 +47,8 @@ transfer_params(fam, famp)               starts from smaller-d_ext optima
 candidate_columns(S), greedy_augment(S, A, m)   grow a frame column by column
 model10_weights(d1, d2, J, h)            closed-form (x_B, y_B, x_C)
 model10_family_starts(fam, d1, d2, J, h) analytic parameter starts
+weight_family_starts(fam, s)             model-independent starts from the
+                                         exact rescaled-Pauli optimum s
 model10_frames(d1, d2, J, h, m)          closed-form frames B / C / P
 optimize_family(fam, A, starts)          multistart Nelder-Mead in the family
 b_boundary(d1, J, h) / c_boundary(d2, J) analytic rate-zero curves
@@ -238,7 +240,7 @@ def transfer_params(fam: Family, famp: dict) -> list:
     out = []
     for name, p in famp.items():
         p = np.asarray(p, float)
-        if fam.kind in ('yz', 'yzxy') and name.startswith(fam.kind) and \
+        if fam.kind in ('yz', 'yzxy', 'xp', 'xy') and name.startswith(fam.kind) and \
                 name[len(fam.kind):].isdigit() and len(p) == len(fam.lo):
             out.append(p.copy())
         elif fam.kind == 'yz+xy' and name.startswith('yz') and \
@@ -292,6 +294,43 @@ def model10_family_starts(fam: Family, d1: float, d2: float, J: float,
             (x_b, y_b, 1.0, 0.0, 0.0, x_b, y_b, 0.0, 0.0),
             (x_c, 1.0, 1.0, 0.0, 0.0, x_c, 1.0, 0.0, 0.0),
             (x_c, 1.0, 1.0, 0.0, off, x_c, 1.0, 0.0, np.pi / 8))]
+    return []
+
+
+def weight_family_starts(fam: Family, s) -> list:
+    """Model-independent starts for `fam` from the exact optimum over rescaled
+    Pauli frames diag(1, sX, sY, sZ) at the point
+    (framability_rate_global.product_weight_optimum), for models without
+    closed forms: the family member closest to that frame (exact at n = 2 for
+    'yz'), the regular polygon at the same X extent and its half-step
+    rotation, and the projector-pair variants ((I +- X)/2 for 'xp', the pump
+    axis of models 3 / 4; (I +- Z)/2 for 'xy')."""
+    sx, sy, sz = (_w(v) for v in s)
+    off = np.pi / (2 * fam.n)
+    if fam.kind == 'yz':
+        return [np.array(p, float) for p in (
+            (sx, sy, sz, 0.0, 0.0),             # the weights frame (n = 2: exact)
+            (sx, 1.0, 1.0, 0.0, 0.0),           # regular polygon, vertices on Y / Z
+            (sx, 1.0, 1.0, 0.0, off),           # ... rotated by half a step
+            (sx, sy, sz, 0.0, off))]
+    if fam.kind == 'xy':
+        return [np.array(p, float) for p in (
+            (0.0, sz, sx, sy, 0.0, 0.0),        # Z column + weights ellipse
+            (0.5, 0.5, sx, sy, 0.0, 0.0),       # Z projectors + weights ellipse
+            (0.5, 0.5, 1.0, 1.0, 0.0, 0.0))]    # Z projectors + regular polygon
+    if fam.kind == 'xp':
+        return [np.array(p, float) for p in (
+            (0.0, sx, sy, sz, 0.0, 0.0),        # X column + weights ellipse
+            (0.5, 0.5, sy, sz, 0.0, 0.0),       # (I +- X)/2 + weights ellipse
+            (0.5, 0.5, 1.0, 1.0, 0.0, 0.0))]    # (I +- X)/2 + regular polygon
+    if fam.kind == 'yzxy':
+        return [np.array(p, float) for p in (
+            (sx, sy, sz, 0.0, 0.0, 0.3, np.pi / 4),
+            (sx, 1.0, 1.0, 0.0, 0.0, 0.3, np.pi / 4))]
+    if fam.kind == 'yz+xy':
+        return [np.array(p, float) for p in (
+            (sx, sy, sz, 0.0, 0.0, sx, sy, 0.0, 0.0),
+            (sx, 1.0, 1.0, 0.0, off, sx, 1.0, 0.0, np.pi / 8))]
     return []
 
 
