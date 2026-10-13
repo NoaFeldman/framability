@@ -3,12 +3,13 @@
 #  SLURM job-array: d_ext = 12 seed probe (scripts/model10_d12_seed_probe_worker.py)
 #  -- new structured families (warped YZ polygon, latitude rings about X,
 #  other plane splits, P + C) against the best known d_ext = 12 rate at the
-#  boundary of the rate-0 region.  Targets come from targets.npz, written on
-#  the login node first:
+#  boundary of the rate-0 region.  Targets come from targets.npz, written by
+#  the prepare job; the whole chain (prepare -> this array -> collect) is
+#  submitted by
 #
-#      python scripts/model10_d12_seed_probe_worker.py --prepare [--out_dir ... --dim ...]
-#      sbatch scripts/model10_d12_seed_probe.slurm.sh
-#      python scripts/model10_d12_seed_probe_collect.py [--out_dir ...]
+#      bash scripts/submit_model10_d12_seed_probe.sh
+#
+#  By hand (targets.npz must exist):  sbatch scripts/model10_d12_seed_probe.slurm.sh
 #
 #  ~14 families x ~170 LPs (~1 s each at 144 columns) + two polishes
 #  => 30-60 min per point; the boundary holds a few hundred points, so

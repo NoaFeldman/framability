@@ -50,8 +50,8 @@ Writes  <out_dir>/model10_seeded_d12_probe[_s]/targets.npz        (--prepare)
 Nothing is written into the pipeline directories; use
 scripts/model10_d12_seed_probe_collect.py (--adopt) to promote improvements.
 
-Usage:
-    python scripts/model10_d12_seed_probe_worker.py --prepare                 # login node, ~2 min
+Usage (the whole chain: bash scripts/submit_model10_d12_seed_probe.sh):
+    python scripts/model10_d12_seed_probe_worker.py --prepare --n_proc 8      # targets.npz
     python scripts/model10_d12_seed_probe_worker.py --task_id 0 --n_chunks 200
     python scripts/model10_d12_seed_probe_worker.py --task_id 0 --n_chunks 200 \
         --out_dir results_model10_rate_dim2 --dim 2
@@ -84,7 +84,7 @@ from framability_rate_families import (Family, affine_polygon, optimize_family, 
                                        _frame, _plane_cols, _w,
                                        RATE_FAMILIES_VERSION)
 from model10_seeded_worker import MODEL, grid_vals, pt_dir_name, generator  # noqa: E402
-from model10_seeded_qrefine_worker import best_known                       # noqa: E402
+from model10_seeded_qrefine_worker import best_known, pt_paths             # noqa: E402
 from model10_d12_worker import d12_dir, d8_dir                             # noqa: E402
 
 PROBE_VERSION = '1.0-d12-seed-probe'
@@ -317,16 +317,45 @@ def starts_for(fam: Family, yz_starts: list, famp12: dict, max_starts: int) -> l
 # ---------------------------------------------------------------------------
 #  Targets (--prepare)
 # ---------------------------------------------------------------------------
-def panel_grids(out_dir: str, stride: int, model: str, nx: int, ny: int):
-    """best known rate_4 / rate_8 / rate_12 per point (nan where missing)."""
+def _point_rates(task):
+    """(ix, iy, v4, v8, v12): the best known values of one point, with every
+    file of the point (model10_seeded_qrefine_worker.pt_paths) opened ONCE and
+    only the rate keys read -- the same minimum as three best_known calls, at
+    a third of the file opens and without touching the frames."""
+    pt8, pt12, ix, iy = task
+    best = {4: np.inf, 8: np.inf, 12: np.inf}
+    for pt, ms in ((pt8, (4, 8)), (pt12, (12,))):
+        for f in pt_paths(pt, ix, iy):
+            try:
+                d = np.load(f, allow_pickle=True)
+            except Exception:                               # noqa: BLE001
+                continue
+            for m in ms:
+                k = f'rate_{m}'
+                if k in d.files and f'S_{m}' in d.files:
+                    v = float(d[k])
+                    if np.isfinite(v) and v < best[m]:
+                        best[m] = v
+    return ix, iy, best[4], best[8], best[12]
+
+
+def panel_grids(out_dir: str, stride: int, model: str, nx: int, ny: int,
+                n_proc: int = 1):
+    """best known rate_4 / rate_8 / rate_12 per point (nan where missing),
+    read with n_proc processes (the file opens dominate on a network FS)."""
     pt8, pt12 = d8_dir(out_dir, stride, model), d12_dir(out_dir, stride, model)
+    tasks = [(pt8, pt12, ix, iy) for ix in range(nx) for iy in range(ny)]
     g = {m: np.full((nx, ny), np.nan) for m in (4, 8, 12)}
-    for ix in range(nx):
-        for iy in range(ny):
-            for m, pt in ((4, pt8), (8, pt8), (12, pt12)):
-                v, _, _ = best_known(pt, ix, iy, f'rate_{m}', f'S_{m}')
-                if np.isfinite(v):
-                    g[m][ix, iy] = v
+    if n_proc > 1:
+        from multiprocessing import Pool
+        with Pool(n_proc) as pool:
+            rows = list(pool.imap_unordered(_point_rates, tasks, chunksize=16))
+    else:
+        rows = [_point_rates(t) for t in tasks]
+    for ix, iy, v4, v8, v12 in rows:
+        for m, v in ((4, v4), (8, v8), (12, v12)):
+            if np.isfinite(v):
+                g[m][ix, iy] = v
     return g
 
 
@@ -334,7 +363,7 @@ def prepare(args) -> None:
     p1, p2 = grid_vals(args.stride, args.model)
     nx, ny = len(p1), len(p2)
     t0 = time.perf_counter()
-    g = panel_grids(args.out_dir, args.stride, args.model, nx, ny)
+    g = panel_grids(args.out_dir, args.stride, args.model, nx, ny, args.n_proc)
     panel = np.fmin(np.fmin(g[12], g[8]), g[4])          # the figure's d12 panel
     z = panel <= args.tol
     pos = np.isfinite(panel) & ~z
@@ -485,6 +514,9 @@ def main() -> None:
     p = argparse.ArgumentParser()
     p.add_argument('--prepare', action='store_true',
                    help='write targets.npz (the target list) and exit')
+    p.add_argument('--n_proc', type=int,
+                   default=int(os.environ.get('SLURM_CPUS_PER_TASK', '1')),
+                   help='--prepare: processes reading the point files')
     p.add_argument('--task_id', type=int, default=0)
     p.add_argument('--n_chunks', type=int, default=1,
                    help='<=1: task_id indexes the target list; otherwise the '
