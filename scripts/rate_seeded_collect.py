@@ -6,7 +6,11 @@ pipeline's neighbour cross-evaluation stage.
 Panels (same positions and style as the model10 figures):
 
     row 1 | stabilizer-3 | Pauli | opt Heisenberg d_ext=4 | d_ext=8 | d_ext=12
-    row 2 | product-state chi=10 | chi=40
+    row 2 | product-state chi=10 | chi=40 | 8q osc rate | 8q gap
+
+The two 8-qubit panels are drawn only when <model>_8q/ holds data (the
+submit script's many-body stage, scripts/model4_manybody.slurm.sh; its grid
+stride is read from the files).
 
 Data, all under --out_dir (default results_<model>_seeded):
     <model>_seeded/      stabilizer-3 / Pauli (worker --fixed_frames) and the
@@ -14,6 +18,8 @@ Data, all under --out_dir (default results_<model>_seeded):
                          margin and randomised-refine files
     <model>_seeded_d12/  d_ext = 12: seed stage and every round file
     <model>_product/     product-state rates chi = 10, 40
+    <model>_8q/          osc rate + Lindbladian gap of the full 8-qubit
+                         Liouvillian (periodic ring for the 1D RING_MODELS)
 Each optimised panel shows, per point, the minimum over every certified
 upper bound of that d_ext (model10_seeded_panels_collect.load_best); the
 d_ext = 8 / 12 panels also take the smaller d_ext's value (padding).
@@ -165,13 +171,35 @@ def ref_report(ref_npz: Path, panel: dict) -> None:
               f'above it at {int((gain < -1e-6).sum())}', flush=True)
 
 
-def plot(panels: list, png: Path, model: str, dim: int) -> None:
-    """panels: (x, y, Z, title), drawn row by row on a 2 x 5 grid."""
+def load_mb(out_dir: Path, model: str) -> dict | None:
+    """osc rate / gap grids of the 8-qubit panels from <out_dir>/<model>_8q
+    (scripts/model4_manybody_worker.py), on the stride stored in its files;
+    None if there are none."""
+    pt = out_dir / common.mb_tag(model)
+    files = (sorted(pt.glob('pt_[0-9][0-9][0-9]_[0-9][0-9][0-9].npz'))
+             if pt.is_dir() else [])
+    if not files:
+        print(f'[{model}] no {common.N_QUBITS}-qubit data under {pt}; those '
+              'panels are left out', flush=True)
+        return None
+    stride = int(np.load(files[0], allow_pickle=True)['stride'])
+    g = common.load_group(pt, [k for k, _ in common.MB_KEYS], stride,
+                          f'{model}-{common.N_QUBITS}q', model=model)
+    g['stride'] = stride
+    return g
+
+
+def plot(panels: list, png: Path, model: str, dim: int, mb: bool) -> None:
+    """panels: (kind, x, y, Z, title) with kind 'rate' (viridis + floor
+    contour) or 'mb' (magma), drawn row by row on a 2 x 5 grid."""
     import matplotlib
     matplotlib.use('Agg')
     import matplotlib.pyplot as plt
 
     m = MODELS[model]
+    lab = dict(xlabel=m.p1_label, ylabel=m.p2_label)
+    mb_txt = (rf"  |  {common.N_QUBITS}q panels: full "
+              rf"{common.mb_geometry(model)['label']} Lindbladian" if mb else '')
     ncol = 5
     nrow = int(np.ceil(len(panels) / ncol))
     fig, axes = plt.subplots(nrow, ncol, figsize=(27.5, 5 * nrow),
@@ -182,12 +210,15 @@ def plot(panels: list, png: Path, model: str, dim: int) -> None:
         r'framability rates $\mu^*=\lim_{dt\to0}({\rm fra}-1)/dt$ of the bond '
         rf'generator (dim $={dim}$; white: $\mu^*=0$)  |  opt Heisenberg: '
         r'optimised observable frames, seeded pipeline  |  product-state: '
-        r'random product frames',
+        r'random product frames' + mb_txt,
         fontsize=13)
     flat = list(np.atleast_1d(axes).flat)
-    for ax, (xv, yv, Z, t) in zip(flat, panels):
-        common.draw_panel(fig, ax, xv, yv, Z, t, common.FRA_CMAP,
-                          floor_contour=0.0, xlabel=m.p1_label, ylabel=m.p2_label)
+    for ax, (kind, xv, yv, Z, t) in zip(flat, panels):
+        if kind == 'rate':
+            common.draw_panel(fig, ax, xv, yv, Z, t, common.FRA_CMAP,
+                              floor_contour=0.0, **lab)
+        else:
+            common.draw_panel(fig, ax, xv, yv, Z, t, common.MB_CMAP, **lab)
     for ax in flat[len(panels):]:
         ax.axis('off')
     png.parent.mkdir(parents=True, exist_ok=True)
@@ -265,22 +296,27 @@ def main() -> None:
               'are left empty', flush=True)
         prod = None
 
+    mb = load_mb(out_dir, model)
+
     dl = r'$d_{\rm ext}'
-    panels = [(p1, p2, fixed[k], label) for k, label in FIXED_KEYS]
+    panels = [('rate', p1, p2, fixed[k], label) for k, label in FIXED_KEYS]
     panels += [
         # margin / randomised rounds in that folder run at d_ext = 8 only
-        (p1, p2, panel[4], rf'Opt Heisenberg rate ({dl}=4$)'
-                           f'\n{rounds_txt(s4, "seeded", dext_only_refine=True)}'),
-        (p1, p2, panel[8], rf'Opt Heisenberg rate ({dl}=8$)'
-                           f'\n{rounds_txt(s8, "seeded")}'),
-        (p1, p2, panel[12], rf'Opt Heisenberg rate ({dl}=12$)'
-                            f'\n{rounds_txt(s12, "seeded from $d=8$")}'),
+        ('rate', p1, p2, panel[4], rf'Opt Heisenberg rate ({dl}=4$)'
+                                   f'\n{rounds_txt(s4, "seeded", dext_only_refine=True)}'),
+        ('rate', p1, p2, panel[8], rf'Opt Heisenberg rate ({dl}=8$)'
+                                   f'\n{rounds_txt(s8, "seeded")}'),
+        ('rate', p1, p2, panel[12], rf'Opt Heisenberg rate ({dl}=12$)'
+                                    f'\n{rounds_txt(s12, "seeded from $d=8$")}'),
     ]
     for key, label in PROD_RATE_KEYS:
         if prod is None:
-            panels.append((p1, p2, np.full((nx, ny), np.nan), label))
+            panels.append(('rate', p1, p2, np.full((nx, ny), np.nan), label))
         else:
-            panels.append((prod['p1_vals'], prod['p2_vals'], prod[key], label))
+            panels.append(('rate', prod['p1_vals'], prod['p2_vals'], prod[key], label))
+    if mb is not None:
+        for key, label in common.MB_KEYS:
+            panels.append(('mb', mb['p1_vals'], mb['p2_vals'], mb[key], label))
 
     out_dir.mkdir(parents=True, exist_ok=True)
     x, y = MODELS[model].p1_name, MODELS[model].p2_name
@@ -296,9 +332,13 @@ def main() -> None:
              d12_refine_rounds=np.array(s12['rounds'], int),
              **({} if prod is None else
                 {f'prod_{x}_vals': prod['p1_vals'], f'prod_{y}_vals': prod['p2_vals'],
-                 **{k: prod[k] for k, _ in PROD_RATE_KEYS}}))
+                 **{k: prod[k] for k, _ in PROD_RATE_KEYS}}),
+             **({} if mb is None else
+                {f'mb_{x}_vals': mb['p1_vals'], f'mb_{y}_vals': mb['p2_vals'],
+                 'mb_stride': mb['stride'],
+                 **{k: mb[k] for k, _ in common.MB_KEYS}}))
     print(f'[{model}] wrote {npz}', flush=True)
-    plot(panels, png, model, dim)
+    plot(panels, png, model, dim, mb is not None)
 
 
 if __name__ == '__main__':

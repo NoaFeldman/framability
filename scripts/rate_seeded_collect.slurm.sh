@@ -7,7 +7,8 @@
 #                 certified with the per-column LP; between the seed stage and
 #                 the quick-refine rounds)
 #    MODE=plot    the figure (stabilizer-3, Pauli, opt d_ext = 4 / 8 / 12,
-#                 product-state chi = 10 / 40)
+#                 product-state chi = 10 / 40, and the 8q osc rate / gap when
+#                 $OUT_DIR/<model>_8q holds data)
 #
 #  Driven by scripts/submit_rate_seeded.sh; by hand (any time -- missing
 #  points are left blank):

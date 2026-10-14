@@ -636,6 +636,63 @@ def _build_model10(delta1: float, delta2: float):
     return H1, H2, jumps1, jumps2
 
 
+# model11 / model12 / model13 (added 2026-10, no version bump: existing model
+# data is unchanged): the XXZ chain with on-site Z dephasing and S^- decay,
+#   H = J sum_i (X_i X_{i+1} + Y_i Y_{i+1} + Delta Z_i Z_{i+1})   (J = 1)
+#   jumps sqrt(gamma_1) S^- = sqrt(gamma_1)|0><1| and sqrt(gamma) Z (one-qubit)
+# with Delta = -2 (model11), 0 (model12, the XX chain), 1 (model13, the
+# isotropic Heisenberg point); scan gamma_1 (decay) against gamma (dephasing)
+# on [0, 2]^2, step 0.2 (11 x 11).
+# A 1D chain (dim = 1), the setting of the dephased-XXZ literature
+# (Cai & Barthel, PRL 111, 150403 (2013); Medvedyeva, Essler & Prosen,
+# PRL 117, 137202 (2016)): both noises are shared 1/2 per bond.
+# Dephasing alone keeps the magnetization sum_i Z_i conserved (strong U(1)
+# symmetry), and the hopping carries it into the spin current, so no product
+# frame reaches mu* = 0 at gamma_1 = 0.  Hand prediction (weighted Pauli frame
+# {I, X, Y, z Z}, bond shares included; the X, Y columns capped at length 1):
+# mu* = 0 once
+#   gamma_1 (gamma_1 + 4 gamma - 8 J (1 + |Delta|)) >= 64 J^2 (1 + |Delta|),
+# i.e. gamma_1 >= 12.9 / 21.9 / 30.3 J at gamma = 0 for |Delta| = 0 / 1 / 2:
+# outside the [0, 2]^2 window at J = 1.
+MODEL_XXZ_J = 1.0
+MODEL_XXZ_DELTA = {'model11': -2.0, 'model12': 0.0, 'model13': 1.0}
+
+
+def _make_model_xxz(delta: float):
+    """build(gamma_1, gamma) of the XXZ + Z-dephasing + S^- chain at fixed
+    anisotropy delta."""
+    def build(gamma_1: float, gamma: float):
+        J = MODEL_XXZ_J
+        H2 = J * (np.kron(_SX, _SX) + np.kron(_SY, _SY) + delta * _ZZ())
+        jumps1 = [np.sqrt(gamma_1) * S_MINUS, np.sqrt(gamma) * _SZ]
+        return None, H2, jumps1, []
+    return build
+
+
+# model14 / model15 (added 2026-10, no version bump: existing model data is
+# unchanged): the transverse-field Ising chain with S^- decay and Z dephasing,
+#   H = J sum_i Z_i Z_{i+1} + h sum_i X_i   (J = 1)
+#   jumps sqrt(gamma_1) S^- = sqrt(gamma_1)|0><1| and sqrt(gamma_2) Z (one-qubit)
+# with h = 1 (model14, the 1D critical field h = J) and h = 0.5 (model15,
+# the ordered side); scan gamma_1 (decay) against gamma_2 (dephasing) on
+# [0, 2]^2, step 0.1 (21 x 21).  model1's Hamiltonian and decay plus the Z
+# dephasing of models 3-4, but a 1D chain (dim = 1) like model10-13: the field
+# and both noises are shared 1/2 per bond.
+MODEL_TFIM_J = 1.0
+MODEL_TFIM_H = {'model14': 1.0, 'model15': 0.5}
+
+
+def _make_model_tfim(h: float):
+    """build(gamma_1, gamma_2) of the transverse-field Ising chain with S^-
+    decay and Z dephasing at fixed field h."""
+    def build(gamma_1: float, gamma_2: float):
+        H1 = h * _SX
+        H2 = MODEL_TFIM_J * _ZZ()
+        jumps1 = [np.sqrt(gamma_1) * S_MINUS, np.sqrt(gamma_2) * _SZ]
+        return H1, H2, jumps1, []
+    return build
+
+
 def _build_model5(J_y: float, gamma: float):
     # (was the 2.x model3.)  Heisenberg bond H2 = J_x XX + J_y YY + J_z ZZ with
     # J_x = 0.9, J_z = 1 ; jump sqrt(gamma) S^- (one-qubit).  Same model and grid
@@ -706,7 +763,7 @@ def _make_model7_gamma_n(omega: float, Gamma: float, J: float, delta: float):
     return build
 
 
-# All models but model10 (a 1D chain, dim=1) use dim=2; all use the per-point
+# All models but model10-15 (1D chains, dim=1) use dim=2; all use the per-point
 # adaptive Trotter step (dt=None -> choose_dt).  Models 1-4 share H = J ZZ + h X; models 1-2 relax the lpdo_max
 # path from |+>^N (the transverse-field / X-basis dynamics sit far from a |0>^N
 # start), as do the |-><+| models 3-4.  model5 keeps the |0>^N start of the old
@@ -824,6 +881,33 @@ MODELS: dict[str, ModelSpec] = {
         p1_name='delta1', p1_label=r'$\Delta_1$', p1_vals=_arange(0, 2.5, 0.05),
         p2_name='delta2', p2_label=r'$\Delta_2$', p2_vals=_arange(0, 2.5, 0.05),
         build=_build_model10, dim=1),
+    # model11-13 (added 2026-10): XXZ chain + on-site Z dephasing + S^- decay,
+    # Delta = -2 / 0 / 1 (MODEL_XXZ_DELTA), a 1D model (dim=1); scan the decay
+    # gamma_1 against the dephasing gamma (11 x 11).  |0>^N is the NESS for
+    # gamma_1 > 0, so the lpdo_max path starts from |+>^N.
+    **{name: ModelSpec(
+        name=name,
+        title=(r'$H=J\,(XX+YY'
+               + ({0.0: '', 1.0: '+ZZ', -1.0: '-ZZ'}.get(delta, rf'{delta:+g}\,ZZ'))
+               + ')$,  '
+               r'jumps $\sqrt{\gamma_1}\,S^-,\ \sqrt{\gamma}\,Z$  '
+               rf'(J=1, $\Delta={delta:g}$, 1D chain)'),
+        p1_name='gamma_1', p1_label=r'$\gamma_1$', p1_vals=_arange(0, 2, 0.2),
+        p2_name='gamma',   p2_label=r'$\gamma$',   p2_vals=_arange(0, 2, 0.2),
+        build=_make_model_xxz(delta), dim=1, lpdo_init='plus')
+       for name, delta in MODEL_XXZ_DELTA.items()},
+    # model14 / model15 (added 2026-10): transverse-field Ising chain + S^-
+    # decay + Z dephasing, h = 1 / 0.5 (MODEL_TFIM_H), a 1D model (dim=1);
+    # scan the decay gamma_1 against the dephasing gamma_2 (21 x 21).
+    **{name: ModelSpec(
+        name=name,
+        title=(r'$H=J\,ZZ + h\,X$,  jumps $\sqrt{\gamma_1}\,S^-,\ '
+               r'\sqrt{\gamma_2}\,Z$  '
+               rf'(J=1, h={h:g}, 1D chain)'),
+        p1_name='gamma_1', p1_label=r'$\gamma_1$', p1_vals=_arange(0, 2, 0.1),
+        p2_name='gamma_2', p2_label=r'$\gamma_2$', p2_vals=_arange(0, 2, 0.1),
+        build=_make_model_tfim(h), dim=1, lpdo_init='plus')
+       for name, h in MODEL_TFIM_H.items()},
 }
 
 

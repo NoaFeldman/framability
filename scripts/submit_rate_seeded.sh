@@ -6,13 +6,20 @@
 #  figures), from scratch to the figure, in one go:
 #
 #    row 1 | stabilizer-3 | Pauli | opt Heisenberg d_ext=4 | 8 | 12
-#    row 2 | product-state chi=10 | chi=40
+#    row 2 | product-state chi=10 | chi=40 | 8q osc rate | 8q gap
 #
 #  Stages (arrays 0-199 of scripts/rate_seeded.slurm.sh unless noted):
 #    1. seed        product chi=10/40, stabilizer-3, Pauli, seeded d_ext=4/8
 #                   (exact rescaled-Pauli optimum, families, stored frames,
 #                   global search); resubmitted once if a wall-time kill left
 #                   points out
+#    1b. 8q         osc rate + gap of the full 8-qubit Liouvillian (periodic
+#                   ring for the 1D models) on the grid strided by MB_STRIDE
+#                   (scripts/model4_manybody.slurm.sh, <= 200 tasks);
+#                   resubmitted once like stage 1.  Off (SKIP_MB=1) by default
+#                   for model3 / model4, whose 8q panels live in
+#                   results_model4_rate; skipped for models the many-body
+#                   worker does not support
 #    2. xeval       d_ext=4/8 neighbour cross-evaluation
 #                   (scripts/rate_seeded_collect.slurm.sh MODE=xeval, 1 job)
 #    3. qrefine     d_ext=4/8 quick-refine rounds
@@ -44,7 +51,8 @@
 #  (results_model4_rate/<model>_seeded_rate_panels.png), STORED_DIRS,
 #  DTBASE_DIRS, XFER_DIRS, DIM, STRIDE (1; 5 = 11x11 preview), N_QREF, N_D12_REF,
 #  N_MARGIN, N_RREF (99 each), MIN_GAIN (1e-3), PATIENCE (2), EARLY_STOP (1),
-#  SKIP_SEED=1, SKIP_XEVAL=1, SKIP_QREF=1, SKIP_D12=1, SKIP_MARGIN=1, SKIP_RREF=1,
+#  SKIP_SEED=1, SKIP_MB=1, SKIP_XEVAL=1, SKIP_QREF=1, SKIP_D12=1, SKIP_MARGIN=1,
+#  SKIP_RREF=1, MB_STRIDE (1), MB_TIME (24:00:00),
 #  SEED_TIME (16:00:00), D12_TIME (24:00:00), HOPS (20), MAX_SECONDS (5400),
 #  TARGETS (nonmono), PY (.venv/bin/python), and every variable of the two
 #  slurm scripts.
@@ -55,11 +63,14 @@ cd "$(dirname "$0")/.."               # repo root
 export MODEL="${MODEL:?set MODEL (e.g. model3 | model4)}"
 case "$MODEL" in
     model4) def_stored="results_model4_rate"; def_dtbase=""
-            def_ref="results_model4_rate/model4_rate_panels.npz" ;;
+            def_ref="results_model4_rate/model4_rate_panels.npz"; def_skip_mb=1 ;;
     model3) def_stored=""; def_dtbase="results_dtbase_line"
-            def_ref="results_dtbase_line/model3_dtbase_extrap.npz" ;;
-    *)      def_stored="results_${MODEL}_rate"; def_dtbase=""; def_ref="" ;;
+            def_ref="results_dtbase_line/model3_dtbase_extrap.npz"; def_skip_mb=1 ;;
+    *)      def_stored="results_${MODEL}_rate"; def_dtbase=""; def_ref=""
+            def_skip_mb=0 ;;
 esac
+SKIP_MB="${SKIP_MB:-$def_skip_mb}"
+MB_STRIDE="${MB_STRIDE:-1}"
 export OUT_DIR="${OUT_DIR:-results_${MODEL}_seeded}"
 export OUT_PNG="${OUT_PNG:-results_model4_rate/${MODEL}_seeded_rate_panels.png}"
 export STORED_DIRS="${STORED_DIRS-$def_stored}"
@@ -93,12 +104,16 @@ read -r NX NY < <(grid_size "$STRIDE") \
     || { echo "$TAG ERROR: cannot read the ${MODEL} grid with ${PY}"; exit 1; }
 read -r PNX PNY < <(grid_size "$PROD_STRIDE") \
     || { echo "$TAG ERROR: cannot read the ${MODEL} grid with ${PY}"; exit 1; }
+read -r MNX MNY < <(grid_size "$MB_STRIDE") \
+    || { echo "$TAG ERROR: cannot read the ${MODEL} grid with ${PY}"; exit 1; }
 N_TOTAL=$(( NX * NY ))
 N_PROD=$(( PNX * PNY ))
+N_MB=$(( MNX * MNY ))
 if [ "$STRIDE" = "1" ]; then SFX=""; else SFX="_s${STRIDE}"; fi
 D8_DIR="$OUT_DIR/${MODEL}_seeded${SFX}"
 D12_DIR="$OUT_DIR/${MODEL}_seeded_d12${SFX}"
 PROD_DIR="$OUT_DIR/${MODEL}_product"
+MB_DIR="$OUT_DIR/${MODEL}_8q"                 # one stride per folder (stored per file)
 BASE_PAT='pt_[0-9][0-9][0-9]_[0-9][0-9][0-9].npz'
 
 count() { find "$1" -maxdepth 1 -name "$2" 2>/dev/null | wc -l || true; }
@@ -178,6 +193,31 @@ if [ "${SKIP_SEED:-0}" != "1" ]; then
 fi
 echo "$TAG stage 1: $(count "$D8_DIR" "$BASE_PAT")/${N_TOTAL} seeded," \
      "$(count "$PROD_DIR" "$BASE_PAT")/${N_PROD} product points"
+
+# ---- 1b. 8-qubit many-body panels: osc rate, Lindbladian gap ---------------
+if [ "$SKIP_MB" != "1" ]; then
+    mb_ok=$("$PY" -c "
+import sys; sys.path[:0] = ['scripts', '.']
+from model4_manybody_worker import SUPPORTED_MODELS
+print(int('$MODEL' in SUPPORTED_MODELS))" 2>/dev/null || echo 0)
+    if [ "$mb_ok" != "1" ]; then
+        echo "$TAG stage 1b: ${MODEL} is not a many-body worker model; 8q panels skipped"
+    else
+        MB_ARRAY="0-$(( (N_MB < 200 ? N_MB : 200) - 1 ))"
+        for attempt in 1 2; do
+            nmb=$(count "$MB_DIR" "$BASE_PAT")
+            [ "$nmb" -ge "$N_MB" ] && break
+            echo "$TAG stage 1b (pass ${attempt}): 8q panels, ${MNX}x${MNY} grid" \
+                 "(stride ${MB_STRIDE}; ${nmb}/${N_MB} points on disk)"
+            env MODEL="$MODEL" OUT_DIR="$OUT_DIR" STRIDE="$MB_STRIDE" \
+                N_CHUNKS="$(( N_MB < 200 ? N_MB : 200 ))" \
+                sbatch --wait --array="$MB_ARRAY" --job-name="${JP}_8q" \
+                       --time="${MB_TIME:-24:00:00}" scripts/model4_manybody.slurm.sh \
+                || echo "$TAG warning: some ${JP}_8q tasks failed; continuing"
+        done
+        echo "$TAG stage 1b: $(count "$MB_DIR" "$BASE_PAT")/${N_MB} 8q points"
+    fi
+fi
 
 # ---- 2. neighbour cross-evaluation (once, before any refine round) ---------
 if [ "${SKIP_XEVAL:-0}" != "1" ] && [ "$(last_round "$D8_DIR" _qrefine_r)" -eq 0 ]; then

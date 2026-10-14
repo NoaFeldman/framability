@@ -16,7 +16,9 @@ https://arxiv.org/abs/1904.12505) is a 1D model: its two panels use an 8-site
 PERIODIC ring -- the paper's boundary condition, and every site sits on two
 bonds as in the model's dim = 1 bond gate -- built from the model's own scan
 terms by n_qubit_lindbladian.build_lindbladian_from_terms (see mb_geometry),
-writing <out_dir>/model10_8q/.
+writing <out_dir>/model10_8q/.  model11-13 (XXZ chain + Z dephasing + S^-
+decay) and model14-15 (transverse-field Ising chain + S^- decay + Z
+dephasing) are 1D RING_MODELS too and take the same 8-site periodic ring.
 
   7. osc_rate  max_k |Im(lambda_k)/Re(lambda_k)|
                nonequilibrium_phase_characterizers.oscillation_rate
@@ -75,7 +77,8 @@ from nonequilibrium_phase_characterizers import oscillation_rate         # noqa:
 
 MODEL_NAME = 'model4'                  # default --model
 TAG = 'model4_8q'                      # = mb_tag(MODEL_NAME), kept for importers
-SUPPORTED_MODELS = ('model4', 'model8', 'model10')
+SUPPORTED_MODELS = ('model4', 'model8', 'model10', 'model11', 'model12', 'model13',
+                    'model14', 'model15')
 
 
 def mb_tag(model: str) -> str:
