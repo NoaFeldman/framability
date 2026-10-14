@@ -88,8 +88,8 @@ from framability_rate_state import (minimize_state_rate,                 # noqa:
                                     RATE_STATE_VERSION)
 
 MODEL_NAME = 'model4'                   # default --model
-SUPPORTED_MODELS = ('model3', 'model4', 'model8', 'model10', 'model11', 'model12',
-                    'model13', 'model14', 'model15')
+SUPPORTED_MODELS = ('model3', 'model3x', 'model4', 'model8', 'model10', 'model11',
+                    'model12', 'model13', 'model14', 'model15')
 
 # Ring frame seeds (see module docstring): model -> Pauli axis (1=X, 2=Y, 3=Z)
 # its single-site field rotates about; the ring lies in the other two axes.

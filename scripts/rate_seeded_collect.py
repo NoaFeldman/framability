@@ -26,7 +26,10 @@ d_ext = 8 / 12 panels also take the smaller d_ext's value (padding).
 
 The log reports, per d_ext, the share of the Pauli-positive points brought to
 mu* = 0, and -- with --ref_npz -- the comparison with an earlier figure's
-optimised panels: rates (rate_heis_4 / rate_heis_6, e.g.
+optimised panels, on the earlier grid (this grid or its leading block, e.g.
+model3 inside model3x): an earlier run of this script (panel_rate_heis_4 / 8 /
+12, e.g. results_model3_seeded/model3_seeded_rate_panels.npz; compared at
+equal d_ext), rates (rate_heis_4 / rate_heis_6, e.g.
 results_model4_rate/model4_rate_panels.npz) or dt -> 0 extrapolated
 framabilities fra^(1/dt) ~ exp(mu*) (opt_fra_4 / opt_fra_6, e.g.
 results_dtbase_line/model3_dtbase_extrap.npz; 'framable' there is
@@ -133,14 +136,20 @@ def gap_report(panel: dict, pauli) -> None:
           f'optimised frames bring to rate 0: ' + ' | '.join(parts), flush=True)
 
 
-def ref_report(ref_npz: Path, panel: dict) -> None:
+def ref_report(ref_npz: Path, panel: dict, p1, p2, model: str) -> None:
     """Rate-0 / framable counts of an earlier figure's optimised panels next
-    to the new ones (same grid assumed; shapes are checked)."""
+    to the new ones, on the earlier grid: the same grid, or its leading block
+    (e.g. model3 inside model3x; the stored axis values are checked)."""
     if not ref_npz.exists():
         print(f'  [ref] {ref_npz} not found; comparison skipped', flush=True)
         return
     d = np.load(ref_npz, allow_pickle=True)
-    if 'rate_heis_4' in d.files:
+    seeded = 'panel_rate_heis_4' in d.files          # an earlier run of this script
+    if seeded:
+        old = {m: np.asarray(d[f'panel_rate_heis_{m}'], float) for m in (4, 8, 12)
+               if f'panel_rate_heis_{m}' in d.files}
+        tol, what = TOL, 'rate 0'
+    elif 'rate_heis_4' in d.files:
         old = {4: np.asarray(d['rate_heis_4'], float)}
         if 'rate_heis_6' in d.files:
             old[6] = np.fmin(old[4], np.asarray(d['rate_heis_6'], float))
@@ -154,19 +163,30 @@ def ref_report(ref_npz: Path, panel: dict) -> None:
         print(f'  [ref] {ref_npz}: no rate_heis_4 / opt_fra_4; skipped', flush=True)
         return
     shape = next(iter(panel.values())).shape
-    old = {k: v for k, v in old.items() if v.shape == shape}
-    if not old:
+    old = {k: v for k, v in old.items()
+           if v.ndim == 2 and v.shape[0] <= shape[0] and v.shape[1] <= shape[1]}
+    if not old or len({v.shape for v in old.values()}) > 1:
         print(f'  [ref] {ref_npz}: grid shape differs; skipped', flush=True)
         return
+    sx, sy = next(iter(old.values())).shape
+    x, y = MODELS[model].p1_name, MODELS[model].p2_name
+    for key, new_v, n in ((f'{x}_vals', p1, sx), (f'{y}_vals', p2, sy)):
+        if key in d.files and not np.allclose(np.asarray(d[key], float), new_v[:n],
+                                              rtol=0, atol=1e-9):
+            print(f'  [ref] {ref_npz}: {key} differs from this grid; skipped', flush=True)
+            return
+    panel = {m: R[:sx, :sy] for m, R in panel.items()}
+    block = '' if (sx, sy) == shape else f', on its {sx} x {sy} block'
     old_txt = ', '.join(f'old d{k}: {int((v <= tol).sum())}' for k, v in old.items())
     new_txt = ', '.join(f'new d{m}: {int((R <= tol).sum())}' for m, R in panel.items())
-    print(f'  [ref] {what} counts with the same tolerance ({ref_npz.name}): '
+    print(f'  [ref] {what} counts with the same tolerance ({ref_npz.name}{block}): '
           f'{old_txt} | {new_txt}', flush=True)
     if what == 'rate 0':
         k = max(old)
-        both = np.isfinite(old[k]) & np.isfinite(panel[8])
-        gain = np.where(both, old[k] - panel[8], np.nan)
-        print(f'  [ref] new d8 below old d{k} by > 1e-6 at '
+        m = k if seeded else 8
+        both = np.isfinite(old[k]) & np.isfinite(panel[m])
+        gain = np.where(both, old[k] - panel[m], np.nan)
+        print(f'  [ref] new d{m} below old d{k} by > 1e-6 at '
               f'{int((gain > 1e-6).sum())} points (largest gain {np.nanmax(gain):.3g}); '
               f'above it at {int((gain < -1e-6).sum())}', flush=True)
 
@@ -285,7 +305,7 @@ def main() -> None:
     summary(panel[12], panel[8], 12, 8)
     gap_report(panel, fixed['rate_pauli'])
     if args.ref_npz:
-        ref_report(Path(args.ref_npz), panel)
+        ref_report(Path(args.ref_npz), panel, p1, p2, model)
 
     prod_pt = out_dir / prod_tag(model)
     prod = (common.load_group(prod_pt, [k for k, _ in PROD_RATE_KEYS], prod_stride,

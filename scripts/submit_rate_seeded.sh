@@ -9,6 +9,12 @@
 #    row 2 | product-state chi=10 | chi=40 | 8q osc rate | 8q gap
 #
 #  Stages (arrays 0-199 of scripts/rate_seeded.slurm.sh unless noted):
+#    0. import      (login node; only with IMPORT_MODEL) copy a finished run of
+#                   IMPORT_MODEL from IMPORT_DIR whose grid is the leading block
+#                   of this model's grid (scripts/rate_seeded_import.py), so
+#                   every later stage skips those points and only the new ones
+#                   are computed; e.g. model3 (gamma <= 10) into model3x
+#                   (gamma <= 16)
 #    1. seed        product chi=10/40, stabilizer-3, Pauli, seeded d_ext=4/8
 #                   (exact rescaled-Pauli optimum, families, stored frames,
 #                   global search); resubmitted once if a wall-time kill left
@@ -46,13 +52,18 @@
 #            REF_NPZ=results_model4_rate/model4_rate_panels.npz
 #    model3  DTBASE_DIRS=results_dtbase_line   (finite-dt optimised frames)
 #            REF_NPZ=results_dtbase_line/model3_dtbase_extrap.npz
+#    model3x IMPORT_MODEL=model3 IMPORT_DIR=results_model3_seeded (the finished
+#            51 x 51 model3 run; only the 30 new gamma columns 10.2..16 are
+#            computed), REF_NPZ=results_model3_seeded/model3_seeded_rate_panels.npz
+#            (compared on the gamma <= 10 block)
 #
 #  Knobs (env): MODEL (required), OUT_DIR (results_<model>_seeded), OUT_PNG
 #  (results_model4_rate/<model>_seeded_rate_panels.png), STORED_DIRS,
-#  DTBASE_DIRS, XFER_DIRS, DIM, STRIDE (1; 5 = 11x11 preview), N_QREF, N_D12_REF,
+#  DTBASE_DIRS, XFER_DIRS, IMPORT_MODEL, IMPORT_DIR, DIM, STRIDE (1; 5 = 11x11
+#  preview), N_QREF, N_D12_REF,
 #  N_MARGIN, N_RREF (99 each), MIN_GAIN (1e-3), PATIENCE (2), EARLY_STOP (1),
-#  SKIP_SEED=1, SKIP_MB=1, SKIP_XEVAL=1, SKIP_QREF=1, SKIP_D12=1, SKIP_MARGIN=1,
-#  SKIP_RREF=1, MB_STRIDE (1), MB_TIME (24:00:00),
+#  SKIP_IMPORT=1, SKIP_SEED=1, SKIP_MB=1, SKIP_XEVAL=1, SKIP_QREF=1, SKIP_D12=1,
+#  SKIP_MARGIN=1, SKIP_RREF=1, MB_STRIDE (1), MB_TIME (24:00:00),
 #  SEED_TIME (16:00:00), D12_TIME (24:00:00), HOPS (20), MAX_SECONDS (5400),
 #  TARGETS (nonmono), PY (.venv/bin/python), and every variable of the two
 #  slurm scripts.
@@ -61,14 +72,21 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."               # repo root
 export MODEL="${MODEL:?set MODEL (e.g. model3 | model4)}"
+def_import_model=""; def_import_dir=""
 case "$MODEL" in
     model4) def_stored="results_model4_rate"; def_dtbase=""
             def_ref="results_model4_rate/model4_rate_panels.npz"; def_skip_mb=1 ;;
     model3) def_stored=""; def_dtbase="results_dtbase_line"
             def_ref="results_dtbase_line/model3_dtbase_extrap.npz"; def_skip_mb=1 ;;
+    # the finite-dt frames are tagged model3_*, and cover only the imported block
+    model3x) def_stored=""; def_dtbase=""; def_skip_mb=1
+             def_import_model="model3"; def_import_dir="results_model3_seeded"
+             def_ref="results_model3_seeded/model3_seeded_rate_panels.npz" ;;
     *)      def_stored="results_${MODEL}_rate"; def_dtbase=""; def_ref=""
             def_skip_mb=0 ;;
 esac
+IMPORT_MODEL="${IMPORT_MODEL-$def_import_model}"
+IMPORT_DIR="${IMPORT_DIR-$def_import_dir}"
 SKIP_MB="${SKIP_MB:-$def_skip_mb}"
 MB_STRIDE="${MB_STRIDE:-1}"
 export OUT_DIR="${OUT_DIR:-results_${MODEL}_seeded}"
@@ -181,6 +199,16 @@ for d in $DTBASE_DIRS; do
     echo "$TAG   ${d}: $(find "$d" -maxdepth 2 -path "*/${MODEL}_p1_*/base_000.npz" 2>/dev/null | wc -l) finite-dt points"
 done
 
+# ---- 0. import a finished run on the leading block of the grid -------------
+if [ -n "$IMPORT_MODEL" ] && [ "${SKIP_IMPORT:-0}" != "1" ]; then
+    echo "$TAG stage 0: import ${IMPORT_MODEL} from ${IMPORT_DIR:?set IMPORT_DIR}"
+    "$PY" scripts/rate_seeded_import.py \
+        --src_model "$IMPORT_MODEL" --src_dir "$IMPORT_DIR" \
+        --model "$MODEL" --out_dir "$OUT_DIR" ${DIM:+--dim $DIM} \
+        --stride "$STRIDE" --prod_stride "$PROD_STRIDE" --mb_stride "$MB_STRIDE" \
+        || { echo "$TAG ERROR: import failed"; exit 1; }
+fi
+
 # ---- 1. seed: product, stabilizer-3, Pauli, d_ext = 4 / 8 ------------------
 if [ "${SKIP_SEED:-0}" != "1" ]; then
     for attempt in 1 2; do
@@ -220,10 +248,15 @@ print(int('$MODEL' in SUPPORTED_MODELS))" 2>/dev/null || echo 0)
 fi
 
 # ---- 2. neighbour cross-evaluation (once, before any refine round) ---------
-if [ "${SKIP_XEVAL:-0}" != "1" ] && [ "$(last_round "$D8_DIR" _qrefine_r)" -eq 0 ]; then
+# (an imported run may carry the source's refine rounds: then once per import,
+#  tracked by the marker, so the new points get their neighbour transfers)
+XEVAL_MARK="$D8_DIR/.xeval_done"
+if [ "${SKIP_XEVAL:-0}" != "1" ] && { [ "$(last_round "$D8_DIR" _qrefine_r)" -eq 0 ] \
+        || { [ -n "$IMPORT_MODEL" ] && [ ! -f "$XEVAL_MARK" ]; }; }; then
     echo "$TAG stage 2: d_ext=4/8 neighbour cross-evaluation"
     MODE=xeval sbatch --wait --job-name="${JP}_xeval" \
         scripts/rate_seeded_collect.slurm.sh \
+        && touch "$XEVAL_MARK" \
         || echo "$TAG warning: xeval job failed; continuing"
     echo "$TAG stage 2: $(count "$D8_DIR" '*_xeval.npz') point(s) improved"
 fi

@@ -56,7 +56,7 @@ gamma_ch1_sphere so this stays a thin model-and-orchestration layer.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Callable
 
 import numpy as np
@@ -909,6 +909,12 @@ MODELS: dict[str, ModelSpec] = {
         build=_make_model_tfim(h), dim=1, lpdo_init='plus')
        for name, h in MODEL_TFIM_H.items()},
 }
+# model3x (added 2026-10, no version bump: model3 is unchanged): model3 with
+# gamma extended to 16 (81 x 51), for the seeded rate pipeline.  Its first 51
+# gamma values are model3's, so model3's per-point files (pt_<ix>_<iy>) are
+# valid model3x files under the same names (scripts/rate_seeded_import.py).
+MODELS['model3x'] = replace(MODELS['model3'], name='model3x',
+                            p1_vals=_arange(0, 16, 0.2))
 
 
 # ---------------------------------------------------------------------------
