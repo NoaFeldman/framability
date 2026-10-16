@@ -55,6 +55,11 @@ def ring_edges(N: int) -> List[Tuple[int, int]]:
     return [(i, (i + 1) % N) for i in range(N)]
 
 
+def complete_edges(N: int) -> List[Tuple[int, int]]:
+    """Every pair (i, j), i < j, of an N-site system (all-to-all coupling)."""
+    return [(i, j) for i in range(N) for j in range(i + 1, N)]
+
+
 # 2D open-boundary lattice edges: reuse dissipative_PT.bonds_2d(Lx, Ly) directly
 # (row-major site numbering, horizontal bonds then vertical bonds) -- see the
 # item-4 workers for `from dissipative_PT import bonds_2d`.
@@ -185,7 +190,12 @@ def model_lattice_params(model: str, p1: float, p2: float) -> dict:
 # dephasing and S^- decay (Delta = -2, 0, 1), and model14-15, the
 # transverse-field Ising chain with S^- decay and Z dephasing (h = 1, 0.5).
 RING_MODELS = ('model10', 'model11', 'model12', 'model13', 'model14', 'model15')
-MANYBODY_MODELS = LATTICE_MODELS + RING_MODELS
+# All-to-all models (model16, the Rydberg gas of arXiv:2505.05202): the N-site
+# panels use the complete graph, and the model's two-site terms (the dimer
+# patch) are divided by N - 1, the paper's V/(N-1) normalisation.
+ALL_TO_ALL_MODELS = ('model16',)
+TERMS_MODELS = RING_MODELS + ALL_TO_ALL_MODELS     # built from MODELS[model].build
+MANYBODY_MODELS = LATTICE_MODELS + TERMS_MODELS
 
 
 def _embed_two_site_sparse(O4: np.ndarray, i: int, j: int, N: int) -> sp.csr_matrix:
@@ -243,7 +253,14 @@ def model_terms_lindbladian(model: str, p1: float, p2: float, N: int,
     its scan point (p1, p2)."""
     # lazy import, as in model_lattice_params
     from trotter_lindbladian_scan import MODELS
-    return build_lindbladian_from_terms(*MODELS[model].build(p1, p2), N, edges)
+    H1, H2, jumps1, jumps2 = MODELS[model].build(p1, p2)
+    if model in ALL_TO_ALL_MODELS:
+        # build() is the dimer patch; on the complete graph a pair carries 1/(N-1)
+        # of it (two-site Hamiltonian terms by 1/(N-1), two-site jump rates too)
+        s = 1.0 / (N - 1)
+        H2 = None if H2 is None else s * np.asarray(H2, dtype=complex)
+        jumps2 = [np.sqrt(s) * np.asarray(A, dtype=complex) for A in (jumps2 or [])]
+    return build_lindbladian_from_terms(H1, H2, jumps1, jumps2, N, edges)
 
 
 # ---------------------------------------------------------------------------

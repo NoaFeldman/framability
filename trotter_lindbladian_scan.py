@@ -670,27 +670,68 @@ def _make_model_xxz(delta: float):
 
 
 # model14 / model15 (added 2026-10, no version bump: existing model data is
-# unchanged): the transverse-field Ising chain with S^- decay and Z dephasing,
+# unchanged; redefined 2026-10-16, the first (gamma_1, gamma_2) version at
+# fixed h = 1 / 0.5 was scrapped): the transverse-field Ising chain with S^-
+# decay and Z dephasing,
 #   H = J sum_i Z_i Z_{i+1} + h sum_i X_i   (J = 1)
 #   jumps sqrt(gamma_1) S^- = sqrt(gamma_1)|0><1| and sqrt(gamma_2) Z (one-qubit)
-# with h = 1 (model14, the 1D critical field h = J) and h = 0.5 (model15,
-# the ordered side); scan gamma_1 (decay) against gamma_2 (dephasing) on
-# [0, 2]^2, step 0.1 (21 x 21).  model1's Hamiltonian and decay plus the Z
-# dephasing of models 3-4, but a 1D chain (dim = 1) like model10-13: the field
-# and both noises are shared 1/2 per bond.
+# with the dephasing fixed, gamma_2 = 0 (model14) and gamma_2 = 1 (model15);
+# scan gamma_1 (decay) in [0, 2], step 0.1, against the field h in [0, 4.8],
+# step 0.4 (21 x 13).  model1's Hamiltonian and decay plus the Z dephasing of
+# models 3-4, but a 1D chain (dim = 1) like model10-13: the field and both
+# noises are shared 1/2 per bond.
 MODEL_TFIM_J = 1.0
-MODEL_TFIM_H = {'model14': 1.0, 'model15': 0.5}
+MODEL_TFIM_GAMMA_2 = {'model14': 0.0, 'model15': 1.0}
 
 
-def _make_model_tfim(h: float):
-    """build(gamma_1, gamma_2) of the transverse-field Ising chain with S^-
-    decay and Z dephasing at fixed field h."""
-    def build(gamma_1: float, gamma_2: float):
+def _make_model_tfim(gamma_2: float):
+    """build(gamma_1, h) of the transverse-field Ising chain with S^- decay
+    and Z dephasing at fixed dephasing rate gamma_2."""
+    def build(gamma_1: float, h: float):
         H1 = h * _SX
         H2 = MODEL_TFIM_J * _ZZ()
         jumps1 = [np.sqrt(gamma_1) * S_MINUS, np.sqrt(gamma_2) * _SZ]
         return H1, H2, jumps1, []
     return build
+
+
+# model16 (added 2026-10-16, no version bump: existing model data is
+# unchanged): the driven Rydberg gas of Xiang, Li, Bai & Ma, "Switching
+# Dynamics of Metastable Open Quantum Systems", arXiv:2505.05202 (Eq. 2), with
+# an added on-site Z dephasing,
+#   H = sum_l [ (Omega/2) X_l - Delta n_l ] + V/(N-1) sum_{l<k} n_l n_k
+#   jumps sqrt(gamma) S^-_l  and  sqrt(gamma_phi) Z_l           (one-qubit)
+# with n = |1><1| the Rydberg population (|1> = Rydberg, |0> = ground, so S^- =
+# |0><1| decays toward the ground state), Omega = 1.5, V = 10, gamma = 1.  The
+# paper writes Omega sigma^x, but its mean-field equations (4a-4c) are those
+# of Omega/2 sigma^x; the Omega/2 convention is used.  Its sigma^-/+ = sigma^x
+# -/+ i sigma^y carry a factor 2 that the same equations rule out (the
+# population decays at rate gamma), so the jump is the standard sqrt(gamma)|0><1|.
+# Mean field (the paper): monostable I (Delta ~ 2.4), bistable (3 <~ Delta <~
+# 4.2), monostable II (Delta ~ 4.4).  Scan Delta in [2, 5], step 0.2 (16),
+# against gamma_phi in [0, 1], step 0.1 (11): 176 points.
+#
+# ALL-TO-ALL, so no lattice dimension: every pair of atoms is a bond, with V/(N-1)
+# on it and 1/(N-1) of each one-site term, i.e. 1/(N-1) times the dimer
+# generator (V n n + the one-site terms at full weight).  build() returns that
+# dimer patch (H2 = V n n; dim = 1/2, so build_bond_lindbladian's one-site share
+# 1/(2 dim) is 1).  The framability rates are therefore those of the pair
+# generator times (N-1), and the mu* = 0 regions do not depend on N.  The 8q
+# panels are the real thing: N = 8 on the complete graph with V/7 per pair
+# (n_qubit_lindbladian.ALL_TO_ALL_MODELS).
+MODEL_RYD_OMEGA = 1.5
+MODEL_RYD_V = 10.0
+MODEL_RYD_GAMMA = 1.0
+MODEL_RYD_DIM = 0.5                  # all-to-all pair patch: one-site share 1
+_N_RYD = np.array([[0.0, 0.0], [0.0, 1.0]], dtype=complex)    # n = |1><1|
+
+
+def _build_model16(delta: float, gamma_phi: float):
+    # H1 = Omega/2 X - Delta n ; H2 = V n n ; jumps sqrt(gamma) S^-, sqrt(gamma_phi) Z
+    H1 = 0.5 * MODEL_RYD_OMEGA * _SX - delta * _N_RYD
+    H2 = MODEL_RYD_V * np.kron(_N_RYD, _N_RYD)
+    jumps1 = [np.sqrt(MODEL_RYD_GAMMA) * S_MINUS, np.sqrt(gamma_phi) * _SZ]
+    return H1, H2, jumps1, []
 
 
 def _build_model5(J_y: float, gamma: float):
@@ -896,18 +937,32 @@ MODELS: dict[str, ModelSpec] = {
         p2_name='gamma',   p2_label=r'$\gamma$',   p2_vals=_arange(0, 2, 0.2),
         build=_make_model_xxz(delta), dim=1, lpdo_init='plus')
        for name, delta in MODEL_XXZ_DELTA.items()},
-    # model14 / model15 (added 2026-10): transverse-field Ising chain + S^-
-    # decay + Z dephasing, h = 1 / 0.5 (MODEL_TFIM_H), a 1D model (dim=1);
-    # scan the decay gamma_1 against the dephasing gamma_2 (21 x 21).
+    # model14 / model15 (added 2026-10, redefined 2026-10-16): transverse-field
+    # Ising chain + S^- decay + Z dephasing, gamma_2 = 0 / 1
+    # (MODEL_TFIM_GAMMA_2), a 1D model (dim=1); scan the decay gamma_1 against
+    # the field h (21 x 13).
     **{name: ModelSpec(
         name=name,
         title=(r'$H=J\,ZZ + h\,X$,  jumps $\sqrt{\gamma_1}\,S^-,\ '
                r'\sqrt{\gamma_2}\,Z$  '
-               rf'(J=1, h={h:g}, 1D chain)'),
+               rf'(J=1, $\gamma_2={g2:g}$, 1D chain)'),
         p1_name='gamma_1', p1_label=r'$\gamma_1$', p1_vals=_arange(0, 2, 0.1),
-        p2_name='gamma_2', p2_label=r'$\gamma_2$', p2_vals=_arange(0, 2, 0.1),
-        build=_make_model_tfim(h), dim=1, lpdo_init='plus')
-       for name, h in MODEL_TFIM_H.items()},
+        p2_name='h',       p2_label=r'$h$',        p2_vals=_arange(0, 4.8, 0.4),
+        build=_make_model_tfim(g2), dim=1, lpdo_init='plus')
+       for name, g2 in MODEL_TFIM_GAMMA_2.items()},
+    # model16 (added 2026-10-16): the all-to-all Rydberg gas of arXiv:2505.05202
+    # + Z dephasing, as the dimer patch (dim = 1/2, see _build_model16); scan
+    # the detuning Delta across the mean-field phases against the dephasing
+    # gamma_phi (16 x 11).  |0>^N (all atoms in the ground state) starts the
+    # lpdo_max path.
+    'model16': ModelSpec(
+        name='model16',
+        title=(r'$H=\frac{\Omega}{2}\sum X-\Delta\sum n+\frac{V}{N-1}\sum_{l<k}'
+               r'n_l n_k$,  jumps $\sqrt{\gamma}\,S^-,\ \sqrt{\gamma_\phi}\,Z$  '
+               r'($\Omega$=1.5, $V$=10, $\gamma$=1, all-to-all; arXiv:2505.05202)'),
+        p1_name='delta',     p1_label=r'$\Delta$',        p1_vals=_arange(2, 5, 0.2),
+        p2_name='gamma_phi', p2_label=r'$\gamma_\phi$',   p2_vals=_arange(0, 1, 0.1),
+        build=_build_model16, dim=MODEL_RYD_DIM, lpdo_init='zero'),
 }
 # model3x (added 2026-10, no version bump: model3 is unchanged): model3 with
 # gamma extended to 16 (81 x 51), for the seeded rate pipeline.  Its first 51

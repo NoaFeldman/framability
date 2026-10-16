@@ -72,13 +72,14 @@ from trotter_lindbladian_scan import MODELS                              # noqa:
 from dissipative_PT import bonds_2d                                      # noqa: E402
 from n_qubit_lindbladian import (build_lindbladian_comp, lindbladian_gap,  # noqa: E402
                                  model_lattice_params, model_terms_lindbladian,
-                                 ring_edges, RING_MODELS)
+                                 ring_edges, complete_edges, RING_MODELS,
+                                 ALL_TO_ALL_MODELS, TERMS_MODELS)
 from nonequilibrium_phase_characterizers import oscillation_rate         # noqa: E402
 
 MODEL_NAME = 'model4'                  # default --model
 TAG = 'model4_8q'                      # = mb_tag(MODEL_NAME), kept for importers
 SUPPORTED_MODELS = ('model4', 'model8', 'model10', 'model11', 'model12', 'model13',
-                    'model14', 'model15')
+                    'model14', 'model15', 'model16')
 
 
 def mb_tag(model: str) -> str:
@@ -100,6 +101,9 @@ def mb_geometry(model: str) -> dict:
     open-boundary lattice for the 2D models, a periodic ring for the 1D
     RING_MODELS (model10).  topology / Lx / Ly are stored per point; `label`
     goes into the figure title."""
+    if model in ALL_TO_ALL_MODELS:
+        return dict(edges=complete_edges(N_QUBITS), topology='all-to-all',
+                    Lx=N_QUBITS, Ly=1, label='all-to-all (V/(N-1))')
     if model in RING_MODELS:
         return dict(edges=ring_edges(N_QUBITS), topology='ring', Lx=N_QUBITS,
                     Ly=1, label='periodic ring')
@@ -122,7 +126,7 @@ def run_point(ix: int, iy: int, args) -> None:
     p1, p2 = float(p1_vals[ix]), float(p2_vals[iy])
     # model4/model8: build_lindbladian_comp arguments; the RING_MODELS carry
     # their physics in MODELS[model].build instead
-    params = ({} if model in RING_MODELS
+    params = ({} if model in TERMS_MODELS
               else model_lattice_params(model, p1, p2))
     geo = mb_geometry(model)
 
@@ -137,7 +141,7 @@ def run_point(ix: int, iy: int, args) -> None:
           f"{m.p2_name}={p2:.3f}  N={N_QUBITS} {geo['label']}  {params}",
           flush=True)
 
-    if model in RING_MODELS:
+    if model in TERMS_MODELS:
         L = model_terms_lindbladian(model, p1, p2, N_QUBITS, geo['edges'])
     else:
         L = build_lindbladian_comp(J, params['gamma'], params['gamma_p'],
