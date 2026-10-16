@@ -188,7 +188,7 @@ def model_lattice_params(model: str, p1: float, p2: float) -> dict:
 # a periodic ring: model10, the Shibata-Katsura dissipative quantum Ising chain
 # (https://arxiv.org/abs/1904.12505), model11-13, the XXZ chain with Z
 # dephasing and S^- decay (Delta = -2, 0, 1), and model14-15, the
-# transverse-field Ising chain with S^- decay and Z dephasing (h = 1, 0.5).
+# transverse-field Ising chain with S^- decay and Z dephasing (gamma_2 = 0, 1).
 RING_MODELS = ('model10', 'model11', 'model12', 'model13', 'model14', 'model15')
 # All-to-all models (model16, the Rydberg gas of arXiv:2505.05202): the N-site
 # panels use the complete graph, and the model's two-site terms (the dimer

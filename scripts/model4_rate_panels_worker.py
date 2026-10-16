@@ -31,9 +31,9 @@ Other models: --model model8 runs the identical six measures on model8's
 Shibata-Katsura dissipative quantum Ising chain
 (https://arxiv.org/abs/1904.12505), --model model11 / model12 / model13 on the
 (gamma_1, gamma) grid of the XXZ chain with Z dephasing and S^- decay
-(Delta = -2, 0, 1), --model model14 / model15 on the (gamma_1, gamma_2) grid
-of the transverse-field Ising chain with S^- decay and Z dephasing (h = 1,
-0.5); default out_dir results_<model>_rate.
+(Delta = -2, 0, 1), --model model14 / model15 on the (gamma_1, h) grid
+of the transverse-field Ising chain with S^- decay and Z dephasing
+(gamma_2 = 0, 1); default out_dir results_<model>_rate.
 The bond generator takes the model's own lattice dimension (ModelSpec.dim:
 2 for model4 / model8, 1 for the model10-15 chains) unless --dim is given.
 
