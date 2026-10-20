@@ -671,15 +671,23 @@ def _make_model_xxz(delta: float):
 
 # model14 / model15 (added 2026-10, no version bump: existing model data is
 # unchanged; redefined 2026-10-16, the first (gamma_1, gamma_2) version at
-# fixed h = 1 / 0.5 was scrapped): the transverse-field Ising chain with S^-
-# decay and Z dephasing,
+# fixed h = 1 / 0.5 was scrapped; grid v3 2026-10-20, see below): the
+# transverse-field Ising chain with S^- decay and Z dephasing,
 #   H = J sum_i Z_i Z_{i+1} + h sum_i X_i   (J = 1)
 #   jumps sqrt(gamma_1) S^- = sqrt(gamma_1)|0><1| and sqrt(gamma_2) Z (one-qubit)
 # with the dephasing fixed, gamma_2 = 0 (model14) and gamma_2 = 1 (model15);
-# scan gamma_1 (decay) in [0, 2], step 0.1, against the field h in [0, 4.8],
-# step 0.4 (21 x 13).  model1's Hamiltonian and decay plus the Z dephasing of
-# models 3-4, but a 1D chain (dim = 1) like model10-13: the field and both
-# noises are shared 1/2 per bond.
+# scan gamma_1 (decay) in [0, 3], step 0.2, against the field h in [0, 1.3],
+# step 0.1 (16 x 14).  (Grid v2, 2026-10-16: gamma_1 in [0, 2] step 0.1 x h in
+# [0, 4.8] step 0.4; its points on the v3 grid are imported by
+# scripts/rate_seeded_remap_import.py.)  model1's Hamiltonian and decay plus
+# the Z dephasing of models 3-4, but a 1D chain (dim = 1) like model10-13: the
+# field and both noises are shared 1/2 per bond.
+# NOT the dissipative Ising model of Overbeck et al., PRA 95, 042133 (2017),
+# arXiv:1606.08863: there the decay acts in the FIELD eigenbasis (model2 in
+# these axes), which keeps the Ising Z2 symmetry; here it acts along the Ising
+# axis, so gamma_1 > 0 breaks Z2 explicitly (no FM-PM transition).
+# Pauli rate (bond shares included; Y(x)Z binds while gamma_1/4 + gamma_2 <= 2J,
+# i.e. on the whole grid): 2h + 2J - gamma_1/4 - gamma_2.
 MODEL_TFIM_J = 1.0
 MODEL_TFIM_GAMMA_2 = {'model14': 0.0, 'model15': 1.0}
 
@@ -937,17 +945,17 @@ MODELS: dict[str, ModelSpec] = {
         p2_name='gamma',   p2_label=r'$\gamma$',   p2_vals=_arange(0, 2, 0.2),
         build=_make_model_xxz(delta), dim=1, lpdo_init='plus')
        for name, delta in MODEL_XXZ_DELTA.items()},
-    # model14 / model15 (added 2026-10, redefined 2026-10-16): transverse-field
-    # Ising chain + S^- decay + Z dephasing, gamma_2 = 0 / 1
-    # (MODEL_TFIM_GAMMA_2), a 1D model (dim=1); scan the decay gamma_1 against
-    # the field h (21 x 13).
+    # model14 / model15 (added 2026-10, redefined 2026-10-16, grid v3
+    # 2026-10-20): transverse-field Ising chain + S^- decay + Z dephasing,
+    # gamma_2 = 0 / 1 (MODEL_TFIM_GAMMA_2), a 1D model (dim=1); scan the decay
+    # gamma_1 against the field h (16 x 14).
     **{name: ModelSpec(
         name=name,
         title=(r'$H=J\,ZZ + h\,X$,  jumps $\sqrt{\gamma_1}\,S^-,\ '
                r'\sqrt{\gamma_2}\,Z$  '
                rf'(J=1, $\gamma_2={g2:g}$, 1D chain)'),
-        p1_name='gamma_1', p1_label=r'$\gamma_1$', p1_vals=_arange(0, 2, 0.1),
-        p2_name='h',       p2_label=r'$h$',        p2_vals=_arange(0, 4.8, 0.4),
+        p1_name='gamma_1', p1_label=r'$\gamma_1$', p1_vals=_arange(0, 3, 0.2),
+        p2_name='h',       p2_label=r'$h$',        p2_vals=_arange(0, 1.3, 0.1),
         build=_make_model_tfim(g2), dim=1, lpdo_init='plus')
        for name, g2 in MODEL_TFIM_GAMMA_2.items()},
     # model16 (added 2026-10-16): the all-to-all Rydberg gas of arXiv:2505.05202

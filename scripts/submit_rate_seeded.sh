@@ -42,8 +42,10 @@
 #  finished work and round numbers continue from the disk, so re-running the
 #  script picks up where it stopped.
 #
-#  At most one 200-task array may be queued at a time, so every stage is
-#  submitted with `sbatch --wait`; run on the login node, one model at a time:
+#  At most 200 array tasks may be queued at a time, so every stage is
+#  submitted with `sbatch --wait`; run on the login node, one model at a time
+#  -- or several side by side with N_TASKS summing to <= 200 minus one per
+#  model for the single collect / plot jobs (e.g. two models at N_TASKS=99):
 #
 #      MODEL=model4 nohup bash scripts/submit_rate_seeded.sh > logs/submit_rate_seeded_model4.log 2>&1 &
 #
@@ -64,6 +66,7 @@
 #  N_MARGIN, N_RREF (99 each), MIN_GAIN (1e-3), PATIENCE (2), EARLY_STOP (1),
 #  SKIP_IMPORT=1, SKIP_SEED=1, SKIP_MB=1, SKIP_XEVAL=1, SKIP_QREF=1, SKIP_D12=1,
 #  SKIP_MARGIN=1, SKIP_RREF=1, MB_STRIDE (1), MB_TIME (24:00:00),
+#  N_TASKS (200: array size of every array stage),
 #  SEED_TIME (16:00:00), D12_TIME (24:00:00), HOPS (20), MAX_SECONDS (5400),
 #  TARGETS (nonmono), PY (.venv/bin/python), and every variable of the two
 #  slurm scripts.
@@ -89,6 +92,10 @@ IMPORT_MODEL="${IMPORT_MODEL-$def_import_model}"
 IMPORT_DIR="${IMPORT_DIR-$def_import_dir}"
 SKIP_MB="${SKIP_MB:-$def_skip_mb}"
 MB_STRIDE="${MB_STRIDE:-1}"
+N_TASKS="${N_TASKS:-200}"             # array size of every array stage
+[ "$N_TASKS" -ge 1 ] && [ "$N_TASKS" -le 200 ] \
+    || { echo "[${MODEL} seeded] ERROR: N_TASKS=${N_TASKS} not in 1..200"; exit 1; }
+export N_CHUNKS="$N_TASKS"            # rate_seeded.slurm.sh: tasks stride the grid by it
 export OUT_DIR="${OUT_DIR:-results_${MODEL}_seeded}"
 export OUT_PNG="${OUT_PNG:-results_model4_rate/${MODEL}_seeded_rate_panels.png}"
 export STORED_DIRS="${STORED_DIRS-$def_stored}"
@@ -146,7 +153,7 @@ last_round() {    # highest round NN of files *<tag>NN.npz in dir $1 (0 if none)
 run_array() {     # run_array <job name> <time> VAR=value ...   (blocks)
     local name="$1" time="$2"; shift 2
     env "$@" sbatch --wait --job-name="$name" --time="$time" \
-        scripts/rate_seeded.slurm.sh \
+        --array="0-$(( N_TASKS - 1 ))" scripts/rate_seeded.slurm.sh \
         || echo "$TAG warning: some ${name} tasks failed; continuing"
 }
 
@@ -231,14 +238,15 @@ print(int('$MODEL' in SUPPORTED_MODELS))" 2>/dev/null || echo 0)
     if [ "$mb_ok" != "1" ]; then
         echo "$TAG stage 1b: ${MODEL} is not a many-body worker model; 8q panels skipped"
     else
-        MB_ARRAY="0-$(( (N_MB < 200 ? N_MB : 200) - 1 ))"
+        MB_TASKS=$(( N_MB < N_TASKS ? N_MB : N_TASKS ))
+        MB_ARRAY="0-$(( MB_TASKS - 1 ))"
         for attempt in 1 2; do
             nmb=$(count "$MB_DIR" "$BASE_PAT")
             [ "$nmb" -ge "$N_MB" ] && break
             echo "$TAG stage 1b (pass ${attempt}): 8q panels, ${MNX}x${MNY} grid" \
                  "(stride ${MB_STRIDE}; ${nmb}/${N_MB} points on disk)"
             env MODEL="$MODEL" OUT_DIR="$OUT_DIR" STRIDE="$MB_STRIDE" \
-                N_CHUNKS="$(( N_MB < 200 ? N_MB : 200 ))" \
+                N_CHUNKS="$MB_TASKS" \
                 sbatch --wait --array="$MB_ARRAY" --job-name="${JP}_8q" \
                        --time="${MB_TIME:-24:00:00}" scripts/model4_manybody.slurm.sh \
                 || echo "$TAG warning: some ${JP}_8q tasks failed; continuing"
