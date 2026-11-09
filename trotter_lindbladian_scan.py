@@ -794,7 +794,11 @@ def _build_model16(delta: float, gamma_phi: float):
 # repo's S_MINUS = |0><1|).  The note's H coefficients were derived by hand;
 # re-derived 2026-11-09 from H_eff = (g/2)(J_x a_ad + a_ad^dag J_x), a_ad =
 # -i(g/2)(c_- J_- + c_+ J_+): 2 Im A J_x^2 + Re B J_z + Im B {J_x, J_y} (agrees
-# with the note; not yet compared with Jaeger et al. directly).
+# with the note), and checked numerically (scripts/dicke_patch_check.py): the
+# O(g^2) Liouvillian eigenvalue shifts of the full cavity + 2 atoms model match
+# the atom-only ones to O(g^2) relative (1.8e-4 at g = 0.04, 4.4e-5 at 0.02;
+# flipping the sign of the correction misses by 49%).  The pair split below
+# reproduces the collective Liouvillian to machine precision for N = 2..5.
 #
 # ALL-TO-ALL with an explicit N (Kac 1/N), so one registry entry per N.  The
 # collective dissipator is split into pair patches,
