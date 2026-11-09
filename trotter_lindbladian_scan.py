@@ -207,13 +207,42 @@ def _has_dephasing(jumps1, jumps2) -> bool:
     return False
 
 
+class SignedJump:
+    """A two-qubit dissipator term with an explicit, possibly NEGATIVE weight,
+
+        weight * ( L rho L^dag - 1/2 {L^dag L, rho} ),
+
+    for patch generators that are not themselves Lindbladians (e.g. the
+    Dicke pair patch, whose single-site counterterm -(N-2) D[l_i] is not CP).
+    It may appear in a model's jumps2 list; build_bond_lindbladian and
+    build_full_lindbladian_model add it with its weight (no bond share).
+    np.asarray(SignedJump) gives sqrt(|weight|) L, so rate-scale helpers
+    (choose_dt) still see a sensible operator.
+    """
+
+    def __init__(self, weight: float, L):
+        self.weight = float(weight)
+        self.L = np.asarray(L, dtype=complex)
+
+    def __array__(self, dtype=None, copy=None):
+        out = np.sqrt(abs(self.weight)) * self.L
+        return out if dtype is None else out.astype(dtype)
+
+    def term(self, L=None):
+        """(weight, L, L^dag, L^dag L) for _build_lindbladian (L: embedded op)."""
+        L = self.L if L is None else L
+        Ld = L.conj().T
+        return (self.weight, L, Ld, Ld @ L)
+
+
 def build_bond_lindbladian(H1, H2, jumps1, jumps2, dim: int) -> np.ndarray:
     """16x16 real bond Lindbladian in the two-qubit Pauli basis.
 
     H1 : 2x2 one-qubit Hamiltonian term, or None.
     H2 : 4x4 two-qubit Hamiltonian term, or None.
     jumps1 : iterable of 2x2 one-qubit jump operators (sqrt(rate) included).
-    jumps2 : iterable of 4x4 two-qubit jump operators (sqrt(rate) included).
+    jumps2 : iterable of 4x4 two-qubit jump operators (sqrt(rate) included),
+             or SignedJump terms (explicit, possibly negative weight).
     dim : physical lattice dimension (each qubit sits on 2*dim bonds).
     """
     f1 = 1.0 / (2.0 * dim)            # share of a one-qubit term per bond
@@ -233,6 +262,9 @@ def build_bond_lindbladian(H1, H2, jumps1, jumps2, dim: int) -> np.ndarray:
             Ld = Lful.conj().T
             jumps.append((f1, Lful, Ld, Ld @ Lful))
     for L2 in (jumps2 or []):
+        if isinstance(L2, SignedJump):
+            jumps.append(L2.term())
+            continue
         L2 = np.asarray(L2, dtype=complex)
         Ld = L2.conj().T
         jumps.append((1.0, L2, Ld, Ld @ L2))
@@ -294,6 +326,10 @@ def build_full_lindbladian_model(H1, H2, jumps1, jumps2,
             Ld = Lf.conj().T
             jumps.append((1.0, Lf, Ld, Ld @ Lf))
     for L2 in (jumps2 or []):
+        if isinstance(L2, SignedJump):
+            for (i, j) in bonds:
+                jumps.append(L2.term(_embed_two_site(L2.L, i, j, N)))
+            continue
         L2 = np.asarray(L2, dtype=complex)
         for (i, j) in bonds:
             Lf = _embed_two_site(L2, i, j, N)
@@ -742,6 +778,99 @@ def _build_model16(delta: float, gamma_phi: float):
     return H1, H2, jumps1, []
 
 
+# dicke_N<N> (added 2026-11-09, no version bump): the open Dicke model with the
+# cavity adiabatically eliminated (dicke_lindbladian.md; Jaeger, Schmit, Morigi,
+# Holland, Betzholz, PRL 129, 063601 (2022); Damanet, Daley, Keeling, PRA 99,
+# 033845 (2019)), atom-only, Kac-normalised, plus on-site Z dephasing:
+#   d rho/dt = -i[H, rho] + kappa D[L] rho + gamma_phi sum_i D[Z_i] rho
+#   D[L] rho = 2 L rho L^dag - {L^dag L, rho}       (the NOTE's convention, x2
+#                                                   the repo's _build_lindbladian)
+#   L = sum_i l_i,  l_i = (lam/sqrt N)(c_- s^-_i + c_+ s^+_i),
+#   c_pm = 1/(kappa + i(omega pm omega0)),  A = c_+ + c_-,  B = i(c_+ - c_-)
+#   H = sum_i h Z_i + sum_{i<j} (lam^2/N)[Im A X_i X_j + Im B/2 (X_i Y_j + Y_i X_j)]
+#   h = omega0/2 + (lam^2/N) Re B/2
+# with s^pm = (X pm iY)/2 built from the Pauli matrices as in the note (so s^- =
+# |1><0| here, lowering toward Z = -1, the ground state of omega0 J_z; NOT the
+# repo's S_MINUS = |0><1|).  The note's H coefficients were derived by hand;
+# re-derived 2026-11-09 from H_eff = (g/2)(J_x a_ad + a_ad^dag J_x), a_ad =
+# -i(g/2)(c_- J_- + c_+ J_+): 2 Im A J_x^2 + Re B J_z + Im B {J_x, J_y} (agrees
+# with the note; not yet compared with Jaeger et al. directly).
+#
+# ALL-TO-ALL with an explicit N (Kac 1/N), so one registry entry per N.  The
+# collective dissipator is split into pair patches,
+#   D[L] = sum_{i<j} D[l_i + l_j] - (N-2) sum_i D[l_i],
+# and the single-site counterterm (weight -(N-2), NOT CP) is shared over the
+# N-1 pairs of each site.  As for model16, build() returns the DIMER generator
+# = (N-1) x the pair patch (dim = 1/2: one-site terms at full weight):
+#   H2  = (N-1)(lam^2/N)[Im A XX + Im B/2 (XY + YX)]
+#   jumps2: sqrt(2 kappa (N-1) lam^2/N) (m(x)I + I(x)m)               (CP)
+#           SignedJump(-2 kappa (N-2) lam^2/N, m(x)I), same for I(x)m (non-CP)
+#   H1 = h Z,  jumps1 = sqrt(2 gamma_phi) Z,  m = c_- s^- + c_+ s^+
+# (the factors 2 convert the note's D to the repo's).  N = 2 is the exact
+# two-atom model (counterterm weight 0); N -> inf keeps the pair CROSS term at
+# full weight, (N-1)/N D[m1+m2] - (N-2)/N (D[m1]+D[m2]) = C_12 (N-1)/N +
+# (D[m1]+D[m2])/N, so the patch is non-CP at every N and its non-CP part does
+# not vanish with N (note section 5); N enters the rates through (N-1)/N,
+# (N-2)/N and the 1/N Lamb shift / single-site emission.
+# Fixed omega = kappa = 1, omega0 = 0.1 (omega0 << omega: the regime where the
+# elimination is valid, lam <= 2 lam_c ~ 0.45 << |kappa + i Delta_pm| ~ 1.4).
+# Scan lam / lam_c in [0, 2], step 0.1 (21; the mean-field transition
+# lam_c^2 = omega0 (omega^2 + kappa^2)/(4 omega) is the vertical line 1),
+# against gamma_phi in [0, 1], step 0.1 (11): 231 points per N.
+MODEL_DICKE_OMEGA = 1.0
+MODEL_DICKE_OMEGA0 = 0.1
+MODEL_DICKE_KAPPA = 1.0
+MODEL_DICKE_DIM = 0.5                # all-to-all pair patch: one-site share 1
+MODEL_DICKE_N = {'dicke_N10': 10, 'dicke_N100': 100, 'dicke_N1000': 1000}
+_S_MINUS_NOTE = 0.5 * (_SX - 1j * _SY)          # (X - iY)/2 = |1><0|
+_S_PLUS_NOTE = 0.5 * (_SX + 1j * _SY)           # (X + iY)/2 = |0><1|
+
+
+def dicke_coefficients(omega: float = MODEL_DICKE_OMEGA,
+                       omega0: float = MODEL_DICKE_OMEGA0,
+                       kappa: float = MODEL_DICKE_KAPPA) -> dict:
+    """c_pm, A, B of the eliminated cavity and the mean-field lam_c."""
+    c_p = 1.0 / (kappa + 1j * (omega + omega0))
+    c_m = 1.0 / (kappa + 1j * (omega - omega0))
+    lam_c = np.sqrt(omega0 * (omega ** 2 + kappa ** 2) / (4.0 * omega))
+    return dict(c_p=c_p, c_m=c_m, A=c_p + c_m, B=1j * (c_p - c_m), lam_c=lam_c,
+                omega=omega, omega0=omega0, kappa=kappa)
+
+
+def _make_model_dicke(N: int, omega: float = MODEL_DICKE_OMEGA,
+                      omega0: float = MODEL_DICKE_OMEGA0,
+                      kappa: float = MODEL_DICKE_KAPPA,
+                      gamma_down: float = 0.0, gamma_up: float = 0.0):
+    """build(lam_ratio, gamma_phi) -> the N-atom Dicke dimer patch
+    (H1, H2, jumps1, jumps2) at lam = lam_ratio * lam_c, see above.
+    gamma_down / gamma_up: the note's optional on-site D[s^-] / D[s^+] (its
+    convention, so jump amplitude sqrt(2 gamma)); 0 for the registered models."""
+    if N < 2:
+        raise ValueError(f'Dicke patch needs N >= 2, got {N}')
+    co = dicke_coefficients(omega, omega0, kappa)
+    A, B = co['A'], co['B']
+    m = co['c_m'] * _S_MINUS_NOTE + co['c_p'] * _S_PLUS_NOTE
+    mI, Im = np.kron(m, _I2), np.kron(_I2, m)
+    XX = np.kron(_SX, _SX)
+    XY_YX = np.kron(_SX, _SY) + np.kron(_SY, _SX)
+
+    def build(lam_ratio: float, gamma_phi: float):
+        lam2N = (lam_ratio * co['lam_c']) ** 2 / N          # lam^2 / N = g^2/4
+        H1 = (0.5 * omega0 + 0.5 * lam2N * B.real) * _SZ
+        H2 = (N - 1) * lam2N * (A.imag * XX + 0.5 * B.imag * XY_YX)
+        w_neg = -2.0 * kappa * (N - 2) * lam2N
+        jumps2 = [np.sqrt(2.0 * kappa * (N - 1) * lam2N) * (mI + Im)]
+        if N > 2:
+            jumps2 += [SignedJump(w_neg, mI), SignedJump(w_neg, Im)]
+        jumps1 = [np.sqrt(2.0 * gamma_phi) * _SZ]
+        if gamma_down > 0:
+            jumps1.append(np.sqrt(2.0 * gamma_down) * _S_MINUS_NOTE)
+        if gamma_up > 0:
+            jumps1.append(np.sqrt(2.0 * gamma_up) * _S_PLUS_NOTE)
+        return H1, H2, jumps1, jumps2
+    return build
+
+
 def _build_model5(J_y: float, gamma: float):
     # (was the 2.x model3.)  Heisenberg bond H2 = J_x XX + J_y YY + J_z ZZ with
     # J_x = 0.9, J_z = 1 ; jump sqrt(gamma) S^- (one-qubit).  Same model and grid
@@ -971,6 +1100,20 @@ MODELS: dict[str, ModelSpec] = {
         p1_name='delta',     p1_label=r'$\Delta$',        p1_vals=_arange(2, 5, 0.2),
         p2_name='gamma_phi', p2_label=r'$\gamma_\phi$',   p2_vals=_arange(0, 1, 0.1),
         build=_build_model16, dim=MODEL_RYD_DIM, lpdo_init='zero'),
+    # dicke_N10 / N100 / N1000 (added 2026-11-09): the atom-only open Dicke
+    # model of dicke_lindbladian.md + Z dephasing, as the N-dependent dimer
+    # patch (dim = 1/2, see _make_model_dicke); scan lam/lam_c against
+    # gamma_phi (21 x 11).
+    **{name: ModelSpec(
+        name=name,
+        title=(r'atom-only open Dicke: $L=\frac{\lambda}{\sqrt{N}}\sum_i(c_-\sigma^-_i'
+               r'+c_+\sigma^+_i)$, $\kappa D[L]$ + $\gamma_\phi D[Z]$  '
+               rf'($N={n}$, $\omega=\kappa=1$, $\omega_0={MODEL_DICKE_OMEGA0:g}$, '
+               r'all-to-all)'),
+        p1_name='lam_ratio', p1_label=r'$\lambda/\lambda_c$', p1_vals=_arange(0, 2, 0.1),
+        p2_name='gamma_phi', p2_label=r'$\gamma_\phi$',       p2_vals=_arange(0, 1, 0.1),
+        build=_make_model_dicke(n), dim=MODEL_DICKE_DIM, lpdo_init='zero')
+       for name, n in MODEL_DICKE_N.items()},
 }
 # model3x (added 2026-10, no version bump: model3 is unchanged): model3 with
 # gamma extended to 16 (81 x 51), for the seeded rate pipeline.  Its first 51
