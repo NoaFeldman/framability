@@ -17,7 +17,8 @@ Figure 2 (<out>_cuts.png): mu* against lam/lam_c at the gamma_phi values
 Missing N files are skipped (with a message), so the script also draws a
 partial comparison while some runs are still going.
 
-    python scripts/dicke_n_compare_plot.py --ns 10 100 1000
+    python scripts/dicke_n_compare_plot.py                 # every registered N
+    python scripts/dicke_n_compare_plot.py --ns 5 20 100
 """
 from __future__ import annotations
 
@@ -32,7 +33,8 @@ import matplotlib.pyplot as plt                                           # noqa
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from trotter_lindbladian_scan import (MODELS, MODEL_DICKE_OMEGA,          # noqa: E402
-                                      MODEL_DICKE_OMEGA0, MODEL_DICKE_KAPPA)
+                                      MODEL_DICKE_OMEGA0, MODEL_DICKE_KAPPA,
+                                      MODEL_DICKE_N)
 
 CONTOUR_TOL = 1e-6          # as scripts/model10_panels_common.py
 COLS = [('rate_pauli', 'Pauli'),
@@ -69,7 +71,8 @@ def draw_panel(ax, x, y, Z, vmin, vmax, cmap, zero_contour=True):
 def main() -> None:
     p = argparse.ArgumentParser(description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument('--ns', type=int, nargs='+', default=[10, 100, 1000])
+    p.add_argument('--ns', type=int, nargs='+', default=sorted(MODEL_DICKE_N.values()),
+                   help='N values (default: every registered dicke_N<N>; missing files skipped)')
     p.add_argument('--root', default='.', help='repo root holding results_dicke_N*_seeded')
     p.add_argument('--out', default='results_model4_rate/dicke_n_compare')
     p.add_argument('--cuts', type=float, nargs='+', default=[0.0, 0.5],

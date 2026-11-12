@@ -825,7 +825,10 @@ MODEL_DICKE_OMEGA = 1.0
 MODEL_DICKE_OMEGA0 = 0.1
 MODEL_DICKE_KAPPA = 1.0
 MODEL_DICKE_DIM = 0.5                # all-to-all pair patch: one-site share 1
-MODEL_DICKE_N = {'dicke_N10': 10, 'dicke_N100': 100, 'dicke_N1000': 1000}
+# N = 5 and 20 added 2026-11-12 (no version bump: the existing entries are
+# unchanged), to see where the N-dependence of the pair split sets in.
+MODEL_DICKE_N = {'dicke_N5': 5, 'dicke_N10': 10, 'dicke_N20': 20,
+                 'dicke_N100': 100, 'dicke_N1000': 1000}
 _S_MINUS_NOTE = 0.5 * (_SX - 1j * _SY)          # (X - iY)/2 = |1><0|
 _S_PLUS_NOTE = 0.5 * (_SX + 1j * _SY)           # (X + iY)/2 = |0><1|
 
@@ -1104,7 +1107,7 @@ MODELS: dict[str, ModelSpec] = {
         p1_name='delta',     p1_label=r'$\Delta$',        p1_vals=_arange(2, 5, 0.2),
         p2_name='gamma_phi', p2_label=r'$\gamma_\phi$',   p2_vals=_arange(0, 1, 0.1),
         build=_build_model16, dim=MODEL_RYD_DIM, lpdo_init='zero'),
-    # dicke_N10 / N100 / N1000 (added 2026-11-09): the atom-only open Dicke
+    # dicke_N5 / N10 / N20 / N100 / N1000 (added 2026-11-09, N5 / N20 2026-11-12): the atom-only open Dicke
     # model of dicke_lindbladian.md + Z dephasing, as the N-dependent dimer
     # patch (dim = 1/2, see _make_model_dicke); scan lam/lam_c against
     # gamma_phi (21 x 11).
