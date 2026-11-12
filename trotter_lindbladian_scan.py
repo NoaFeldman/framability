@@ -878,6 +878,60 @@ def _make_model_dicke(N: int, omega: float = MODEL_DICKE_OMEGA,
     return build
 
 
+# dicke_dec_N<N> / dicke_dec_k025_N<N> (added 2026-11-12, no version bump: the
+# dicke_N<N> entries are unchanged): the same patch with INDIVIDUAL DECAY
+# gamma_down D[s^-] (note convention, jump sqrt(2 gamma_down) s^-) as the second
+# axis, gamma_phi = 0.  Why: on-site dephasing destroys the Dicke transition
+# (Kirton & Keeling, PRL 118, 123602 (2017)) and the floor-zero threshold of the
+# pair split grows ~N, gamma_phi >= (lam/lam_c)^2 kappa omega0 (N-2)/(4 omega);
+# decay keeps the transition and its floor-zero threshold is N-free:
+#   floor (spectral abscissa, every frame) = 0  iff  gamma_down >= sqrt2 Gamma
+#     (N -> inf; omega0 -> 0 block analysis, ~6% off at omega0 = 0.1),
+#     Gamma = 2 kappa lam^2/(kappa^2 + omega^2) = (lam/lam_c)^2 kappa omega0/(2 omega)
+#   mean-field transition (N -> inf, Holstein-Primakoff, omega0 << omega):
+#     lam_c(gamma_down)^2 = lam_c^2 (1 + gamma_down^2/omega0^2)
+# so the floor-zero region reaches the transition only if omega/kappa >= sqrt2
+# (closest at gamma_down = omega0):
+#   dicke_dec       kappa = 1    (omega/kappa = 1, as dicke_N<N>: floor 0 only up
+#                                 to ~0.84 lam_c(gamma_down), normal phase only)
+#   dicke_dec_k025  kappa = 0.25 (good cavity, omega/kappa = 4: floor 0 also on
+#                                 the superradiant side for gamma_down ~ 0.02..0.17
+#                                 within lam <= 2 lam_c)
+# lam_c on the axis is each kappa's gamma = 0 value (dicke_coefficients).  Grid
+# lam/lam_c [0, 2] / 0.1 (21) x gamma_down [0, 0.3] / 0.02 (16) = 336 points;
+# the elimination stays valid on it (lam^2 <= 4 lam_c^2 = 0.2 / 0.11 and
+# gamma_down <= 0.3 below |kappa + i omega|).
+MODEL_DICKE_KAPPA_GOOD = 0.25
+MODEL_DICKE_DEC_FAMILIES = {'dicke_dec': MODEL_DICKE_KAPPA,
+                            'dicke_dec_k025': MODEL_DICKE_KAPPA_GOOD}
+MODEL_DICKE_DEC_N = {f'{fam}_N{n}': (fam, n, kappa)
+                     for fam, kappa in MODEL_DICKE_DEC_FAMILIES.items()
+                     for n in sorted(MODEL_DICKE_N.values())}
+# every Dicke registry entry -> family / parameters / second axis
+# (scripts/dicke_n_compare_plot.py, scripts/submit_dicke_rate.sh)
+MODEL_DICKE_PARAMS = {
+    **{name: dict(family='dicke', N=n, omega=MODEL_DICKE_OMEGA, omega0=MODEL_DICKE_OMEGA0,
+                  kappa=MODEL_DICKE_KAPPA, axis='gamma_phi')
+       for name, n in MODEL_DICKE_N.items()},
+    **{name: dict(family=fam, N=n, omega=MODEL_DICKE_OMEGA, omega0=MODEL_DICKE_OMEGA0,
+                  kappa=kappa, axis='gamma_down')
+       for name, (fam, n, kappa) in MODEL_DICKE_DEC_N.items()},
+}
+
+
+def _make_model_dicke_dec(N: int, omega: float = MODEL_DICKE_OMEGA,
+                          omega0: float = MODEL_DICKE_OMEGA0,
+                          kappa: float = MODEL_DICKE_KAPPA,
+                          gamma_phi: float = 0.0):
+    """build(lam_ratio, gamma_down) -> the Dicke dimer patch of
+    _make_model_dicke with on-site decay gamma_down D[s^-] (note convention)
+    and the fixed dephasing gamma_phi."""
+    def build(lam_ratio: float, gamma_down: float):
+        return _make_model_dicke(N, omega, omega0, kappa,
+                                 gamma_down=gamma_down)(lam_ratio, gamma_phi)
+    return build
+
+
 def _build_model5(J_y: float, gamma: float):
     # (was the 2.x model3.)  Heisenberg bond H2 = J_x XX + J_y YY + J_z ZZ with
     # J_x = 0.9, J_z = 1 ; jump sqrt(gamma) S^- (one-qubit).  Same model and grid
@@ -1121,6 +1175,19 @@ MODELS: dict[str, ModelSpec] = {
         p2_name='gamma_phi', p2_label=r'$\gamma_\phi$',       p2_vals=_arange(0, 1, 0.1),
         build=_make_model_dicke(n), dim=MODEL_DICKE_DIM, lpdo_init='zero')
        for name, n in MODEL_DICKE_N.items()},
+    # dicke_dec_N<N> / dicke_dec_k025_N<N> (added 2026-11-12): the same patch
+    # with individual decay gamma_down instead of gamma_phi (= 0), kappa = 1 /
+    # 0.25 (see _make_model_dicke_dec); scan lam/lam_c against gamma_down (21 x 16).
+    **{name: ModelSpec(
+        name=name,
+        title=(r'atom-only open Dicke + decay: $L=\frac{\lambda}{\sqrt{N}}\sum_i(c_-\sigma^-_i'
+               r'+c_+\sigma^+_i)$, $\kappa D[L]$ + $\gamma_\downarrow D[\sigma^-]$  '
+               rf'($N={n}$, $\omega={MODEL_DICKE_OMEGA:g}$, $\kappa={kappa:g}$, '
+               rf'$\omega_0={MODEL_DICKE_OMEGA0:g}$, $\gamma_\phi=0$, all-to-all)'),
+        p1_name='lam_ratio', p1_label=r'$\lambda/\lambda_c$', p1_vals=_arange(0, 2, 0.1),
+        p2_name='gamma_down', p2_label=r'$\gamma_\downarrow$', p2_vals=_arange(0, 0.3, 0.02),
+        build=_make_model_dicke_dec(n, kappa=kappa), dim=MODEL_DICKE_DIM, lpdo_init='zero')
+       for name, (fam, n, kappa) in MODEL_DICKE_DEC_N.items()},
 }
 # model3x (added 2026-10, no version bump: model3 is unchanged): model3 with
 # gamma extended to 16 (81 x 51), for the seeded rate pipeline.  Its first 51

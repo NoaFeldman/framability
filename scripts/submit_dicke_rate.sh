@@ -2,14 +2,18 @@
 # ============================================================
 #  Framability-rate panels of the atom-only open Dicke model
 #  (dicke_lindbladian.md; trotter_lindbladian_scan._make_model_dicke) at
-#  the N of NS -- registry entries dicke_N<N>, N in MODEL_DICKE_N
-#  (5, 10, 20, 100, 1000) -- then the cross-N comparison figure.
+#  the N of NS -- registry entries <FAMILY>_N<N>, N in 5, 10, 20, 100, 1000
+#  (MODEL_DICKE_PARAMS) -- then the cross-N comparison figure.
 #
 #     L = (lam/sqrt N) sum_i (c_- s^-_i + c_+ s^+_i),  kappa D[L]  (cavity eliminated)
 #     H = sum h Z + (lam^2/N) sum_{i<j} [Im A XX + Im B/2 (XY + YX)]
-#     + gamma_phi sum D[Z]
-#  omega = kappa = 1, omega0 = 0.1; grid lam/lam_c in [0, 2] step 0.1 (21)
-#  x gamma_phi in [0, 1] step 0.1 (11) = 231 points per N.
+#  FAMILY (env, default dicke):
+#     dicke           + gamma_phi sum D[Z];  kappa = 1
+#                     grid lam/lam_c [0, 2] / 0.1 x gamma_phi [0, 1] / 0.1 (231 pts)
+#     dicke_dec       + gamma_down sum D[s^-], gamma_phi = 0;  kappa = 1
+#     dicke_dec_k025  the same, good cavity kappa = 0.25
+#                     grid lam/lam_c [0, 2] / 0.1 x gamma_down [0, 0.3] / 0.02 (336 pts)
+#  omega = 1, omega0 = 0.1 throughout (see _make_model_dicke_dec for why decay).
 #
 #  Every N goes through scripts/submit_rate_seeded.sh (seed -> xeval ->
 #  qrefine -> d12 seed/refine -> margin -> rrefine -> figure); the 8q stage is
@@ -20,29 +24,32 @@
 #  on the Lamb shift.
 #
 #  The drivers of NS run SIDE BY SIDE with N_TASKS = 65 array tasks each.
-#  Runs of OTHER N may still be going (e.g. N = 1000 while N = 5, 20 start):
-#  only an N of NS that still has rs_dicke_N<N>_* jobs queued is refused.
+#  Runs of OTHER models (other N, other family) may still be going: only a
+#  model of this run that still has rs_<FAMILY>_N<N>_* jobs queued is refused.
 #  This run alone must fit, n(NS) x (N_TASKS + 1) <= 200 (each driver keeps
 #  at most one array stage queued, `sbatch --wait`); if, together with the
-#  other queued work (RESERVE_PER_RUN = 66 per other dicke N + every non-dicke
-#  task in squeue), more than 200 tasks would be queued, the script only notes
-#  it (the new tasks pend) -- STRICT_BUDGET=1 refuses instead.
+#  other queued work (RESERVE_PER_RUN = 66 per other running Dicke model +
+#  every non-Dicke task in squeue), more than 200 tasks would be queued, the
+#  script only notes it (the new tasks pend) -- STRICT_BUDGET=1 refuses instead.
 #  When the drivers of NS have finished, scripts/dicke_n_compare_plot.py draws
 #      rows: every N in COMPARE_NS with a panel file / (N_min) - (N_max)
 #      cols: Pauli | opt d_ext = 4 | 8 | 12
-#  and the gamma_phi line cuts, as one cluster job (after every queued
-#  rs_dicke_N*_plot job; COMPARE_NS defaults to all registered N, missing
-#  files are skipped, so it can be re-run any time:
-#      .venv/bin/python scripts/dicke_n_compare_plot.py).
+#  (+ floor-zero contour, mean-field transition) and the line cuts, as one
+#  cluster job (after every queued rs_<FAMILY>_N*_plot job; COMPARE_NS
+#  defaults to all registered N of the family, missing files are skipped, so
+#  it can be re-run any time:
+#      .venv/bin/python scripts/dicke_n_compare_plot.py --family <FAMILY>).
 #
-#  Output: results_dicke_N<N>_seeded/{dicke_N<N>_seeded, _seeded_d12, _product}/pt_*.npz
-#          results_dicke_N<N>_seeded/dicke_N<N>_seeded_rate_panels.npz
-#          results_model4_rate/dicke_N<N>_seeded_rate_panels.png
-#          results_model4_rate/dicke_n_compare_panels.png  (+ _cuts.png)
+#  Output: results_<FAMILY>_N<N>_seeded/{<FAMILY>_N<N>_seeded, _seeded_d12, _product}/pt_*.npz
+#          results_<FAMILY>_N<N>_seeded/<FAMILY>_N<N>_seeded_rate_panels.npz
+#          results_model4_rate/<FAMILY>_N<N>_seeded_rate_panels.png
+#          results_model4_rate/<FAMILY>_n_compare_panels.png  (+ _cuts.png)
 #
 #  Run on the login node:
 #      nohup bash scripts/submit_dicke_rate.sh > logs/submit_dicke.log 2>&1 &
 #      NS="5 20" nohup bash scripts/submit_dicke_rate.sh > logs/submit_dicke_5_20.log 2>&1 &
+#      FAMILY=dicke_dec_k025 NS="10 100" nohup bash scripts/submit_dicke_rate.sh \
+#          > logs/submit_dicke_dec_k025.log 2>&1 &
 #  every knob of submit_rate_seeded.sh passes through (defaults here:
 #  N_TASKS=65, N_RREF=3).  Re-running picks up where it stopped (finished
 #  points / rounds are skipped).
@@ -51,6 +58,7 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."               # repo root
 mkdir -p logs
+FAMILY="${FAMILY:-dicke}"
 NS="${NS:-10 100 1000}"
 PY="${PY:-.venv/bin/python}"
 export N_TASKS="${N_TASKS:-65}"
@@ -63,36 +71,39 @@ for N in $NS; do
     "$PY" -c "
 import sys; sys.path.insert(0, '.')
 from trotter_lindbladian_scan import MODELS
-assert 'dicke_N$N' in MODELS, 'dicke_N$N is not registered (MODEL_DICKE_N)'" \
-        || { echo "ERROR: dicke_N${N} is not in trotter_lindbladian_scan.MODELS"; exit 1; }
+assert '${FAMILY}_N$N' in MODELS, '${FAMILY}_N$N is not registered (MODEL_DICKE_PARAMS)'" \
+        || { echo "ERROR: ${FAMILY}_N${N} is not in trotter_lindbladian_scan.MODELS"; exit 1; }
 done
 COMPARE_NS="${COMPARE_NS:-$("$PY" -c "
 import sys; sys.path.insert(0, '.')
-from trotter_lindbladian_scan import MODEL_DICKE_N
-print(' '.join(str(n) for n in sorted(MODEL_DICKE_N.values())))")}"
+from trotter_lindbladian_scan import MODEL_DICKE_PARAMS
+print(' '.join(str(n) for n in sorted(p['N'] for p in MODEL_DICKE_PARAMS.values()
+                                      if p['family'] == '$FAMILY')))")}"
 
-# ---- queue: same N refused, other N reserved ---------------------------------
-# job names are rs_dicke_N<N>_<stage>; the trailing _ keeps N10 apart from N100
+# ---- queue: same model refused, other Dicke models reserved ------------------
+# job names are rs_<family>_N<N>_<stage>; the trailing _ keeps N10 apart from
+# N100 and dicke_N10 apart from dicke_dec_N10
+DICKE_JOB='^rs_(dicke[a-z0-9_]*_N[0-9]+)_'
 queued_names=$(squeue -u "$USER" -h -r -o '%j' 2>/dev/null || true)
 for N in $NS; do
-    if grep -Eq "^rs_dicke_N${N}_" <<< "$queued_names"; then
-        echo "ERROR: rs_dicke_N${N}_* jobs are still queued or running:"
-        squeue -u "$USER" -o '%i %j %T' | grep -E "rs_dicke_N${N}_" || true
+    if grep -Eq "^rs_${FAMILY}_N${N}_" <<< "$queued_names"; then
+        echo "ERROR: rs_${FAMILY}_N${N}_* jobs are still queued or running:"
+        squeue -u "$USER" -o '%i %j %T' | grep -E "rs_${FAMILY}_N${N}_" || true
         echo "       stop that run first (kill its driver process, then scancel)"
         exit 1
     fi
 done
-other_ns=$(sed -n 's/^rs_dicke_N\([0-9][0-9]*\)_.*/\1/p' <<< "$queued_names" | sort -un \
-           | paste -sd' ' - || true)
-n_other=$(echo $other_ns | wc -w)
-n_foreign=$(grep -cvE '^(rs_dicke_N[0-9]+_|$)' <<< "$queued_names" || true)
+others=$(sed -nE "s/${DICKE_JOB}.*/\1/p" <<< "$queued_names" | sort -u \
+         | paste -sd' ' - || true)
+n_other=$(echo $others | wc -w)
+n_foreign=$(grep -cvE "(${DICKE_JOB}|^\$)" <<< "$queued_names" || true)
 n_models=$(echo $NS | wc -w)
 need=$(( n_models * (N_TASKS + 1) ))
 busy=$(( n_other * RESERVE_PER_RUN + n_foreign ))
-echo "===== queue: other dicke runs N = ${other_ns:-none} (up to ${RESERVE_PER_RUN} each), ${n_foreign} other queued task(s); this run adds up to ${need} ====="
+echo "===== ${FAMILY}: queue: other Dicke runs ${others:-none} (up to ${RESERVE_PER_RUN} each), ${n_foreign} other queued task(s); this run adds up to ${need} ====="
 if [ "$n_foreign" -gt 0 ]; then
     echo "      other queued tasks by job name:"
-    grep -vE '^(rs_dicke_N[0-9]+_|$)' <<< "$queued_names" | sort | uniq -c | sort -rn | head -5 \
+    grep -vE "(${DICKE_JOB}|^\$)" <<< "$queued_names" | sort | uniq -c | sort -rn | head -5 \
         | sed 's/^/      /' || true
 fi
 # this run alone must keep its arrays side by side under LIMIT
@@ -115,7 +126,7 @@ fi
 # ---- the drivers side by side ------------------------------------------------
 pids=()
 for N in $NS; do
-    MODEL="dicke_N${N}"
+    MODEL="${FAMILY}_N${N}"
     echo "===== ${MODEL}: start $(date); log logs/submit_${MODEL}.log ====="
     MODEL="$MODEL" bash scripts/submit_rate_seeded.sh \
         > "logs/submit_${MODEL}.log" 2>&1 &
@@ -125,15 +136,15 @@ rc=0
 for p in "${pids[@]}"; do
     wait "$p" || rc=1
 done
-[ "$rc" = "0" ] || echo "warning: at least one driver failed; see logs/submit_dicke_N*.log"
+[ "$rc" = "0" ] || echo "warning: at least one driver failed; see logs/submit_${FAMILY}_N*.log"
 
-# ---- cross-N figure (after every queued per-N figure job) --------------------
+# ---- cross-N figure (after every queued per-N figure job of the family) ------
 # the per-N plot jobs write the panel npz files the comparison reads
 deps=$(squeue -u "$USER" -h -o '%i %j' 2>/dev/null \
-       | awk '$2 ~ /^rs_dicke_N[0-9]+_plot$/ {print $1}' | paste -sd: - || true)
+       | awk -v re="^rs_${FAMILY}_N[0-9]+_plot\$" '$2 ~ re {print $1}' | paste -sd: - || true)
 pid=$(sbatch --parsable --cpus-per-task=1 --mem=4G --time=00:30:00 \
-          --job-name=dicke_n_compare ${deps:+--dependency=afterany:$deps} \
-          --output=logs/dicke_n_compare_%j.out --error=logs/dicke_n_compare_%j.err \
-          --wrap="${PY} scripts/dicke_n_compare_plot.py --ns ${COMPARE_NS}")
-echo "===== cross-N figure job ${pid%%;*} (N = ${COMPARE_NS}) submitted (after: ${deps:-none}) $(date) ====="
+          --job-name="${FAMILY}_n_compare" ${deps:+--dependency=afterany:$deps} \
+          --output="logs/${FAMILY}_n_compare_%j.out" --error="logs/${FAMILY}_n_compare_%j.err" \
+          --wrap="${PY} scripts/dicke_n_compare_plot.py --family ${FAMILY} --ns ${COMPARE_NS}")
+echo "===== cross-N figure job ${pid%%;*} (${FAMILY}, N = ${COMPARE_NS}) submitted (after: ${deps:-none}) $(date) ====="
 exit "$rc"
