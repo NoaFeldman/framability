@@ -21,12 +21,12 @@
 #
 #  The drivers of NS run SIDE BY SIDE with N_TASKS = 65 array tasks each.
 #  Runs of OTHER N may still be going (e.g. N = 1000 while N = 5, 20 start):
-#  only an N of NS that still has rs_dicke_N<N>_* jobs queued is refused, and
-#  the 200-task budget reserves RESERVE_PER_RUN (66 = 65 array tasks + the
-#  plot job) for every other dicke N seen in squeue, plus the user's queued
-#  tasks that are not dicke jobs:
-#      n(NS) x (N_TASKS + 1) + 66 x n(other dicke N) + other tasks <= 200
-#  (each driver keeps at most one array stage queued, `sbatch --wait`).
+#  only an N of NS that still has rs_dicke_N<N>_* jobs queued is refused.
+#  This run alone must fit, n(NS) x (N_TASKS + 1) <= 200 (each driver keeps
+#  at most one array stage queued, `sbatch --wait`); if, together with the
+#  other queued work (RESERVE_PER_RUN = 66 per other dicke N + every non-dicke
+#  task in squeue), more than 200 tasks would be queued, the script only notes
+#  it (the new tasks pend) -- STRICT_BUDGET=1 refuses instead.
 #  When the drivers of NS have finished, scripts/dicke_n_compare_plot.py draws
 #      rows: every N in COMPARE_NS with a panel file / (N_min) - (N_max)
 #      cols: Pauli | opt d_ext = 4 | 8 | 12
@@ -88,13 +88,28 @@ n_other=$(echo $other_ns | wc -w)
 n_foreign=$(grep -cvE '^(rs_dicke_N[0-9]+_|$)' <<< "$queued_names" || true)
 n_models=$(echo $NS | wc -w)
 need=$(( n_models * (N_TASKS + 1) ))
-budget=$(( LIMIT - n_other * RESERVE_PER_RUN - n_foreign ))
-echo "===== queue: other dicke runs N = ${other_ns:-none} (reserve ${RESERVE_PER_RUN} each), ${n_foreign} other queued task(s); this run needs ${need} of ${budget} ====="
-if [ "$need" -gt "$budget" ]; then
-    max_tasks=$(( budget / n_models - 1 ))
-    echo "ERROR: ${n_models} models x (N_TASKS=${N_TASKS} + 1) = ${need} > ${budget} free of ${LIMIT}"
-    [ "$max_tasks" -ge 1 ] && echo "       set N_TASKS=${max_tasks} (or fewer N in NS)"
+busy=$(( n_other * RESERVE_PER_RUN + n_foreign ))
+echo "===== queue: other dicke runs N = ${other_ns:-none} (up to ${RESERVE_PER_RUN} each), ${n_foreign} other queued task(s); this run adds up to ${need} ====="
+if [ "$n_foreign" -gt 0 ]; then
+    echo "      other queued tasks by job name:"
+    grep -vE '^(rs_dicke_N[0-9]+_|$)' <<< "$queued_names" | sort | uniq -c | sort -rn | head -5 \
+        | sed 's/^/      /' || true
+fi
+# this run alone must keep its arrays side by side under LIMIT
+if [ "$need" -gt "$LIMIT" ]; then
+    echo "ERROR: ${n_models} models x (N_TASKS=${N_TASKS} + 1) = ${need} > ${LIMIT}"
+    echo "       set N_TASKS=$(( LIMIT / n_models - 1 )) (or fewer N in NS)"
     exit 1
+fi
+# with the other queued work: the cluster lets more than LIMIT tasks sit in the
+# queue (2026-11-12: 305 + the N=1000 run queued at once), so only a note --
+# the new tasks pend until slots free up.  STRICT_BUDGET=1 refuses instead.
+if [ $(( need + busy )) -gt "$LIMIT" ]; then
+    echo "note: ${need} + ${busy} queued > ${LIMIT}: the new tasks will wait for free slots"
+    if [ "${STRICT_BUDGET:-0}" = "1" ]; then
+        echo "ERROR: STRICT_BUDGET=1 and only $(( LIMIT - busy )) of ${LIMIT} free"
+        exit 1
+    fi
 fi
 
 # ---- the drivers side by side ------------------------------------------------
