@@ -12,6 +12,9 @@
 #                     grid lam/lam_c [0, 2] / 0.1 x gamma_phi [0, 1] / 0.1 (231 pts)
 #     dicke_dec       + gamma_down sum D[s^-], gamma_phi = 0;  kappa = 1
 #     dicke_dec_k025  the same, good cavity kappa = 0.25
+#     dicke_dec_deph / dicke_dec_k025_deph
+#                     the two above + on-site dephasing tied to the decay,
+#                     4 gamma_phi = 0.5 gamma_down (T2 = 4/3 T1)
 #                     grid lam/lam_c [0, 2] / 0.1 x gamma_down [0, 0.3] / 0.02 (336 pts)
 #  omega = 1, omega0 = 0.1 throughout (see _make_model_dicke_dec for why decay).
 #
@@ -26,9 +29,8 @@
 #  The drivers of NS run SIDE BY SIDE with N_TASKS = 65 array tasks each.
 #  Runs of OTHER models (other N, other family) may still be going: only a
 #  model of this run that still has rs_<FAMILY>_N<N>_* jobs queued is refused.
-#  This run alone must fit, n(NS) x (N_TASKS + 1) <= 200 (each driver keeps
-#  at most one array stage queued, `sbatch --wait`); if, together with the
-#  other queued work (RESERVE_PER_RUN = 66 per other running Dicke model +
+#  N_TASKS and NS are used as given (each driver keeps at most one array
+#  stage queued, `sbatch --wait`); if, together with the other queued work (RESERVE_PER_RUN = 66 per other running Dicke model +
 #  every non-Dicke task in squeue), more than 200 tasks would be queued, the
 #  script only notes it (the new tasks pend) -- STRICT_BUDGET=1 refuses instead.
 #  When the drivers of NS have finished, scripts/dicke_n_compare_plot.py draws
@@ -50,6 +52,8 @@
 #      NS="5 20" nohup bash scripts/submit_dicke_rate.sh > logs/submit_dicke_5_20.log 2>&1 &
 #      FAMILY=dicke_dec_k025 NS="10 100" nohup bash scripts/submit_dicke_rate.sh \
 #          > logs/submit_dicke_dec_k025.log 2>&1 &
+#      FAMILY=dicke_dec_k025_deph NS="10 100" nohup bash scripts/submit_dicke_rate.sh \
+#          > logs/submit_dicke_dec_k025_deph.log 2>&1 &
 #  every knob of submit_rate_seeded.sh passes through (defaults here:
 #  N_TASKS=65, N_RREF=3).  Re-running picks up where it stopped (finished
 #  points / rounds are skipped).
@@ -106,12 +110,8 @@ if [ "$n_foreign" -gt 0 ]; then
     grep -vE "(${DICKE_JOB}|^\$)" <<< "$queued_names" | sort | uniq -c | sort -rn | head -5 \
         | sed 's/^/      /' || true
 fi
-# this run alone must keep its arrays side by side under LIMIT
-if [ "$need" -gt "$LIMIT" ]; then
-    echo "ERROR: ${n_models} models x (N_TASKS=${N_TASKS} + 1) = ${need} > ${LIMIT}"
-    echo "       set N_TASKS=$(( LIMIT / n_models - 1 )) (or fewer N in NS)"
-    exit 1
-fi
+# (no refusal on the size of this run itself: removed 2026-11-13 at the
+#  user's request -- N_TASKS and NS are used as given)
 # with the other queued work: the cluster lets more than LIMIT tasks sit in the
 # queue (2026-11-12: 305 + the N=1000 run queued at once), so only a note --
 # the new tasks pend until slots free up.  STRICT_BUDGET=1 refuses instead.
