@@ -26,13 +26,13 @@
 #  collective pair jump, -(N-2)/N on the non-CP single-site counterterm, 1/N
 #  on the Lamb shift.
 #
-#  The drivers of NS run SIDE BY SIDE with N_TASKS = 65 array tasks each.
-#  Runs of OTHER models (other N, other family) may still be going: only a
-#  model of this run that still has rs_<FAMILY>_N<N>_* jobs queued is refused.
-#  N_TASKS and NS are used as given (each driver keeps at most one array
-#  stage queued, `sbatch --wait`); if, together with the other queued work (RESERVE_PER_RUN = 66 per other running Dicke model +
-#  every non-Dicke task in squeue), more than 200 tasks would be queued, the
-#  script only notes it (the new tasks pend) -- STRICT_BUDGET=1 refuses instead.
+#  The drivers of NS run SIDE BY SIDE with N_TASKS = 65 array tasks each
+#  (each driver keeps at most one array stage queued, `sbatch --wait`).  NS
+#  and N_TASKS are used as given: no job-count or queue-budget checks, Slurm
+#  schedules whatever is queued.  Runs of OTHER models (other N, other family)
+#  may still be going; only a model of this run that still has
+#  rs_<FAMILY>_N<N>_* jobs queued is refused (two drivers would write the same
+#  files).
 #  When the drivers of NS have finished, scripts/dicke_n_compare_plot.py draws
 #      rows: every N in COMPARE_NS with a panel file / (N_min) - (N_max)
 #      cols: Pauli | opt d_ext = 4 | 8 | 12
@@ -67,8 +67,6 @@ NS="${NS:-10 100 1000}"
 PY="${PY:-.venv/bin/python}"
 export N_TASKS="${N_TASKS:-65}"
 export N_RREF="${N_RREF:-3}"
-RESERVE_PER_RUN="${RESERVE_PER_RUN:-66}"
-LIMIT=200
 
 # ---- registered? -------------------------------------------------------------
 for N in $NS; do
@@ -84,11 +82,12 @@ from trotter_lindbladian_scan import MODEL_DICKE_PARAMS
 print(' '.join(str(n) for n in sorted(p['N'] for p in MODEL_DICKE_PARAMS.values()
                                       if p['family'] == '$FAMILY')))")}"
 
-# ---- queue: same model refused, other Dicke models reserved ------------------
+# ---- the same model must not run twice (two drivers on one OUT_DIR) ----------
+# No job-count / queue-budget checks (removed 2026-11-13 at the user's request:
+# NS and N_TASKS are used as given, Slurm schedules what is queued).
 # job names are rs_<family>_N<N>_<stage>; the trailing _ keeps N10 apart from
 # N100 and dicke_N10 apart from dicke_dec_N10
-DICKE_JOB='^rs_(dicke[a-z0-9_]*_N[0-9]+)_'
-queued_names=$(squeue -u "$USER" -h -r -o '%j' 2>/dev/null || true)
+queued_names=$(squeue -u "$USER" -h -o '%j' 2>/dev/null || true)
 for N in $NS; do
     if grep -Eq "^rs_${FAMILY}_N${N}_" <<< "$queued_names"; then
         echo "ERROR: rs_${FAMILY}_N${N}_* jobs are still queued or running:"
@@ -97,31 +96,7 @@ for N in $NS; do
         exit 1
     fi
 done
-others=$(sed -nE "s/${DICKE_JOB}.*/\1/p" <<< "$queued_names" | sort -u \
-         | paste -sd' ' - || true)
-n_other=$(echo $others | wc -w)
-n_foreign=$(grep -cvE "(${DICKE_JOB}|^\$)" <<< "$queued_names" || true)
-n_models=$(echo $NS | wc -w)
-need=$(( n_models * (N_TASKS + 1) ))
-busy=$(( n_other * RESERVE_PER_RUN + n_foreign ))
-echo "===== ${FAMILY}: queue: other Dicke runs ${others:-none} (up to ${RESERVE_PER_RUN} each), ${n_foreign} other queued task(s); this run adds up to ${need} ====="
-if [ "$n_foreign" -gt 0 ]; then
-    echo "      other queued tasks by job name:"
-    grep -vE "(${DICKE_JOB}|^\$)" <<< "$queued_names" | sort | uniq -c | sort -rn | head -5 \
-        | sed 's/^/      /' || true
-fi
-# (no refusal on the size of this run itself: removed 2026-11-13 at the
-#  user's request -- N_TASKS and NS are used as given)
-# with the other queued work: the cluster lets more than LIMIT tasks sit in the
-# queue (2026-11-12: 305 + the N=1000 run queued at once), so only a note --
-# the new tasks pend until slots free up.  STRICT_BUDGET=1 refuses instead.
-if [ $(( need + busy )) -gt "$LIMIT" ]; then
-    echo "note: ${need} + ${busy} queued > ${LIMIT}: the new tasks will wait for free slots"
-    if [ "${STRICT_BUDGET:-0}" = "1" ]; then
-        echo "ERROR: STRICT_BUDGET=1 and only $(( LIMIT - busy )) of ${LIMIT} free"
-        exit 1
-    fi
-fi
+echo "===== ${FAMILY}: N = ${NS}, N_TASKS = ${N_TASKS} each ====="
 
 # ---- the drivers side by side ------------------------------------------------
 pids=()
