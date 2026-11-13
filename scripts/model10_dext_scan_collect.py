@@ -17,7 +17,11 @@ original scan's stored rate_heis_4 / 6 / 8 files.  Padding a frame never
 raises its rate, so the value at d_ext m is the minimum over every value at
 d_ext m' <= m (scan and pipelines); entries lowered that way are reported.
 
-Writes <out_dir>/model10_dext_scan/summary.npz:
+Any model (2026-11-13): --model <name> --p1 ... --p2 ... as for the worker
+(e.g. scripts/submit_dicke_dext_scan.sh); the summary then also carries
+p1 / p2 (P,) and p1_name / p2_name, and deltas = p1.
+
+Writes <out_dir>/<model>_dext_scan/summary.npz:
   deltas (P,), d_ext (M,), rate (P, M) [nested], rate_scan, rate_pipe,
   source (P, M) 'scan' | 'pipeline' | 'padded d<k>' | '',
   scanned, converged (P, M) bool, hits, cold_hits, n_search, n_cold,
@@ -44,15 +48,16 @@ from trotter_lindbladian_scan import MODELS                               # noqa
 from model10_seeded_worker import MODEL, grid_vals, STORED_DIRS_DEFAULT   # noqa: E402
 from model10_seeded_qrefine_worker import best_known                      # noqa: E402
 from model10_d12_worker import d12_dir, d8_dir                            # noqa: E402
-from model10_dext_scan_worker import (SCAN_DIR, PIPE_D_EXTS,              # noqa: E402
-                                      STORED_D_EXTS, combo_dir, diag_points)
+from model10_dext_scan_worker import (PIPE_D_EXTS, STORED_D_EXTS,          # noqa: E402
+                                      combo_dir, scan_dir_name, target_points,
+                                      point_labels)
 from rate_gopt_worker import stored_frames                                # noqa: E402
 
 
-def load_combo(out_dir: str, m: int, ix: int, iy: int) -> dict:
+def load_combo(out_dir: str, m: int, ix: int, iy: int, model: str = MODEL) -> dict:
     """Every result file of one (point, d_ext): search values / kinds,
     hop values per round, best frame."""
-    d = combo_dir(out_dir, m, ix, iy)
+    d = combo_dir(out_dir, m, ix, iy, model)
     search, cold, hops = [], [], {}
     best = (np.inf, None, '')
     for f in sorted(d.glob('search_r[0-9][0-9][0-9].npz')) + \
@@ -98,6 +103,9 @@ def pipeline_values(args, ix: int, iy: int) -> dict:
 def main() -> None:
     p = argparse.ArgumentParser()
     p.add_argument('--deltas', type=float, nargs='+', default=[0.5, 0.6, 0.7])
+    p.add_argument('--p1', type=float, nargs='+', default=None,
+                   help='points p1 x p2 (as for the worker); default: --deltas diagonal')
+    p.add_argument('--p2', type=float, nargs='+', default=None)
     p.add_argument('--d_exts', type=int, nargs='+', default=[6, 10],
                    help='the scanned d_ext (as passed to the worker)')
     p.add_argument('--model', type=str, default=MODEL, choices=sorted(MODELS))
@@ -112,9 +120,19 @@ def main() -> None:
                         'reproduction; seeded restarts share their seed pool)')
     args = p.parse_args()
 
-    pts = diag_points(args.deltas, args.model)
+    pts = target_points(args)
+    labs = point_labels(args)                     # [(p1, p2)]
+    spec = MODELS[args.model]
+    generic = bool(args.p1)
+    if generic:
+        plab = [f'{a:g},{b:g}' for a, b in labs]
+        head = f'{spec.p1_name},{spec.p2_name}'
+    else:
+        plab = [f'{d:.2f}' for d in args.deltas]
+        head = 'Delta'
+    wl = max([len(head)] + [len(s) for s in plab])
     scan_m = sorted(set(args.d_exts))
-    combos = {(ip, m): load_combo(args.out_dir, m, ix, iy)
+    combos = {(ip, m): load_combo(args.out_dir, m, ix, iy, args.model)
               for ip, (ix, iy) in enumerate(pts) for m in scan_m}
     pipe = [pipeline_values(args, ix, iy) for ix, iy in pts]
     d_ext = sorted(set(scan_m) | {k for pv in pipe for k in pv})
@@ -185,7 +203,7 @@ def main() -> None:
           f'>= {args.min_hits} hits' + (f', >= {args.min_cold_hits} cold'
                                          if args.min_cold_hits else '')
           + ', last hop round gain <= tol')
-    print(f'{"Delta":>6s} {"d_ext":>5s} {"rate":>12s} {"source":>10s} '
+    print(f'{head:>{wl}s} {"d_ext":>5s} {"rate":>12s} {"source":>10s} '
           f'{"scan":>12s} {"pipeline":>12s} {"hits":>7s} {"cold":>6s} '
           f'{"rounds":>6s} {"last gain":>10s}  status')
     for ip, (ix, iy) in enumerate(pts):
@@ -197,26 +215,30 @@ def main() -> None:
                 lg = f'{last_gain[ip, im]:10.2e}' if n_rounds[ip, im] else f'{"-":>10s}'
             else:
                 st, hs, cs, lg = 'pipeline only', '-', '-', f'{"-":>10s}'
-            print(f'{args.deltas[ip]:6.2f} {m:5d} {rate[ip, im]:12.8f} '
+            print(f'{plab[ip]:>{wl}s} {m:5d} {rate[ip, im]:12.8f} '
                   f'{str(source[ip, im]):>10s} {rate_scan[ip, im]:12.8f} '
                   f'{rate_pipe[ip, im]:12.8f} {hs:>7s} {cs:>6s} '
                   f'{n_rounds[ip, im]:6d} {lg}  {st}')
     n_bad = int((scanned & ~converged).sum())
     if n_bad:
-        print(f'  {n_bad} scanned (Delta, d_ext) not converged: run more hop rounds '
-              '(SKIP_SEARCH=1 bash scripts/submit_model10_dext_scan.sh) or more '
-              'search replicas')
+        print(f'  {n_bad} scanned (point, d_ext) not converged: run more hop rounds '
+              '(SKIP_SEARCH=1 with the submit script) or more search replicas')
     for ip in range(P):
         for im, m in enumerate(d_ext):
             if str(source[ip, im]).startswith('padded'):
-                print(f'  Delta={args.deltas[ip]:.2f} d_ext={m}: value from '
+                print(f'  {head}={plab[ip]} d_ext={m}: value from '
                       f'{source[ip, im]} ({rate[ip, im]:.8f}) below its own best '
                       f'({np.fmin(rate_scan[ip, im], rate_pipe[ip, im]):.8f})')
 
-    out = Path(args.out_dir) / SCAN_DIR / 'summary.npz'
+    out = Path(args.out_dir) / scan_dir_name(args.model) / 'summary.npz'
     out.parent.mkdir(parents=True, exist_ok=True)
     tmp = out.with_suffix('.tmp.npz')
-    np.savez(tmp, model=args.model, deltas=np.array(args.deltas, float),
+    deltas = [a for a, _ in labs] if generic else args.deltas
+    np.savez(tmp, model=args.model, deltas=np.array(deltas, float),
+             p1=np.array([a for a, _ in labs], float),
+             p2=np.array([b for _, b in labs], float),
+             p1_name=spec.p1_name, p2_name=spec.p2_name,
+             p1_label=spec.p1_label, p2_label=spec.p2_label, dim=spec.dim,
              ix=np.array([ix for ix, _ in pts]), iy=np.array([iy for _, iy in pts]),
              d_ext=np.array(d_ext), scan_d_ext=np.array(scan_m), rate=rate,
              rate_scan=rate_scan, rate_pipe=rate_pipe, source=source.astype(str),

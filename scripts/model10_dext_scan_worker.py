@@ -50,10 +50,20 @@ an array of --n_tasks works on combo t % n_combos as replica t // n_combos
   the round by more than --improve_tol prints IMPROVED (the driver counts
   them).
 
+Any model of trotter_lindbladian_scan.MODELS (added 2026-11-13, model10
+defaults unchanged): --model <name> --p1 <values> --p2 <values> scans the
+grid points p1 x p2 (grid values; e.g. the open Dicke model at gamma_phi = 0:
+--model dicke_N10 --p1 0.1 0.5 1.0 1.5 --p2 0, scripts/submit_dicke_dext_scan.sh);
+without --p1 the points are model10's diagonal --deltas.  The pipeline
+frames are read from <out_dir>/<model>_seeded(_d12), so --out_dir is the
+model's seeded-pipeline folder.  --fam_seconds caps the structured-family
+stage (large d_ext: ~2 s per LP at d_ext 16).
+
 Every task writes exactly one file, via a temp file + os.replace, with
 names unique per stage / round / combo / replica:
-  <out_dir>/model10_dext_scan/m<MM>/pt_<ix>_<iy>/search_r<RRR>.npz
-  <out_dir>/model10_dext_scan/m<MM>/pt_<ix>_<iy>/hop<NN>_r<RRR>.npz
+  <out_dir>/<model>_dext_scan/m<MM>/pt_<ix>_<iy>/search_r<RRR>.npz
+  <out_dir>/<model>_dext_scan/m<MM>/pt_<ix>_<iy>/hop<NN>_r<RRR>.npz
+(<model>_dext_scan = model10_dext_scan for model10, as before.)
 keys: rate (certified), S, label, kind (seeded / cold / hop), rate_start,
 rate_global (search), rate_prev / improved (hop), famval_<family> (search),
 t.  Nothing is written into the pipeline directories.
@@ -105,13 +115,15 @@ from model10_rrefine_worker import perturb                                # noqa
 from rate_gopt_worker import stored_frames                                # noqa: E402
 
 SCAN_VERSION = '1.0-dext-scan'
-SCAN_DIR = 'model10_dext_scan'
+SCAN_DIR = 'model10_dext_scan'    # = scan_dir_name('model10')
 TOL = 1e-9
 PIPE_D_EXTS = (4, 8, 12)          # seeded pipeline: model10_seeded (4, 8), _d12 (12)
 STORED_D_EXTS = (4, 6, 8)         # S_heis_<k> of the original scan / refine / gopt
 # differential evolution (popsize multiplier, generations) per d_ext: LP cost
-# grows ~ m^4, so the budget shrinks with m (d_ext 10: ~1 h at ~0.5 s per LP)
-DE_BUDGET = {4: (24, 300), 6: (12, 150), 8: (8, 60), 10: (6, 30), 12: (4, 15)}
+# grows ~ m^4, so the budget shrinks with m (d_ext 10: ~1 h at ~0.5 s per LP;
+# 14 / 16 added 2026-11-13: ~1 / ~2 s per LP, ~40 min each)
+DE_BUDGET = {4: (24, 300), 6: (12, 150), 8: (8, 60), 10: (6, 30), 12: (4, 15),
+             14: (3, 10), 16: (3, 8)}
 FAMILY_GROUPS = ('base', 'split', 'probe')
 PROBE_KINDS = ('yzw', 'lat', 'yz+lat', 'lat+lat', 'zp+yz+xy', 'yz+xy')
 STAGE_CODE = {'search': 0, 'hop': 1}
@@ -120,16 +132,52 @@ STAGE_CODE = {'search': 0, 'hop': 1}
 # ---------------------------------------------------------------------------
 #  Layout
 # ---------------------------------------------------------------------------
-def combo_dir(out_dir: str, m: int, ix: int, iy: int) -> Path:
-    return Path(out_dir) / SCAN_DIR / f'm{m:02d}' / f'pt_{ix:03d}_{iy:03d}'
+def scan_dir_name(model: str = MODEL) -> str:
+    return f'{model}_dext_scan'
 
 
-def search_file(out_dir: str, m: int, ix: int, iy: int, r: int) -> Path:
-    return combo_dir(out_dir, m, ix, iy) / f'search_r{r:03d}.npz'
+def combo_dir(out_dir: str, m: int, ix: int, iy: int, model: str = MODEL) -> Path:
+    return Path(out_dir) / scan_dir_name(model) / f'm{m:02d}' / f'pt_{ix:03d}_{iy:03d}'
 
 
-def hop_file(out_dir: str, m: int, ix: int, iy: int, rnd: int, r: int) -> Path:
-    return combo_dir(out_dir, m, ix, iy) / f'hop{rnd:02d}_r{r:03d}.npz'
+def search_file(out_dir: str, m: int, ix: int, iy: int, r: int,
+                model: str = MODEL) -> Path:
+    return combo_dir(out_dir, m, ix, iy, model) / f'search_r{r:03d}.npz'
+
+
+def hop_file(out_dir: str, m: int, ix: int, iy: int, rnd: int, r: int,
+             model: str = MODEL) -> Path:
+    return combo_dir(out_dir, m, ix, iy, model) / f'hop{rnd:02d}_r{r:03d}.npz'
+
+
+def _grid_index(vals: np.ndarray, v: float, name: str) -> int:
+    i = int(np.argmin(np.abs(vals - v)))
+    if abs(vals[i] - v) > 1e-9:
+        raise SystemExit(f'{name} = {v:g} is not a grid point')
+    return i
+
+
+def grid_points(p1s, p2s, model: str = MODEL) -> list:
+    """[(ix, iy)] of the grid points p1 x p2 (p1-major)."""
+    spec = MODELS[model]
+    p1, p2 = grid_vals(1, model)
+    return [(_grid_index(p1, a, spec.p1_name), _grid_index(p2, b, spec.p2_name))
+            for a in p1s for b in p2s]
+
+
+def target_points(args) -> list:
+    """The scanned points: p1 x p2 when --p1 is given, else model10's
+    diagonal --deltas."""
+    if getattr(args, 'p1', None):
+        p2s = args.p2 if args.p2 else [float(MODELS[args.model].p2_vals[0])]
+        return grid_points(args.p1, p2s, args.model)
+    return diag_points(args.deltas, args.model)
+
+
+def point_labels(args) -> list:
+    """[(p1, p2)] values of target_points, in the same order."""
+    p1, p2 = grid_vals(1, args.model)
+    return [(float(p1[ix]), float(p2[iy])) for ix, iy in target_points(args)]
 
 
 def diag_points(deltas, model: str = MODEL) -> list:
@@ -144,10 +192,9 @@ def diag_points(deltas, model: str = MODEL) -> list:
     return out
 
 
-def combos(deltas, d_exts, model: str = MODEL) -> list:
-    """[(ix, iy, m)], point-major."""
-    return [(ix, iy, m) for ix, iy in diag_points(deltas, model)
-            for m in sorted(set(d_exts))]
+def combos(points, d_exts) -> list:
+    """[(ix, iy, m)] of the points [(ix, iy)] (target_points), point-major."""
+    return [(ix, iy, m) for ix, iy in points for m in sorted(set(d_exts))]
 
 
 def task_combo(task_id: int, n_tasks: int, cmb: list):
@@ -361,7 +408,11 @@ def compute_search(ix: int, iy: int, m: int, r: int, args) -> dict:
     # ---- 3. structured families ---------------------------------------------
     yz_starts = yz_part_starts(args.model, d1, d2, A, famp8, famp12)
     fam_vals = []
+    t_fam, n_fam_skipped = time.perf_counter(), 0
     for fam in scan_families(m, args.families):
+        if args.fam_seconds > 0 and time.perf_counter() - t_fam > args.fam_seconds:
+            n_fam_skipped += 1                    # time cap (large d_ext)
+            continue
         starts = fam_starts(fam, args, d1, d2, Sw, {**famp8, **famp12},
                             yz_starts, famp12)
         v, S, p, _ = optimize_family(
@@ -372,6 +423,7 @@ def compute_search(ix: int, iy: int, m: int, r: int, args) -> dict:
         fam_vals.append(float(v))
         cands.append((f'family {fam.name}', S))
     out['rate_fam'] = min(fam_vals) if fam_vals else np.nan
+    out['n_fam_skipped'] = n_fam_skipped
     out['t_seeds'] = time.perf_counter() - t0
 
     # ---- 4. seeded global search -----------------------------------------
@@ -416,10 +468,11 @@ def compute_search(ix: int, iy: int, m: int, r: int, args) -> dict:
 # ---------------------------------------------------------------------------
 #  Stage: hop (cross-restart basin hopping, one round)
 # ---------------------------------------------------------------------------
-def frames_on_disk(out_dir: str, m: int, ix: int, iy: int, before_round: int) -> list:
+def frames_on_disk(out_dir: str, m: int, ix: int, iy: int, before_round: int,
+                   model: str = MODEL) -> list:
     """[(value, frame, label, source)] of the combo's search files and hop
     rounds < before_round, ascending in the stored certified value."""
-    d = combo_dir(out_dir, m, ix, iy)
+    d = combo_dir(out_dir, m, ix, iy, model)
     files = sorted(d.glob('search_r[0-9][0-9][0-9].npz'))
     files += [f for f in sorted(d.glob('hop[0-9][0-9]_r[0-9][0-9][0-9].npz'))
               if int(f.name[3:5]) < before_round]
@@ -439,16 +492,18 @@ def frames_on_disk(out_dir: str, m: int, ix: int, iy: int, before_round: int) ->
 def compute_hop(ix: int, iy: int, m: int, k: int, rnd: int, args) -> dict:
     spec, d1, d2, A = _point(args, ix, iy)
     t0 = time.perf_counter()
-    own = frames_on_disk(args.out_dir, m, ix, iy, rnd)
+    own = frames_on_disk(args.out_dir, m, ix, iy, rnd, args.model)
     v_prev = own[0][0] if own else np.inf
     pool = [(f'{src}: {lab}', S) for _, S, lab, src in own]
-    for jx, jy in diag_points(args.deltas, args.model):
+    for jx, jy in target_points(args):
         if (jx, jy) != (ix, iy):
-            for _, S, lab, src in frames_on_disk(args.out_dir, m, jx, jy, rnd)[:args.xfer_top]:
+            for _, S, lab, src in frames_on_disk(args.out_dir, m, jx, jy, rnd,
+                                                 args.model)[:args.xfer_top]:
                 pool.append((f'xfer pt_{jx:03d}_{jy:03d} {src}: {lab}', S))
     for km in sorted(set(args.d_exts)):
         if km < m:
-            for _, S, lab, src in frames_on_disk(args.out_dir, km, ix, iy, rnd)[:1]:
+            for _, S, lab, src in frames_on_disk(args.out_dir, km, ix, iy, rnd,
+                                                 args.model)[:1]:
                 pool.append((f'd{km} {src}: {lab} padded', fit_columns(S, m)))
     for lab, km, S, _ in pipeline_frames(args, ix, iy, radius=0):
         if km <= m:
@@ -497,7 +552,12 @@ def main() -> None:
                    help='array size; task t -> combo t %% n_combos, replica '
                         't // n_combos')
     p.add_argument('--deltas', type=float, nargs='+', default=[0.5, 0.6, 0.7],
-                   help='diagonal points Delta_1 = Delta_2 = Delta (grid values)')
+                   help='diagonal points Delta_1 = Delta_2 = Delta (grid values; '
+                        'model10, used when --p1 is not given)')
+    p.add_argument('--p1', type=float, nargs='+', default=None,
+                   help='grid values of the first axis: the points are p1 x p2')
+    p.add_argument('--p2', type=float, nargs='+', default=None,
+                   help='grid values of the second axis (default: its first value)')
     p.add_argument('--d_exts', type=int, nargs='+', default=[6, 10])
     p.add_argument('--model', type=str, default=MODEL, choices=sorted(MODELS))
     p.add_argument('--out_dir', type=str, default='results_model10_rate')
@@ -505,7 +565,8 @@ def main() -> None:
                    default=list(STORED_DIRS_DEFAULT),
                    help='roots whose <dir>/<model> holds the original scan '
                         '(read-only; missing dirs are skipped)')
-    p.add_argument('--dim', type=int, default=None)
+    p.add_argument('--dim', type=float, default=None,
+                   help='default: the model\'s dim (0.5 for the all-to-all dimer patch)')
     p.add_argument('--seed', type=int, default=0)
     p.add_argument('--cold_every', type=int, default=3,
                    help='search: every cold_every-th replica is cold (0: none)')
@@ -517,6 +578,9 @@ def main() -> None:
     p.add_argument('--fam_polish', type=int, default=2)
     p.add_argument('--fam_maxfev', type=int, default=120)
     p.add_argument('--fam_maxfev4', type=int, default=1500)
+    p.add_argument('--fam_seconds', type=float, default=0.0,
+                   help='search: skip the remaining structured families after '
+                        'this many seconds (0: no cap)')
     p.add_argument('--no_reduce', action='store_true',
                    help='skip greedy column removal of larger pipeline frames')
     p.add_argument('--no_augment', action='store_true')
@@ -549,12 +613,12 @@ def main() -> None:
     if args.stage == 'hop' and args.round < 1:
         sys.exit('--stage hop needs --round >= 1')
 
-    cmb = combos(args.deltas, args.d_exts, args.model)
+    cmb = combos(target_points(args), args.d_exts)
     (ix, iy, m), r = task_combo(args.task_id, args.n_tasks, cmb)
     if args.stage == 'search':
-        out_f = search_file(args.out_dir, m, ix, iy, r)
+        out_f = search_file(args.out_dir, m, ix, iy, r, args.model)
     else:
-        out_f = hop_file(args.out_dir, m, ix, iy, args.round, r)
+        out_f = hop_file(args.out_dir, m, ix, iy, args.round, r, args.model)
     head = (f'[{args.model} dext scan] {args.stage}'
             f'{f" round {args.round}" if args.stage == "hop" else ""} task '
             f'{args.task_id}/{args.n_tasks}: pt ({ix},{iy}) d_ext={m} replica {r} '
