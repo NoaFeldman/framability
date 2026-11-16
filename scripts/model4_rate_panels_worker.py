@@ -58,6 +58,27 @@ more restarts.
 Output: <out_dir>/<model>/pt_<ix:03d>_<iy:03d>.npz   (one file per grid point;
 existing files are skipped, so a partial array can simply be resubmitted).
 
+Subsets / Schrodinger rerun (added 2026-11-13, defaults unchanged)
+------------------------------------------------------------------
+--measures fixed heis schro   which of the three groups to compute (default all)
+--schro_dexts 6 8             state-frame sizes (default 4 6)
+--schro_seeds circles         adds, per plane (yz, xz, xy), a (d-2)-gon on that
+                              great circle plus the two poles on its normal axis,
+                              slightly inside the Bloch sphere (radius
+                              CIRCLE_SEED_R) and jittered, so Nelder-Mead's
+                              initial simplex is not degenerate (the stored
+                              rate_schro_6 = 2.000 plateau of model4 is the
+                              untouched octahedron init).  'auto' keeps the
+                              --frame_seeds behaviour.
+--warm_dir DIR                also seed each state frame from the stored
+                              x_schro_<d> of DIR/<model>/pt_<ix>_<iy>.npz (same
+                              d only), so the rerun never ends above the old value.
+--tag schro                   write to <out_dir>/<model>_<tag>/ instead of
+                              <out_dir>/<model>/ (no collision with the original
+                              six-rate files and their skip-if-exists logic).
+Dicke models (dicke_*) are accepted; their bond dimension is 0.5, so --dim
+takes floats.
+
 Usage:
     python scripts/model4_rate_panels_worker.py --task_id 0 --n_chunks 200
     python scripts/model4_rate_panels_worker.py --task_id 7 --n_chunks 200 --stride 5
@@ -89,7 +110,17 @@ from framability_rate_state import (minimize_state_rate,                 # noqa:
 
 MODEL_NAME = 'model4'                   # default --model
 SUPPORTED_MODELS = ('model3', 'model3x', 'model4', 'model8', 'model10', 'model11',
-                    'model12', 'model13', 'model14', 'model15', 'model16')
+                    'model12', 'model13', 'model14', 'model15', 'model16') + \
+    tuple(k for k in MODELS if k.startswith('dicke'))
+MEASURES = ('fixed', 'heis', 'schro')
+CIRCLE_SEED_R = 0.96                    # Bloch radius of the great-circle seeds
+CIRCLE_SEED_JITTER = 1e-3               # Bloch-block jitter (non-degenerate simplex)
+
+
+def dim_arg(s: str):
+    """--dim parser: int when integral (model4 / model10), else float (Dicke 0.5)."""
+    v = float(s)
+    return int(v) if v.is_integer() else v
 
 # Ring frame seeds (see module docstring): model -> Pauli axis (1=X, 2=Y, 3=Z)
 # its single-site field rotates about; the ring lies in the other two axes.
@@ -139,6 +170,50 @@ def ring_state_seeds(d_ext_single: int, axis: int) -> list:
     return seeds
 
 
+def circle_state_seeds(d_ext_single: int, seed: int = 0) -> list:
+    """State-frame seeds (flat 3 x d Bloch blocks, rows X, Y, Z; Bloch block
+    = Bloch vector / 2): for every axis a in (X, Y, Z), the two poles +-a and a
+    (d-2)-gon on the great circle normal to a, at Bloch radius CIRCLE_SEED_R,
+    plus a small jitter.  d = 6 gives the (shrunk) octahedron, d = 8 the
+    hexagon + poles of the model4 analysis (xy n-gon + +-z reached 1.5 = h
+    where the octahedron is stuck at 2)."""
+    if d_ext_single < 4:
+        return []
+    rng = np.random.default_rng(10_000 + 97 * seed + d_ext_single)
+    k = d_ext_single - 2
+    th = 2 * np.pi * np.arange(k) / k
+    seeds = []
+    for axis in (1, 2, 3):
+        u, v = _ring_plane(axis)
+        B = np.zeros((4, d_ext_single))       # rows I, X, Y, Z; row I unused
+        B[axis, 0], B[axis, 1] = 0.5, -0.5
+        B[u, 2:] = 0.5 * np.cos(th)
+        B[v, 2:] = 0.5 * np.sin(th)
+        B[1:] *= CIRCLE_SEED_R
+        B[1:] += CIRCLE_SEED_JITTER * rng.standard_normal((3, d_ext_single))
+        seeds.append(B[1:].ravel())
+    return seeds
+
+
+def warm_state_seeds(warm_dir, model: str, ix: int, iy: int, d: int) -> list:
+    """The stored x_schro_<d> of an earlier run at the same point (or [])."""
+    if not warm_dir:
+        return []
+    f = Path(warm_dir) / model / f'pt_{ix:03d}_{iy:03d}.npz'
+    if not f.exists():
+        return []
+    try:
+        with np.load(f, allow_pickle=True) as z:
+            key = f'x_schro_{d}'
+            if key in z.files:
+                x = np.asarray(z[key], float).ravel()
+                if x.size == 3 * d and np.all(np.isfinite(x)):
+                    return [x]
+    except Exception as e:                    # unreadable file: just no warm start
+        print(f'  warm start {f.name}: {type(e).__name__}: {e}', flush=True)
+    return []
+
+
 def frame_seed_mode(model: str, requested: str) -> str:
     """Resolve --frame_seeds ('auto' | 'default' | 'ring') for `model`."""
     if requested == 'auto':
@@ -165,29 +240,34 @@ def grid_vals(stride: int, model: str = MODEL_NAME):
             np.asarray(m.p2_vals[::stride], float))
 
 
-def compute_rates(p1: float, p2: float, args) -> dict:
-    """All six framability rates of the model's bond generator at one point."""
+def compute_rates(p1: float, p2: float, args, ix: int = -1, iy: int = -1) -> dict:
+    """The selected framability rates of the model's bond generator at one
+    point (all six by default)."""
     model = getattr(args, 'model', MODEL_NAME)
+    measures = tuple(getattr(args, 'measures', MEASURES))
     m = MODELS[model]
     H1, H2, jumps1, jumps2 = m.build(p1, p2)
     L = build_bond_lindbladian(H1, H2, jumps1, jumps2, args.dim).real
     A = L.T                                   # Heisenberg picture generator
 
     seeds = frame_seed_mode(model, getattr(args, 'frame_seeds', 'auto'))
+    schro_seeds = getattr(args, 'schro_seeds', 'auto')
     axis = RING_AXIS.get(model)
     # {p1_name: p1, p2_name: p2} keeps model4's gamma / gamma_p keys unchanged
     out: dict = dict(p1=p1, p2=p2, **{m.p1_name: p1, m.p2_name: p2},
                      dim=args.dim, floor=spectral_abscissa(A),
-                     frame_seeds=seeds)
+                     frame_seeds=seeds, measures=np.array(measures),
+                     schro_seeds=schro_seeds)
 
     # ---- 1-2: fixed frames (no optimisation; stab3 is 1080 per-column LPs) --
-    t0 = time.perf_counter()
-    out['rate_pauli'] = pauli_rate(L)
-    out['rate_stab3'] = stabilizer_3_rate(L)
-    out['t_fixed'] = time.perf_counter() - t0
+    if 'fixed' in measures:
+        t0 = time.perf_counter()
+        out['rate_pauli'] = pauli_rate(L)
+        out['rate_stab3'] = stabilizer_3_rate(L)
+        out['t_fixed'] = time.perf_counter() - t0
 
     # ---- 3-4: optimised observable frames (alternating certificate scheme) --
-    for de in (4, 6):
+    for de in ((4, 6) if 'heis' in measures else ()):
         t0 = time.perf_counter()
         S, mu, info = minimize_rate(
             A, de, n_restarts=args.heis_restarts, maxfev=args.heis_maxfev,
@@ -202,13 +282,21 @@ def compute_rates(p1: float, p2: float, args) -> dict:
         out[f't_heis_{de}'] = time.perf_counter() - t0
 
     # ---- 5-6: optimised state frames (Nelder-Mead on the same rate LP) ------
-    for de in (4, 6):
+    schro_dexts = tuple(getattr(args, 'schro_dexts', (4, 6)))
+    for de in (schro_dexts if 'schro' in measures else ()):
         t0 = time.perf_counter()
+        extra = []
+        if schro_seeds == 'circles':
+            extra += circle_state_seeds(de, args.seed)
+        elif schro_seeds == 'ring' or (schro_seeds == 'auto' and seeds == 'ring'):
+            if axis is None:
+                raise ValueError(f'--schro_seeds ring: no RING_AXIS entry for {model}')
+            extra += ring_state_seeds(de, axis)
+        extra += warm_state_seeds(getattr(args, 'warm_dir', None), model, ix, iy, de)
         S, mu, x = minimize_state_rate(
             L, de, n_restarts=args.schro_restarts, maxfev=args.schro_maxfev,
             seed=args.seed + de, verbose=False, return_x=True,
-            extra_init_xs=(ring_state_seeds(de, axis) if seeds == 'ring'
-                           else None))
+            extra_init_xs=(extra or None))
         out[f'rate_schro_{de}'] = mu
         out[f'S_schro_{de}'] = S
         out[f'x_schro_{de}'] = x
@@ -223,10 +311,12 @@ def run_point(ix: int, iy: int, args) -> None:
     p1_vals, p2_vals = grid_vals(args.stride, model)
     p1, p2 = float(p1_vals[ix]), float(p2_vals[iy])
 
-    pt_dir = Path(args.out_dir) / model
+    tag = getattr(args, 'tag', '') or ''
+    sub = f'{model}_{tag}' if tag else model
+    pt_dir = Path(args.out_dir) / sub
     out_f = pt_dir / f'pt_{ix:03d}_{iy:03d}.npz'
     if out_f.exists():
-        print(f'[skip] {model}/{out_f.name} already exists', flush=True)
+        print(f'[skip] {sub}/{out_f.name} already exists', flush=True)
         return
 
     t0 = time.perf_counter()
@@ -234,7 +324,7 @@ def run_point(ix: int, iy: int, args) -> None:
           f'{m.p2_name}={p2:.3f}', flush=True)
 
     try:
-        res = compute_rates(p1, p2, args)
+        res = compute_rates(p1, p2, args, ix, iy)
     except Exception as e:
         print(f'  ERROR: {type(e).__name__}: {e}', flush=True)
         return
@@ -243,7 +333,8 @@ def run_point(ix: int, iy: int, args) -> None:
     np.savez(out_f, model=model, ix=ix, iy=iy, stride=args.stride,
              rate_version=RATE_VERSION, rate_frames_version=RATE_FRAMES_VERSION,
              rate_state_version=RATE_STATE_VERSION, **res)
-    vals = '  '.join(f'{k}={res[k]:+.5f}' for k, _ in RATE_KEYS)
+    vals = '  '.join(f'{k}={v:+.5f}' for k, v in res.items()
+                     if k.startswith('rate_') and np.ndim(v) == 0)
     print(f'  saved {out_f.name}  {vals}  ({time.perf_counter() - t0:.0f}s)',
           flush=True)
 
@@ -266,7 +357,23 @@ def main() -> None:
                    help='default results_<model>_rate')
     p.add_argument('--stride',   type=int, default=1,
                    help='stride on the model grid (1 = full 51x51 = 2601 pts)')
-    p.add_argument('--dim',      type=int, default=None,
+    p.add_argument('--measures', nargs='+', default=list(MEASURES),
+                   choices=MEASURES,
+                   help='fixed (Pauli + stabilizer-3), heis (d_ext 4, 6), '
+                        'schro (--schro_dexts); default all')
+    p.add_argument('--schro_dexts', type=int, nargs='+', default=[4, 6],
+                   help='state-frame sizes of the Schrodinger optimisation')
+    p.add_argument('--schro_seeds', type=str, default='auto',
+                   choices=('auto', 'default', 'ring', 'circles'),
+                   help="extra state-frame seeds: 'circles' = great-circle "
+                        "(d-2)-gons + poles in all three planes; 'auto' follows "
+                        '--frame_seeds')
+    p.add_argument('--warm_dir', type=str, default=None,
+                   help='also seed from the x_schro_<d> stored in '
+                        'WARM_DIR/<model>/pt_<ix>_<iy>.npz')
+    p.add_argument('--tag', type=str, default='',
+                   help='write to <out_dir>/<model>_<tag>/ (default <out_dir>/<model>/)')
+    p.add_argument('--dim',      type=dim_arg, default=None,
                    help='lattice dimension of the bond Trotter convention '
                         '(each qubit sits on 2*dim bonds); must match the scan. '
                         "Default: the model's ModelSpec.dim (DIM_DEFAULT = "

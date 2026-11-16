@@ -31,6 +31,14 @@ keys: family, N, M, M_eff, width, omegas, pairs, pair_w, lam_ratio, y,
 Width 0 runs the uniform model (M_eff = 1, F_species = F_shared): the
 control against the stored uniform panels (the collect script compares).
 
+Subset of the grid (the d_ext scan of the paper, scripts/submit_paper_dext_scan.sh):
+    --points 0.5:0.1 1.0:0.1   only these (lam/lam_c : second-axis) grid values
+    --init_root DIR            a combo with no file yet starts from the record of
+                               DIR/<same folder>/<same file> (the main run), so
+                               its finished d_ext are reused and only the new
+                               d_ext are optimised (seeded by the padded
+                               next-smaller optimum, as usual)
+
 Usage (nothing runs by default; the slurm script passes the task id):
     python scripts/dicke_disorder_rate_worker.py --task_id 0 --n_tasks 200
     python scripts/dicke_disorder_rate_worker.py --families dicke_dec --ns 20 \
@@ -101,9 +109,15 @@ def run_combo(family, N, width, M, ix, iy, args, root: Path) -> None:
     od.mkdir(parents=True, exist_ok=True)
     path = od / f'pt_{ix:03d}_{iy:03d}.npz'
     rec = {}
+    init = (out_dir_of(REPO / args.init_root, family, N, M, width) / path.name
+            if args.init_root else None)
     if path.exists() and not args.force:
         with np.load(path, allow_pickle=True) as z:
             rec = {k: z[k] for k in z.files}
+    elif init is not None and init.exists():
+        with np.load(init, allow_pickle=True) as z:
+            rec = {k: z[k] for k in z.files}
+        print(f'[init] {path.name}: d_ext from {init}', flush=True)
     d_exts = sorted(args.d_exts)
     todo = [m for m in d_exts if f'F_shared_cert_{m}' not in rec]
     tag = f'{family} N={N} w={width:.2f} ({ix},{iy}) lam/lam_c={x:g} y={y:g}'
@@ -166,6 +180,10 @@ def main() -> int:
     ap.add_argument('--n_kicks', type=int, default=1)
     ap.add_argument('--kick_scales', nargs='+', type=float, default=[0.03])
     ap.add_argument('--max_seed_eval', type=int, default=40)
+    ap.add_argument('--points', nargs='*', default=None,
+                    help='only these grid points, as P1:P2 values (default: whole grid)')
+    ap.add_argument('--init_root', default=None,
+                    help='start new files from the same-named record under this root')
     ap.add_argument('--no_certify', action='store_true')
     ap.add_argument('--force', action='store_true')
     ap.add_argument('--verbose', action='store_true')
@@ -179,14 +197,26 @@ def main() -> int:
             print(f'[check] {fam}_N{N}: w = 0 pair patch = registered bond generator '
                   f'(max dev {dev:.1e})', flush=True)
 
+    def on_grid(vals, v):
+        i = int(np.argmin(np.abs(np.asarray(vals, float) - v)))
+        if abs(vals[i] - v) > 1e-9:
+            raise ValueError(f'{v} is not on the grid {list(vals)}')
+        return i
+
     combos = []
     for fam in args.families:
         for N in args.ns:
             spec = MODELS[f'{fam}_N{N}']
+            if args.points:
+                pts = []
+                for s_pt in args.points:
+                    a, b = (float(v) for v in s_pt.split(':'))
+                    pts.append((on_grid(spec.p1_vals, a), on_grid(spec.p2_vals, b)))
+            else:
+                pts = [(ix, iy) for ix in range(spec.N_X) for iy in range(spec.N_Y)]
             for w in args.widths:
-                for ix in range(spec.N_X):
-                    for iy in range(spec.N_Y):
-                        combos.append((fam, N, w, ix, iy))
+                for ix, iy in pts:
+                    combos.append((fam, N, w, ix, iy))
     mine = combos[args.task_id::args.n_tasks]
     print(f'[task {args.task_id}/{args.n_tasks}] {len(mine)} of {len(combos)} combos', flush=True)
     n_err = 0

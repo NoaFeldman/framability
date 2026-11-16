@@ -54,7 +54,7 @@ from framability_rate import spectral_abscissa                           # noqa:
 from framability_rate_frames import (product_state_rate,                 # noqa: E402
                                      RATE_FRAMES_VERSION)
 from model4_rate_panels_worker import (MODEL_NAME, SUPPORTED_MODELS,     # noqa: E402
-                                       grid_vals)
+                                       dim_arg, grid_vals)
 
 PROD_RATE_CHIS = (10, 40)
 
@@ -128,8 +128,9 @@ def main() -> None:
                    help='default results_<model>_rate')
     p.add_argument('--stride',   type=int, default=1,
                    help='stride on the model grid (1 = full 51x51 = 2601 pts)')
-    p.add_argument('--dim',      type=int, default=None,
-                   help="lattice dimension of the bond Trotter convention; "
+    p.add_argument('--dim',      type=dim_arg, default=None,
+                   help="lattice dimension of the bond Trotter convention "
+                        "(float allowed: 0.5 for the Dicke dimer patch); "
                         "default the model's ModelSpec.dim (must match the "
                         'six-rate pipeline)')
     args = p.parse_args()

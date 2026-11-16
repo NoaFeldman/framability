@@ -24,6 +24,9 @@
 #  Output (one file per task, unique per stage / round / combo / replica):
 #      $OUT_DIR/${MODEL}_dext_scan/m<MM>/pt_<ix>_<iy>/search_r<RRR>.npz
 #      $OUT_DIR/${MODEL}_dext_scan/m<MM>/pt_<ix>_<iy>/hop<NN>_r<RRR>.npz
+#  Any model of the registry works (MODEL=model4, ...; driven generically by
+#  scripts/submit_dext_scan_model.sh); STORED_DIRS (default empty) lists
+#  roots whose <dir>/<model> holds an original six-rate scan to seed from.
 #  The seeded pipeline's frames are read (never written) from
 #      $OUT_DIR/${MODEL}_seeded (d_ext 4, 8), $OUT_DIR/${MODEL}_seeded_d12 (12)
 # ============================================================
@@ -75,7 +78,7 @@ python scripts/model10_dext_scan_worker.py \
     --p2           $P2S \
     --d_exts       $D_EXTS \
     --out_dir      "$OUT_DIR" \
-    --stored_dirs \
+    --stored_dirs  ${STORED_DIRS:-} \
     ${DIM:+--dim "$DIM"} \
     --cold_every   "$COLD_EVERY" \
     --families     $FAMILIES \

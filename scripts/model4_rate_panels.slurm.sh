@@ -69,6 +69,14 @@ python scripts/model4_rate_panels_worker.py \
     --polish         "$POLISH" \
     --schro_restarts "$SCHRO_RESTARTS" \
     --schro_maxfev   "$SCHRO_MAXFEV" \
-    --seed           "$SEED"
+    --seed           "$SEED" \
+    ${DIM:+--dim "$DIM"} \
+    ${MEASURES:+--measures $MEASURES} \
+    ${SCHRO_DEXTS:+--schro_dexts $SCHRO_DEXTS} \
+    ${SCHRO_SEEDS:+--schro_seeds "$SCHRO_SEEDS"} \
+    ${WARM_DIR:+--warm_dir "$WARM_DIR"} \
+    ${TAG:+--tag "$TAG"}
+# optional env (2026-11-13; unset = the original six-rate run): DIM, MEASURES
+# ("schro"), SCHRO_DEXTS ("6 8"), SCHRO_SEEDS (circles), WARM_DIR, TAG (schro)
 
 echo "[model4 rates] chunk ${SLURM_ARRAY_TASK_ID}: done"

@@ -66,6 +66,7 @@ python scripts/model10_dext_scan_worker.py \
     ${DIM:+--dim "$DIM"} \
     --cold_every   "$COLD_EVERY" \
     --families     $FAMILIES \
+    ${FAM_SECONDS:+--fam_seconds "$FAM_SECONDS"} \
     ${DE_POPSIZE:+--de_popsize "$DE_POPSIZE"} \
     ${DE_MAXITER:+--de_maxiter "$DE_MAXITER"} \
     --polish_iters "$POLISH_ITERS" \

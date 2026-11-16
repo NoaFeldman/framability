@@ -18,7 +18,10 @@
 #  WIDTHS ("0 0.2 0.5 0.8"), M_SPECIES (4), D_EXTS ("4 8"; add 12 for d12,
 #  ~10x slower), N_TASKS (= array size, 200), N_STARTS (3), BUNDLE_ITERS (60),
 #  N_KICKS (1), MAX_SEED_EVAL (40), SEED_NS (unset: the run's N first, then
-#  every N of the family), OUT_ROOT (results_dicke_disorder), NO_CERTIFY, FORCE.
+#  every N of the family), OUT_ROOT (results_dicke_disorder), NO_CERTIFY, FORCE,
+#  POINTS (unset = whole grid; "P1:P2 ..." grid values, e.g. the paper d_ext
+#  scan), INIT_ROOT (new files start from the same-named record under this
+#  root, so its finished d_ext are reused).
 #  Default load: 2 families x 4 widths x 336 points = 2688 combos, ~14 per
 #  task; w = 0 points take seconds, w > 0 ~2-8 min at d 4 + 8 (10 pair
 #  patches per evaluation) -> ~1-2 h per task.
@@ -47,6 +50,8 @@ SEED_NS=${SEED_NS:-}
 OUT_ROOT=${OUT_ROOT:-results_dicke_disorder}
 NO_CERTIFY=${NO_CERTIFY:-}
 FORCE=${FORCE:-}
+POINTS=${POINTS:-}
+INIT_ROOT=${INIT_ROOT:-}
 
 source "${SLURM_SUBMIT_DIR}/.venv/bin/activate"
 cd "${SLURM_SUBMIT_DIR}"
@@ -68,6 +73,8 @@ python scripts/dicke_disorder_rate_worker.py \
     --max_seed_eval "$MAX_SEED_EVAL" \
     --out_root      "$OUT_ROOT" \
     ${SEED_NS:+--seed_ns $SEED_NS} \
+    ${POINTS:+--points $POINTS} \
+    ${INIT_ROOT:+--init_root "$INIT_ROOT"} \
     ${NO_CERTIFY:+--no_certify} \
     ${FORCE:+--force}
 

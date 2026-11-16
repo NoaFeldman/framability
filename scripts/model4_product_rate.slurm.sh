@@ -49,6 +49,8 @@ python scripts/model4_product_rate_worker.py \
     --task_id  "$SLURM_ARRAY_TASK_ID" \
     --n_chunks "$N_CHUNKS" \
     --out_dir  "$OUT_DIR" \
-    --stride   "$STRIDE"
+    --stride   "$STRIDE" \
+    ${DIM:+--dim "$DIM"}
+# optional env DIM (e.g. 0.5 for the Dicke dimer patch; unset = the model's own)
 
 echo "[model4 product rates] chunk ${SLURM_ARRAY_TASK_ID}: done"
