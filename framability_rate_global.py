@@ -381,7 +381,7 @@ def _bundle_grads(S, A, D, cols, H, bundle, cplx):
 
 def bundle_rate_polish(S, A, *, n_iter=60, radius=0.1, band=0.05, max_cols=8,
                        shrink=0.5, grow=1.6, radius_max=0.5, tol=_TOL,
-                       verbose=False):
+                       verbose=False, deadline=None):
     """Trust-region bundle descent on max_j mu_j(S).
 
     Each iteration linearises every near-binding column (within `band` of the
@@ -389,6 +389,7 @@ def bundle_rate_polish(S, A, *, n_iter=60, radius=0.1, band=0.05, max_cols=8,
     epigraph LP for the step inside an infinity-norm trust region, projects
     the columns back onto the ball, and accepts the step only if the TRUE
     batched-LP rate decreases.  Returns (best_value, best_frame).
+    `deadline` (time.time() value): no new iteration starts after it.
 
     A complex frame is polished over real and imaginary parts (8 variables
     per free column); a real frame stays in the real subspace (its gradient
@@ -405,6 +406,8 @@ def bundle_rate_polish(S, A, *, n_iter=60, radius=0.1, band=0.05, max_cols=8,
         return float(val), S
     best_val, best_S = float(val), S.copy()
     for it in range(n_iter):
+        if deadline is not None and time.time() > deadline:
+            break
         order = np.argsort(-cols)
         thresh = val - band * max(abs(val), 1e-3)
         bundle = [int(j) for j in order[:max_cols] if cols[j] >= thresh]

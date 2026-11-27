@@ -88,7 +88,10 @@ from framability_rate_global import (minimize_rate_global, fit_columns,    # noq
                                      RATE_GLOBAL_VERSION)
 from framability_rate_frames import pauli_rate, stabilizer_3_rate         # noqa: E402
 
-PIPELINE_VERSION = '1.0-complex-panels'
+#   1.0-complex-panels : first version
+#   1.1-deadlines      : per-point caps enforced inside polishes / Nelder-Mead,
+#                        refine point order rotated per round (rate 1.2 solver)
+PIPELINE_VERSION = '1.1-deadlines'
 DEFAULT_MODELS = ('model4', 'model10', 'model14', 'model15',
                   'dicke_dec_N100', 'dicke_dec_k025_N100')
 D_EXTS = (4, 8, 12)
@@ -207,10 +210,36 @@ def evaluate_seeds(A, m: int, seeds) -> list:
     return out
 
 
+class _Deadline(Exception):
+    pass
+
+
+def nelder_mead(obj, x0, maxfev: int, t_end: float):
+    """Nelder-Mead that stops at t_end (wall clock); returns the best
+    (value, x) it evaluated (x0 itself is evaluated first)."""
+    from scipy.optimize import minimize
+    best = [np.inf, np.asarray(x0, float).copy()]
+
+    def f(x):
+        if time.time() > t_end:
+            raise _Deadline
+        v = float(obj(x))
+        if v < best[0]:
+            best[0], best[1] = v, np.array(x, float)
+        return v
+
+    try:
+        minimize(f, x0, method='Nelder-Mead',
+                 options=dict(maxfev=maxfev, xatol=1e-9, fatol=1e-12))
+    except _Deadline:
+        pass
+    return best[0], best[1]
+
+
 def multistart(A, m: int, seeds, args, rng, t_end: float):
     """Seeds -> bundle polishes of the best n_starts (real seeds also from
-    n_kicks complex kicks) -> Nelder-Mead -> certification.
-    Returns (rate, frame, label, info)."""
+    n_kicks complex kicks) -> Nelder-Mead -> certification.  No polish or
+    Nelder-Mead step starts after t_end.  Returns (rate, frame, label, info)."""
     cands = evaluate_seeds(A, m, seeds)
     if not cands:
         return np.inf, None, 'none', dict(mu_seed=np.inf)
@@ -226,17 +255,15 @@ def multistart(A, m: int, seeds, args, rng, t_end: float):
         for lab, S1 in starts:
             if time.time() > t_end or best_v <= TOL:
                 break
-            vb, Sb = bundle_rate_polish(S1, A, n_iter=args.bundle_iters)
+            vb, Sb = bundle_rate_polish(S1, A, n_iter=args.bundle_iters, deadline=t_end)
             if np.isfinite(vb) and vb < best_v - TOL:
                 best_v, best_lab, best_S = float(vb), f'{lab} +bundle', Sb
     info['mu_bundle'] = best_v
     if best_v > TOL and args.nm_maxfev > 0 and time.time() < t_end:
-        from scipy.optimize import minimize
         obj = lambda x: frame_rate_value(frame_from_x(x, m), A)   # noqa: E731
-        r = minimize(obj, x_from_frame(best_S, True), method='Nelder-Mead',
-                     options=dict(maxfev=args.nm_maxfev, xatol=1e-9, fatol=1e-12))
-        if np.isfinite(r.fun) and r.fun < best_v - TOL:
-            best_v, best_lab, best_S = float(r.fun), f'{best_lab} +nm', frame_from_x(r.x, m)
+        v_nm, x_nm = nelder_mead(obj, x_from_frame(best_S, True), args.nm_maxfev, t_end)
+        if np.isfinite(v_nm) and v_nm < best_v - TOL:
+            best_v, best_lab, best_S = float(v_nm), f'{best_lab} +nm', frame_from_x(x_nm, m)
     info['mu_nm'] = best_v
     mu = certify(best_S, A)
     info['mu_reference'] = mu
@@ -385,7 +412,8 @@ def stage_refine(model: str, ix: int, iy: int, args) -> None:
         if time.time() > t_end or best_v <= TOL:
             break
         sigma = args.scales[(hop - 1) % len(args.scales)]
-        vb, Sb = bundle_rate_polish(kick(best_S, sigma, rng), A, n_iter=args.polish_iters)
+        vb, Sb = bundle_rate_polish(kick(best_S, sigma, rng), A, n_iter=args.polish_iters,
+                                    deadline=t_end)
         if np.isfinite(vb) and vb < best_v - TOL:
             best_v, best_S = float(vb), Sb
             best_lab, mode = f'{best_lab} +hop', 'hop'
@@ -463,6 +491,11 @@ def main() -> None:
     if not (0 <= args.task_id < max(args.n_chunks, 1)):
         sys.exit(f'task_id must be in [0, {args.n_chunks})')
     mine = pts[args.task_id::max(args.n_chunks, 1)]
+    if args.stage == 'refine' and mine:
+        # each round starts one point later, so a wall-time kill never cuts
+        # the same points off in every round
+        k = (args.round - 1) % len(mine)
+        mine = mine[k:] + mine[:k]
     print(f'[rate complex {args.stage}' + (f' d{args.d_ext} r{args.round}'
                                            if args.stage == 'refine' else '')
           + f'] chunk {args.task_id}/{args.n_chunks}: {len(mine)} of {len(pts)} points '
