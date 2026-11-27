@@ -59,7 +59,7 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from trotter_lindbladian_scan import MODELS                               # noqa: E402
-from framability_rate import RATE_VERSION                                 # noqa: E402
+from framability_rate import RATE_VERSION, _as_frame_array                # noqa: E402
 from framability_rate_global import (minimize_rate_global, fit_columns,   # noqa: E402
                                      frame_rate_value, RATE_GLOBAL_VERSION)
 from framability_rate_families import (optimize_family, greedy_augment,   # noqa: E402
@@ -121,7 +121,7 @@ class Best:
             v = frame_rate_value(S, self.A)
             self.n += 1
         if np.isfinite(v) and v < self.v:
-            self.v, self.S, self.label = float(v), np.asarray(S, float), label
+            self.v, self.S, self.label = float(v), _as_frame_array(S), label
 
     def at_floor(self) -> bool:
         """Screened at the floor AND confirmed by the per-column LP."""

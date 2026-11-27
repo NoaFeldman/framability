@@ -49,7 +49,7 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from trotter_lindbladian_scan import MODELS                               # noqa: E402
-from framability_rate import RATE_VERSION                                 # noqa: E402
+from framability_rate import RATE_VERSION, _as_frame_array                # noqa: E402
 from framability_rate_global import fit_columns                          # noqa: E402
 from framability_rate_margin import (excess, excess_reference,           # noqa: E402
                                      margin_polish, self_check,
@@ -81,7 +81,7 @@ def margin_frame(pt: Path, ix: int, iy: int, m: int, before: int | None):
             d = np.load(f, allow_pickle=True)
             F = float(d[f'excess_{m}'])
             if best is None or F < best[0]:
-                best = (F, np.asarray(d[f'S_{m}'], float), str(d[f'label_{m}']))
+                best = (F, _as_frame_array(d[f'S_{m}']), str(d[f'label_{m}']))
         except Exception:                                   # noqa: BLE001
             continue
     return best

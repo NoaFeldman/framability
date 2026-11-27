@@ -38,14 +38,31 @@ What this module does instead
   so rates are monotone in d_ext by construction).
 
 Frame conventions are those of optimize_framability / framability_rate:
-column 0 of S is the identity (1,0,0,0); every other column lies in the ball
-|c_I| + ||(c_X, c_Y, c_Z)||_2 <= 1; A = L^T acts on observable coefficients.
+column 0 of S is the identity (1,0,0,0); every other column has operator norm
+<= 1 (Hermitian columns: |c_I| + ||(c_X, c_Y, c_Z)||_2 <= 1); A = L^T acts on
+observable coefficients.
+
+Complex frames are the DEFAULT (COMPLEX_FRAMES = True, version 2.0)
+-------------------------------------------------------------------
+Frame elements may be non-Hermitian (complex Pauli coefficients) and the
+certificate coefficients complex; the rate is the complex column log-norm
+(framability_rate).  The search space has 8 real parameters per free column
+(real parts, then imaginary parts: x = [Re free, Im free]) instead of 4;
+frame_from_x still accepts a 4-per-column real vector, so stored real
+frames remain valid seeds (a real frame is a complex frame, and complex
+coefficients never make it worse).  The closed form for 4 columns carries
+over: mu* = max_j (Re H_jj + sum_{k != j} |H_kj|), H = D^{-1} A D.  Real
+frames are stationary in the imaginary directions (mu(S) = mu(conj S)), so
+the seed library adds complex starts: clock-ladder frames
+{I, sigma^+, sigma^-, clock phases |0><0| + w^k |1><1|} about Z, X and Y.
+Pass complex_frames=False for the old Hermitian search.
 
 Public API
 ----------
 basis_rate(S, A)                    closed-form rate for a 4-column frame
 frame_rate_value(S, A, reference=)  rate of any frame (closed form / LP)
 product_weight_optimum(A)           exact optimum over rescaled Pauli frames
+clock_ladder_frame(m, axis)         complex seed: sigma^+- plus clock phases
 seed_library(m, A)                  deterministic seed frames with m columns
 fit_columns(S, m)                   trim / pad a frame to m columns (monotone)
 bundle_rate_polish(S, A)            trust-region bundle descent
@@ -64,10 +81,14 @@ from scipy.optimize import differential_evolution, minimize, linprog
 from optimize_framability import (_project_columns_bloch, _FIXED_COLS,
                                   N_FIXED_COLS, _kron_power)
 from framability_rate import (generator_log_norm, generator_log_norm_reference,
-                              spectral_abscissa)
-from dissipative_PT import embed_frame_params
+                              spectral_abscissa, is_complex_frame,
+                              _as_frame_array, project_frame_columns,
+                              complex_column_witness, complex_grad_from_D)
 
-RATE_GLOBAL_VERSION = '1.0-global-seeded'
+#   1.0-global-seeded   : Hermitian frames, real coefficients
+#   2.0-complex-default : non-Hermitian frames + complex coefficients default
+RATE_GLOBAL_VERSION = '2.0-complex-default'
+COMPLEX_FRAMES = True        # default search space: non-Hermitian elements
 
 WEIGHT_FLOOR = 1e-2          # smallest Pauli rescaling (keeps D well conditioned)
 _COND_MAX = 1e12             # basis frames beyond this are treated as singular
@@ -79,43 +100,71 @@ _Y = np.array([0.0, 0.0, 1.0, 0.0])
 _Z = np.array([0.0, 0.0, 0.0, 1.0])
 
 
+def _cf(complex_frames) -> bool:
+    return COMPLEX_FRAMES if complex_frames is None else bool(complex_frames)
+
+
 # ---------------------------------------------------------------------------
 #  Frames <-> parameters
 # ---------------------------------------------------------------------------
-def n_params(m: int) -> int:
-    return 4 * (m - N_FIXED_COLS)
+def n_params(m: int, complex_frames=None) -> int:
+    """Real search parameters of an m-column frame: 8 per free column for
+    complex frames (default), 4 for Hermitian ones."""
+    return (8 if _cf(complex_frames) else 4) * (m - N_FIXED_COLS)
 
 
 def frame_from_x(x, m: int) -> np.ndarray:
-    """Flat free entries (row-major (m-1) x 4) -> 4 x m frame, identity first."""
-    free = np.asarray(x, float).reshape(m - N_FIXED_COLS, 4).T
-    return np.hstack([_FIXED_COLS, _project_columns_bloch(free)])
+    """Flat free entries -> 4 x m frame, identity first, columns projected
+    onto the operator-norm ball.  x is either real, row-major (m-1) x 4
+    (4 (m-1) entries, a Hermitian frame), or [Re free, Im free] in that
+    layout (8 (m-1) entries, a complex frame)."""
+    x = np.asarray(x, float).ravel()
+    nf = m - N_FIXED_COLS
+    if x.size == 4 * nf:
+        free = x.reshape(nf, 4).T
+    elif x.size == 8 * nf:
+        free = (x[:4 * nf] + 1j * x[4 * nf:]).reshape(nf, 4).T
+    else:
+        raise ValueError(f'frame_from_x: {x.size} entries fit neither 4 nor 8 '
+                         f'x {nf} free columns')
+    free = project_frame_columns(free)
+    return np.hstack([_FIXED_COLS.astype(free.dtype), free])
 
 
-def x_from_frame(S) -> np.ndarray:
-    return np.asarray(S, float)[:, N_FIXED_COLS:].T.ravel()
+def x_from_frame(S, complex_frames=None) -> np.ndarray:
+    """Inverse of frame_from_x: [Re free, Im free] for complex_frames (the
+    default; a real frame gets zero imaginary parts), the real 4 (m-1)
+    vector otherwise (a complex frame then raises)."""
+    S = np.asarray(S)
+    free = S[:, N_FIXED_COLS:].T.ravel()
+    if _cf(complex_frames):
+        return np.concatenate([np.real(free), np.imag(free)]).astype(float)
+    if is_complex_frame(S):
+        raise ValueError('x_from_frame: complex frame with complex_frames=False')
+    return np.real(free).astype(float)
 
 
 def fit_columns(S, m: int) -> np.ndarray:
     """Trim a frame to its first m columns, or pad it to m columns by
-    replicating the last free column (dissipative_PT.embed_frame_params), so
-    the padded frame's rate is <= the original's."""
-    S = np.asarray(S, float)
+    replicating the last free column (as dissipative_PT.embed_frame_params,
+    for any dtype), so the padded frame's rate is <= the original's."""
+    S = _as_frame_array(S)
     k = S.shape[1]
     if k == m:
         return S.copy()
     if k > m:
         return S[:, :m].copy()
-    free = embed_frame_params(S[:, N_FIXED_COLS:].ravel(), k, m)
-    return np.hstack([_FIXED_COLS, free.reshape(4, m - N_FIXED_COLS)])
+    return np.hstack([S, np.repeat(S[:, -1:], m - k, axis=1)])
 
 
 # ---------------------------------------------------------------------------
 #  Rate evaluation
 # ---------------------------------------------------------------------------
 def basis_rate(S, A, *, return_H: bool = False):
-    """Closed-form mu*(S (x) S) for an invertible 4x4 frame (inf if singular)."""
-    D = _kron_power(np.asarray(S, float), 2)
+    """Closed-form mu*(S (x) S) for an invertible 4x4 frame (inf if singular):
+    max_j (Re H_jj + sum_{k != j} |H_kj|), H = D^{-1} A D (complex for a
+    complex frame)."""
+    D = _kron_power(_as_frame_array(S), 2)
     try:
         H = np.linalg.solve(D, np.asarray(A, float) @ D)
     except np.linalg.LinAlgError:
@@ -123,15 +172,16 @@ def basis_rate(S, A, *, return_H: bool = False):
     if not np.all(np.isfinite(H)) or np.linalg.cond(D) > _COND_MAX:
         return (np.inf, None) if return_H else np.inf
     diag = np.diag(H)
-    cols = diag + (np.abs(H).sum(axis=0) - np.abs(diag))
+    cols = diag.real + (np.abs(H).sum(axis=0) - np.abs(diag))
     val = float(cols.max())
     return (val, H) if return_H else val
 
 
 def frame_rate_value(S, A, *, reference: bool = False) -> float:
     """mu*(S (x) S): closed form for 4 columns, batched LP otherwise;
-    reference=True uses the independent per-column LP (certification)."""
-    S = np.asarray(S, float)
+    reference=True uses the independent per-column LP (certification).
+    Real or complex S."""
+    S = _as_frame_array(S)
     if S.shape[1] == 4 and not reference:
         return basis_rate(S, A)
     D = _kron_power(S, 2)
@@ -189,10 +239,43 @@ def _proj(axis, sign):
     return 0.5 * (_I + sign * axis)
 
 
-def seed_library(m: int, A=None) -> dict:
+# Clifford maps of Pauli coefficient vectors (c_I, c_X, c_Y, c_Z) that carry
+# the Z axis onto X (Hadamard: X <-> Z, Y -> -Y) or onto Y (Z -> Y, Y -> -Z).
+_AXIS_MAP = {
+    'z': np.eye(4),
+    'x': np.array([[1, 0, 0, 0], [0, 0, 0, 1], [0, 0, -1, 0], [0, 1, 0, 0]], float),
+    'y': np.array([[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 0, 1], [0, 0, -1, 0]], float),
+}
+
+
+def clock_ladder_frame(m: int, axis: str = 'z') -> np.ndarray:
+    """Complex m-column frame {I, sigma^+, sigma^-, v_k} about `axis`:
+    sigma^+- = (X +- iY)/2 (the ladder operators |0><1|, |1><0|) and the
+    clock phases v_k = |0><0| + w^k |1><1|, w = exp(2 pi i / (m - 2)),
+    k = 1 .. m-3 (v_0 = I is column 0; v_(N/2) = Z leads, so a trim to 4
+    columns is {I, sigma^+, sigma^-, Z}).  All elements have operator norm 1.
+    Under J ZZ the ladder columns pick up only a phase (free with complex
+    coefficients) and the neighbour's clock phase moves by one vertex, the
+    finite version of the rate-0 complex product frame of model3."""
+    if m < 4:
+        raise ValueError('clock_ladder_frame needs m >= 4')
+    n_clock = m - 2
+    w = np.exp(2j * np.pi / n_clock)
+    order = [n_clock // 2] + [k for k in range(1, n_clock) if k != n_clock // 2]
+    cols = [np.array([1, 0, 0, 0], complex),
+            np.array([0, 0.5, 0.5j, 0]), np.array([0, 0.5, -0.5j, 0])]
+    cols += [np.array([(1 + w ** k) / 2, 0, 0, (1 - w ** k) / 2]) for k in order]
+    S = np.array(cols, complex).T
+    return _AXIS_MAP[axis] @ S
+
+
+def seed_library(m: int, A=None, complex_frames=None) -> dict:
     """Deterministic seed frames with m columns (identity first), keyed by
     name.  Column orders are chosen so that a trim to 4 columns still spans.
-    With A given, the exact rescaled-Pauli optimum is included."""
+    With A given, the exact rescaled-Pauli optimum is included.  With complex
+    frames (the default) the clock-ladder frames about Z, X and Y are added
+    (real frames are stationary in the imaginary directions, so a complex
+    search needs complex starts)."""
     r2 = 1.0 / np.sqrt(2.0)
     lib = {
         'pauli':     [_X, _Y, _Z],
@@ -211,6 +294,9 @@ def seed_library(m: int, A=None) -> dict:
         out[name] = fit_columns(S, m)
     if A is not None:
         out['weights'] = fit_columns(product_weight_optimum(A)[1], m)
+    if _cf(complex_frames):
+        for axis in ('z', 'x', 'y'):
+            out[f'ladder_{axis}'] = clock_ladder_frame(m, axis)
     return out
 
 
@@ -219,7 +305,13 @@ def seed_library(m: int, A=None) -> dict:
 # ---------------------------------------------------------------------------
 def column_witness(D, A, j):
     """Dual witness of column j:  max <w, A d_j>  s.t. (D^T w)_j = 1,
-    |(D^T w)_k| <= 1 (k != j).  Same LP as framability_rate.rate_certificate."""
+    |(D^T w)_k| <= 1 (k != j).  Same LP as framability_rate.rate_certificate.
+    Complex D: the complex witness of the exact per-column solve (to pair it
+    with its own certificate column use complex_column_witness directly)."""
+    if is_complex_frame(D):
+        r = complex_column_witness(D, A, j)
+        return None if r is None else r[2]
+    D = _as_frame_array(D)
     DT = D.T
     m = D.shape[1]
     y = A @ D[:, j]
@@ -231,14 +323,60 @@ def column_witness(D, A, j):
 
 def column_grad(S, A, j, w, h):
     """Envelope gradient of column j's rate w.r.t. S (as rate_value_and_grad,
-    for one column): d mu_j / dD = (A^T w) e_j^T - w h^T, chained through
-    D = S (x) S."""
+    for one column): d mu_j / dD = (A^T w) e_j^T - w h^H, chained through
+    D = S (x) S.  Complex S / w / h: the complex gradient Gamma
+    (d mu_j = Re sum conj(Gamma) dS); real inputs: the real gradient."""
+    S = np.asarray(S)
     n_s, m = S.shape
-    gD = np.zeros((n_s * n_s, m * m))
-    gD[:, j] += A.T @ w
-    gD -= np.outer(w, h)
-    T = gD.reshape(n_s, n_s, m, m)
-    return (np.einsum('abij,bj->ai', T, S) + np.einsum('baji,bj->ai', T, S))
+    gD = np.zeros((n_s * n_s, m * m), dtype=np.result_type(S, w, h, float))
+    gD[:, j] += np.asarray(A, float).T @ w
+    gD -= np.outer(w, np.conj(h))
+    return complex_grad_from_D(S, gD)
+
+
+def grad_vector(Gamma_free, cplx: bool) -> np.ndarray:
+    """Flatten a free-column gradient (n_s x nfree) to the step variables:
+    [Re, Im] (row-major) for a complex search, the real part otherwise."""
+    if cplx:
+        return np.concatenate([np.real(Gamma_free).ravel(),
+                               np.imag(Gamma_free).ravel()])
+    return np.real(Gamma_free).ravel()
+
+
+def step_frame(S, delta, cplx: bool) -> np.ndarray:
+    """S + delta on the free columns (delta in grad_vector's layout),
+    projected back onto the operator-norm ball."""
+    n_s, m = S.shape
+    nf = m - N_FIXED_COLS
+    if cplx:
+        h = delta.size // 2
+        d = (delta[:h] + 1j * delta[h:]).reshape(n_s, nf)
+    else:
+        d = np.asarray(delta, float).reshape(n_s, nf)
+    free = project_frame_columns(S[:, N_FIXED_COLS:] + d)
+    return np.hstack([_FIXED_COLS.astype(free.dtype), free])
+
+
+def _bundle_grads(S, A, D, cols, H, bundle, cplx):
+    """(gradient vectors, column values) of the bundle columns.  Complex D:
+    witness, certificate column and value all from one exact per-column
+    solve; real D: the batched H with a separate dual witness (as before)."""
+    G, mu = [], []
+    for j in bundle:
+        if is_complex_frame(D):
+            r = complex_column_witness(D, A, j)
+            if r is None:
+                continue
+            v, h, w = r
+        else:
+            w = column_witness(D, A, j)
+            if w is None:
+                continue
+            v, h = cols[j], H[:, j]
+        g = column_grad(S, A, j, w, h)[:, N_FIXED_COLS:]
+        G.append(grad_vector(g, cplx))
+        mu.append(v)
+    return G, mu
 
 
 def bundle_rate_polish(S, A, *, n_iter=60, radius=0.1, band=0.05, max_cols=8,
@@ -250,12 +388,17 @@ def bundle_rate_polish(S, A, *, n_iter=60, radius=0.1, band=0.05, max_cols=8,
     maximum, at most `max_cols`) with its own dual witness, solves the small
     epigraph LP for the step inside an infinity-norm trust region, projects
     the columns back onto the ball, and accepts the step only if the TRUE
-    batched-LP rate decreases.  Returns (best_value, best_frame)."""
+    batched-LP rate decreases.  Returns (best_value, best_frame).
+
+    A complex frame is polished over real and imaginary parts (8 variables
+    per free column); a real frame stays in the real subspace (its gradient
+    has no imaginary part -- complex directions come from DE / NM / kicks)."""
     A = np.asarray(A, float)
-    S = np.asarray(S, float).copy()
+    S = _as_frame_array(S).copy()
+    cplx = is_complex_frame(S)
     n_s, m = S.shape
     nfree = m - N_FIXED_COLS
-    nvar = n_s * nfree
+    nvar = (2 if cplx else 1) * n_s * nfree
     D = _kron_power(S, 2)
     val, cols, H = generator_log_norm(D, A, return_cols=True, return_H=True)
     if not np.isfinite(val) or H is None:
@@ -265,14 +408,7 @@ def bundle_rate_polish(S, A, *, n_iter=60, radius=0.1, band=0.05, max_cols=8,
         order = np.argsort(-cols)
         thresh = val - band * max(abs(val), 1e-3)
         bundle = [int(j) for j in order[:max_cols] if cols[j] >= thresh]
-        G, mu = [], []
-        for j in bundle:
-            w = column_witness(D, A, j)
-            if w is None:
-                continue
-            g = column_grad(S, A, j, w, H[:, j])[:, N_FIXED_COLS:].ravel()
-            G.append(g)
-            mu.append(cols[j])
+        G, mu = _bundle_grads(S, A, D, cols, H, bundle, cplx)
         if not G:
             break
         G = np.array(G)
@@ -287,9 +423,7 @@ def bundle_rate_polish(S, A, *, n_iter=60, radius=0.1, band=0.05, max_cols=8,
             if radius < 1e-6:
                 break
             continue
-        delta = res.x[:nvar].reshape(n_s, nfree)
-        S_new = np.hstack([_FIXED_COLS,
-                           _project_columns_bloch(S[:, N_FIXED_COLS:] + delta)])
+        S_new = step_frame(S, res.x[:nvar], cplx)
         D_new = _kron_power(S_new, 2)
         val_new, cols_new, H_new = generator_log_norm(D_new, A, return_cols=True,
                                                       return_H=True)
@@ -315,9 +449,11 @@ def bundle_rate_polish(S, A, *, n_iter=60, radius=0.1, band=0.05, max_cols=8,
 # ---------------------------------------------------------------------------
 #  The seeded global search
 # ---------------------------------------------------------------------------
-def _de_init(seed_frames, m, popsize, rng):
-    xs = [x_from_frame(S) for S in seed_frames]
-    n = n_params(m)
+def _de_init(seed_frames, m, popsize, rng, complex_frames=None):
+    cf = _cf(complex_frames)
+    xs = [x_from_frame(S, cf) for S in seed_frames
+          if cf or not is_complex_frame(S)]
+    n = n_params(m, cf)
     need = max(5, popsize * n) - len(xs)
     for _ in range(max(need, 0)):
         xs.append(rng.uniform(-1.0, 1.0, n))
@@ -326,19 +462,25 @@ def _de_init(seed_frames, m, popsize, rng):
 
 def minimize_rate_global(A, d_ext_single, *, seeds=(), seed=0,
                          de_popsize=None, de_maxiter=None, bundle_iters=60,
-                         nm_maxfev=None, verbose=False):
+                         nm_maxfev=None, verbose=False, complex_frames=None):
     """min_S mu*(S (x) S) by seeds + differential evolution + bundle polish.
 
-    seeds : iterable of frames (4 x k, identity first, any k); frames with
-            k != d_ext_single are trimmed / padded by fit_columns.
+    seeds : iterable of frames (4 x k, identity first, any k, real or
+            complex); frames with k != d_ext_single are trimmed / padded by
+            fit_columns.
     de_popsize / de_maxiter : differential-evolution budget (multiplier of the
             parameter count / generations).  Defaults: (24, 300) for the
             closed-form basis case, (6, 25) for LP-evaluated frames; 0
             disables the DE stage.
+    complex_frames : search non-Hermitian frames with complex coefficients
+            (default COMPLEX_FRAMES = True: 8 parameters per free column,
+            clock-ladder seeds added); False = the old Hermitian search
+            (complex seeds are then skipped).
     Returns (S_opt, mu_opt, info); mu_opt is the certified value
     (independent per-column LP for overcomplete frames)."""
     A = np.asarray(A, float)
     m = int(d_ext_single)
+    cf = _cf(complex_frames)
     basis = (m == 4)
     rng = np.random.default_rng(seed)
     t0 = time.perf_counter()
@@ -352,9 +494,10 @@ def minimize_rate_global(A, d_ext_single, *, seeds=(), seed=0,
     obj = lambda x: frame_rate_value(frame_from_x(x, m), A)      # noqa: E731
 
     # ---- 1. seeds, evaluated as fixed frames --------------------------------
-    lib = seed_library(m, A)
+    lib = seed_library(m, A, complex_frames=cf)
     for i, S in enumerate(seeds):
-        lib[f'seed{i}'] = fit_columns(S, m)
+        if cf or not is_complex_frame(S):
+            lib[f'seed{i}'] = fit_columns(S, m)
     best_val, best_S, best_name = np.inf, None, None
     for name, S in lib.items():
         v = frame_rate_value(S, A)
@@ -369,8 +512,8 @@ def minimize_rate_global(A, d_ext_single, *, seeds=(), seed=0,
     info['mu_de'] = best_val
     info['n_fev'] = 0
     if de_maxiter > 0 and de_popsize > 0:
-        init = _de_init(list(lib.values()), m, de_popsize, rng)
-        de = differential_evolution(obj, bounds=[(-1.0, 1.0)] * n_params(m),
+        init = _de_init(list(lib.values()), m, de_popsize, rng, cf)
+        de = differential_evolution(obj, bounds=[(-1.0, 1.0)] * n_params(m, cf),
                                     init=init, seed=seed, maxiter=de_maxiter,
                                     popsize=de_popsize, tol=1e-10, atol=0.0,
                                     polish=False)
@@ -392,7 +535,7 @@ def minimize_rate_global(A, d_ext_single, *, seeds=(), seed=0,
             best_val, best_S = float(vb), Sb
     info['mu_bundle'] = best_val
     if nm_maxfev > 0 and best_val > _TOL:
-        r = minimize(obj, x_from_frame(best_S), method='Nelder-Mead',
+        r = minimize(obj, x_from_frame(best_S, cf), method='Nelder-Mead',
                      options=dict(maxfev=nm_maxfev, xatol=1e-9, fatol=1e-12))
         if np.isfinite(r.fun) and r.fun < best_val:
             best_val, best_S = float(r.fun), frame_from_x(r.x, m)

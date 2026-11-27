@@ -197,7 +197,7 @@ def main() -> None:
                  dim=int(d['dim']), d_ext=M, round=rnd, target='seed probe', mode='probe',
                  rate_version=str(d['rate_version']),
                  rate_margin_version=str(d['rate_margin_version']),
-                 **{KEY: r['v_new'], S_KEY: np.asarray(d[S_KEY], float),
+                 **{KEY: r['v_new'], S_KEY: np.asarray(d[S_KEY]),
                     LAB_KEY: r['label'], f'{KEY}_prev': r['v_ref']})
         os.replace(tmp, out)
         n_w += 1

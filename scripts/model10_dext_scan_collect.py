@@ -73,7 +73,7 @@ def load_combo(out_dir: str, m: int, ix: int, iy: int, model: str = MODEL) -> di
         else:
             hops.setdefault(int(f.name[3:5]), []).append(v)
         if np.isfinite(v) and v < best[0]:
-            best = (v, np.asarray(z['S'], float), f'{f.stem}: {z["label"]}')
+            best = (v, np.asarray(z['S']), f'{f.stem}: {z["label"]}')  # keeps complex
     return dict(search=np.array(search, float), cold=np.array(cold, bool),
                 hops=hops, best=best)
 

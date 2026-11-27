@@ -35,9 +35,20 @@ PAIR-AVERAGED rates F (= the bond rate at width 0) of the width's slice of
 
 Output: <out_dir>/<case>_rate_panels.{png,pdf}  (default results_plots/paper).
 
+Complex frames (--complex_root DIR, e.g. results_rate_complex): the three
+Heisenberg panels come from DIR/<model>_complex_rate_panels.npz
+(scripts/rate_complex_collect.py: non-Hermitian frame elements, complex
+coefficients) and the whole figure is drawn on that file's coarse grid
+(every stride-th point); Pauli / stabilizer also come from that file, the
+Schrodinger and product panels (state frames, Hermitian by definition, so
+unchanged by complex coefficients) from the usual full-grid sources,
+subsampled.  Output <case>_complex_rate_panels.{png,pdf}.
+
 Usage:
     python scripts/paper_rate_panels_plot.py --cases model4 model10 dicke_dec_N100
     python scripts/paper_rate_panels_plot.py --cases dicke_dec_N100_M4_w0.50
+    python scripts/paper_rate_panels_plot.py --cases model4 model14 \\
+        --complex_root results_rate_complex
 """
 from __future__ import annotations
 
@@ -123,12 +134,27 @@ def dis_sources(frames: str) -> dict:
     }
 
 
-def width_slice(z: dict, k: str, shape: tuple, width):
+def complex_sources(sources: dict) -> dict:
+    """SOURCES with the Heisenberg panels (and Pauli / stabilizer first) taken
+    from the complex-frame panel file."""
+    out = {k: list(v) for k, v in sources.items()}
+    for m in (4, 8, 12):
+        out[f'heis{m}'] = [('complex', f'panel_rate_heis_{m}')]
+    out['pauli'] = [('complex', 'rate_pauli')] + out['pauli']
+    out['stab'] = [('complex', 'rate_stab3')] + out['stab']
+    return out
+
+
+def width_slice(z: dict, k: str, shape: tuple, width, full=None):
     """z[k] if it has the panel shape; for a (n_widths,) + shape array the
-    slice of `width` (None when that width is not in the file)."""
+    slice of `width` (None when that width is not in the file); with
+    full = (full_shape, stride), a full-grid array is subsampled to the
+    coarse panel grid."""
     a = np.asarray(z[k], float)
     if a.shape == shape:
         return a
+    if full is not None and a.shape == full[0]:
+        return a[::full[1], ::full[1]]
     if width is not None and 'widths' in z and a.shape == (len(z['widths']),) + shape:
         i = np.flatnonzero(np.abs(np.asarray(z['widths'], float) - width) < 1e-9)
         return a[i[0]] if i.size else None
@@ -139,6 +165,7 @@ def load_panel(files: dict, cands: list, shape: tuple, cache: dict):
     """First candidate array of the right shape with any finite entry, and its
     'file:key' label; (None, '') when nothing exists."""
     width = files.get('width')
+    full = files.get('full')
     for role, key in cands:
         path = files.get(role)
         if not path or not Path(path).exists():
@@ -147,7 +174,7 @@ def load_panel(files: dict, cands: list, shape: tuple, cache: dict):
             cache[path] = dict(np.load(path, allow_pickle=True))
         z = cache[path]
         keys = key if isinstance(key, tuple) else (key,)
-        arrs = [a for a in (width_slice(z, k, shape, width) for k in keys if k in z)
+        arrs = [a for a in (width_slice(z, k, shape, width, full) for k in keys if k in z)
                 if a is not None]
         if not arrs:
             continue
@@ -178,7 +205,7 @@ def draw(ax, fig, x, y, Z, title, zero_tol, xlabel, ylabel) -> None:
 
 
 def plot_case(case: str, out_dir: Path, zero_tol: float, suptitle: bool,
-              disorder_frames: str = 'species') -> None:
+              disorder_frames: str = 'species', complex_root=None) -> None:
     import matplotlib
     matplotlib.use('Agg')
     import matplotlib.pyplot as plt
@@ -187,11 +214,20 @@ def plot_case(case: str, out_dir: Path, zero_tol: float, suptitle: bool,
     sources = dis_sources(disorder_frames) if 'dis' in files else SOURCES
     spec = MODELS[model]
     x, y = np.asarray(spec.p1_vals, float), np.asarray(spec.p2_vals, float)
+    panels, stem = PANELS, 'rate_panels'
+    if complex_root is not None and 'dis' not in files:
+        cf = Path(complex_root) / f'{model}_complex_rate_panels.npz'
+        stride = int(np.load(cf, allow_pickle=True)['stride']) if cf.exists() else 2
+        files = dict(files, complex=str(cf), full=((len(x), len(y)), stride))
+        sources = complex_sources(sources)
+        x, y = x[::stride], y[::stride]
+        panels = [(k, t.replace('Heisenberg', 'Heisenberg (complex)')) for k, t in PANELS]
+        stem = 'complex_rate_panels'
     shape = (len(x), len(y))
     fig, axes = plt.subplots(2, 4, figsize=(17, 7.6), constrained_layout=True)
     cache: dict = {}
     print(f'[{case}]', flush=True)
-    for ax, (key, title) in zip(axes.flat, PANELS):
+    for ax, (key, title) in zip(axes.flat, panels):
         Z, src = load_panel(files, sources[key], shape, cache)
         n0 = int((np.isfinite(Z) & (Z <= zero_tol)).sum()) if Z is not None else 0
         print(f'  {key:>7s}: {src or "MISSING"}' + (f'  ({n0} zero cells)' if Z is not None else ''),
@@ -203,7 +239,7 @@ def plot_case(case: str, out_dir: Path, zero_tol: float, suptitle: bool,
         fig.suptitle(f'{case}: {spec.title}{extra}', fontsize=12)
     out_dir.mkdir(parents=True, exist_ok=True)
     for ext in ('png', 'pdf'):
-        f = out_dir / f'{case}_rate_panels.{ext}'
+        f = out_dir / f'{case}_{stem}.{ext}'
         fig.savefig(f, dpi=200)
         print(f'  wrote {f}', flush=True)
     plt.close(fig)
@@ -220,10 +256,14 @@ def main() -> None:
     ap.add_argument('--disorder_frames', choices=('species', 'shared'), default='species',
                     help='Heisenberg panels of disordered Dicke cases: one frame per '
                          'species (best found) or one shared frame')
+    ap.add_argument('--complex_root', default=None,
+                    help='root of the complex-frame panels (rate_complex_collect.py); '
+                         'draws the Heisenberg panels with complex frames on its '
+                         'coarse grid')
     args = ap.parse_args()
     for case in args.cases:
         plot_case(case, Path(args.out_dir), args.zero_tol, args.suptitle,
-                  args.disorder_frames)
+                  args.disorder_frames, args.complex_root)
 
 
 if __name__ == '__main__':

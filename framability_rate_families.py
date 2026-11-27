@@ -65,6 +65,8 @@ import numpy as np
 from scipy.optimize import minimize
 
 from optimize_framability import _FIXED_COLS, _project_columns_bloch
+from framability_rate import (_as_frame_array, column_opnorm,
+                              project_frame_columns)
 from framability_rate_global import (frame_rate_value, fit_columns,
                                      WEIGHT_FLOOR)
 
@@ -341,9 +343,10 @@ def candidate_columns(S) -> list:
     """New-column candidates for a frame S (identity first): the normalised
     sums and differences of every pair of free columns (a polygon's edge
     midpoints, the bisectors between planes), rescaled to the pair's mean
-    size, and the three Pauli axes at the frame's largest extent along each."""
-    free = np.asarray(S, float)[:, 1:]
-    size = np.abs(free[0]) + np.linalg.norm(free[1:], axis=0)
+    size, and the three Pauli axes at the frame's largest extent along each.
+    Complex frames: sizes are operator norms and the candidates are complex."""
+    free = _as_frame_array(S)[:, 1:]
+    size = column_opnorm(free)
     out = []
     k = free.shape[1]
     for i in range(k):
@@ -351,7 +354,7 @@ def candidate_columns(S) -> list:
             r = 0.5 * (size[i] + size[j])
             for s in (1.0, -1.0):
                 v = free[:, i] + s * free[:, j]
-                nv = abs(v[0]) + np.linalg.norm(v[1:])
+                nv = float(column_opnorm(v[:, None])[0])
                 if nv > 1e-9:
                     out.append(v * (r / nv))
     for a in (1, 2, 3):
@@ -370,7 +373,7 @@ def greedy_augment(S, A, m: int, *, tol: float = _TOL):
     the last column (rate unchanged) is always among the choices, so the
     result is never worse than padding.  Returns (value, S_m, n_evals)."""
     A = np.asarray(A, float)
-    S = np.asarray(S, float).copy()
+    S = _as_frame_array(S).copy()
     v = float(frame_rate_value(S, A))
     n_ev = 1
     while S.shape[1] < m:
@@ -378,7 +381,7 @@ def greedy_augment(S, A, m: int, *, tol: float = _TOL):
             return v, fit_columns(S, m), n_ev
         best_v, best_S = v, fit_columns(S, S.shape[1] + 1)   # duplicate
         for c in candidate_columns(S):
-            T = np.hstack([S, _project_columns_bloch(np.asarray(c)[:, None])])
+            T = np.hstack([S, project_frame_columns(np.asarray(c)[:, None])])
             val = frame_rate_value(T, A)
             n_ev += 1
             if np.isfinite(val) and val < best_v - tol:

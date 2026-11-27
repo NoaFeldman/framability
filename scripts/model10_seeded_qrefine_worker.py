@@ -53,7 +53,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from optimize_framability import _kron_power                              # noqa: E402
 from framability_rate import (minimize_rate, generator_log_norm,          # noqa: E402
-                              generator_log_norm_reference, RATE_VERSION)
+                              generator_log_norm_reference, RATE_VERSION,
+                              _as_frame_array)
 from framability_rate_global import minimize_rate_global, fit_columns     # noqa: E402
 from model10_seeded_worker import (MODEL, grid_vals, pt_dir_name,         # noqa: E402
                                    generator)
@@ -96,7 +97,7 @@ def best_known(pt: Path, ix: int, iy: int, key: str, s_key: str):
         v = float(d[key])
         if np.isfinite(v) and v < best[0]:
             lab = str(d[lab_key]) if lab_key in d.files else ''
-            best = (v, np.asarray(d[s_key], float), lab)
+            best = (v, _as_frame_array(d[s_key]), lab)      # keeps complex frames
     return best
 
 

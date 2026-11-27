@@ -37,7 +37,8 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from trotter_lindbladian_scan import MODELS, build_bond_lindbladian     # noqa: E402
-from framability_rate import RATE_VERSION, spectral_abscissa           # noqa: E402
+from framability_rate import (RATE_VERSION, spectral_abscissa,         # noqa: E402
+                              _as_frame_array)
 from framability_rate_global import (minimize_rate_global,             # noqa: E402
                                      RATE_GLOBAL_VERSION)
 
@@ -67,7 +68,7 @@ def stored_frames(pt_dir: Path, ix: int, iy: int, d_exts):
         for m in d_exts:
             if f'S_heis_{m}' in d.files:
                 v = float(d[f'rate_heis_{m}']) if f'rate_heis_{m}' in d.files else np.nan
-                out[m].append((v, np.asarray(d[f'S_heis_{m}'], float)))
+                out[m].append((v, _as_frame_array(d[f'S_heis_{m}'])))
     return out
 
 

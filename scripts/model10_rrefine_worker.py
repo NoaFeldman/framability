@@ -53,7 +53,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from trotter_lindbladian_scan import MODELS                               # noqa: E402
 from optimize_framability import (_FIXED_COLS, N_FIXED_COLS,              # noqa: E402
                                   _project_columns_bloch)
-from framability_rate import RATE_VERSION                                 # noqa: E402
+from framability_rate import (RATE_VERSION, project_frame_columns,        # noqa: E402
+                              is_complex_frame)
+import framability_rate_global as _frg                                    # noqa: E402
 from framability_rate_global import fit_columns                          # noqa: E402
 from framability_rate_margin import (excess, excess_reference,           # noqa: E402
                                      margin_polish, RATE_MARGIN_VERSION)
@@ -66,10 +68,16 @@ LESS_NOISE = [(-1, 0), (0, -1)]          # one step lower in Delta1 / Delta2
 
 
 def perturb(S, sigma: float, rng) -> np.ndarray:
-    """Gaussian kick of the free columns, projected back onto the ball."""
-    free = S[:, N_FIXED_COLS:] + sigma * rng.standard_normal(
-        (S.shape[0], S.shape[1] - N_FIXED_COLS))
-    return np.hstack([_FIXED_COLS, _project_columns_bloch(free)])
+    """Gaussian kick of the free columns, projected back onto the
+    operator-norm ball.  Complex frames (framability_rate_global's default,
+    or a complex S) also get an imaginary kick of the same size, so a real
+    frame can leave the real subspace (where it is stationary)."""
+    shape = (S.shape[0], S.shape[1] - N_FIXED_COLS)
+    kick = sigma * rng.standard_normal(shape)
+    if _frg.COMPLEX_FRAMES or is_complex_frame(S):
+        kick = kick + 1j * sigma * rng.standard_normal(shape)
+    free = project_frame_columns(S[:, N_FIXED_COLS:] + kick)
+    return np.hstack([_FIXED_COLS.astype(free.dtype), free])
 
 
 def is_target(pt, ix, iy, nx, ny, v_own, key, s_key, args) -> tuple:

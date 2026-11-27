@@ -106,7 +106,7 @@ def load_seeded(pt: Path, nx: int, ny: int, d_exts=D_EXTS) -> dict:
                     cur = g[f'rate_{m}'][ix, iy]
                     if np.isfinite(v) and (not np.isfinite(cur) or v < cur):
                         g[f'rate_{m}'][ix, iy] = v
-                        g[f'S_{m}'][ix, iy] = np.asarray(d[f'S_{m}'], float)
+                        g[f'S_{m}'][ix, iy] = np.asarray(d[f'S_{m}'])  # keeps complex frames
                         g[f'label_{m}'][ix, iy] = str(d[f'label_{m}'])
                     if i == 0:
                         for k in (f'fam_{m}', f'prev_best_{m}'):

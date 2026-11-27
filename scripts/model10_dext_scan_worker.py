@@ -92,7 +92,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from trotter_lindbladian_scan import MODELS                               # noqa: E402
 from optimize_framability import N_FIXED_COLS                             # noqa: E402
-from framability_rate import RATE_VERSION                                 # noqa: E402
+from framability_rate import RATE_VERSION, _as_frame_array                # noqa: E402
 from framability_rate_global import (minimize_rate_global, fit_columns,   # noqa: E402
                                      frame_rate_value, RATE_GLOBAL_VERSION)
 from framability_rate_margin import (excess, margin_polish,              # noqa: E402
@@ -482,7 +482,7 @@ def frames_on_disk(out_dir: str, m: int, ix: int, iy: int, before_round: int,
             z = np.load(f, allow_pickle=True)
             v = float(z['rate'])
             if np.isfinite(v):
-                out.append((v, np.asarray(z['S'], float), str(z['label']), f.stem))
+                out.append((v, _as_frame_array(z['S']), str(z['label']), f.stem))
         except Exception:                                   # noqa: BLE001
             continue
     out.sort(key=lambda t: t[0])

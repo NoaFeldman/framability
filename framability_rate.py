@@ -20,9 +20,27 @@ The best H for a given D is one LP per column (decoupled, batched here):
         mu*(D) = max_j mu_j.
 
 Frame requirements are exactly those of optimize_framability: column 0 of S is
-the identity (1,0,0,0) and stays normalised; every other column satisfies
-|c_I| + ||(c_X, c_Y, c_Z)||_2 <= 1 (operator norm <= 1, so columns may shrink);
-S must have full rank (D rank 16) or the certificate is vacuous and mu = +inf.
+the identity (1,0,0,0) and stays normalised; every other column has operator
+norm <= 1 (columns may shrink; for a Hermitian column this is
+|c_I| + ||(c_X, c_Y, c_Z)||_2 <= 1); S must have full rank (D rank 16) or the
+certificate is vacuous and mu = +inf.
+
+Complex frames (non-Hermitian elements)
+---------------------------------------
+S may be complex: a column is then the non-Hermitian operator
+c_I I + c_X X + c_Y Y + c_Z Z with complex c (e.g. sigma^+-, clock phases
+|0><0| + w|1><1|), and the coefficients h are complex too, with the complex
+column log-norm
+
+        mu_j = Re H_jj + sum_{k != j} |H_kj|          (|.| = modulus),
+
+Im H_jj being a free phase rotation of column j.  This is a second-order-cone
+program, solved with HiGHS by column generation over coefficient phases
+(_complex_lp); every LP along the way is an inner approximation, so the H it
+returns is a valid certificate and the reported value an upper bound.  A REAL
+frame gains nothing from complex coefficients (Re h is feasible whenever h is,
+at no larger cost), so real D always takes the real LP and every real result
+is unchanged.  Complex frames are the default of framability_rate_global.
 
 Floor: mu*(D) >= max_i Re lambda_i(A) (the gauge is a norm, so
 ||exp(tA)|| >= rho(exp(tA))); for a trace-preserving generator that is 0, and
@@ -33,6 +51,10 @@ Public API
 ----------
 generator_log_norm(D, A)            batched LP, mu*(D) [+ per-column values, H]
 generator_log_norm_reference(D, A)  independent per-column LP (confirmation)
+complex_column_values(D, Y)         exact per-column minima, H, witnesses
+                                    (complex D; sum objective)
+is_complex_frame(X)                 nonzero imaginary part?
+column_opnorm(M), project_frame_columns(M)   operator-norm ball (any dtype)
 rate_certificate(D, A)              value, binding column, dual witness
 rate_value_and_grad(S, A)           mu*(S (x) S) and its analytic subgradient
 polyak_rate_polish(S, A)            Polyak subgradient polish toward the floor
@@ -42,10 +64,12 @@ framability_bound(mu, dt)           exp(dt * mu)
 
 from __future__ import annotations
 
+import os
+
 import numpy as np
 from scipy.optimize import linprog
-from scipy.sparse import (csc_matrix, kron as sp_kron, eye as sp_eye,
-                          hstack as sp_hstack)
+from scipy.sparse import (csc_matrix, coo_matrix, kron as sp_kron,
+                          eye as sp_eye, hstack as sp_hstack)
 
 from optimize_framability import (
     _kron_power, _project_columns_bloch, _FIXED_COLS, N_FIXED_COLS,
@@ -54,9 +78,70 @@ from optimize_framability import (
 )
 from two_qubit_lindbladian import qubit_d
 
-RATE_VERSION = '1.0-generator-lognorm'
+#   1.0-generator-lognorm : real frames, real coefficients
+#   1.1-complex-coeff     : complex frames take the complex-coefficient
+#                           column-generation LP (real frames unchanged)
+RATE_VERSION = '1.1-complex-coeff'
 
 _N_S = qubit_d ** 2          # 4 rows of S
+
+# Complex-coefficient LP (column generation over coefficient phases).  The
+# initial phase set {1, i, -1, -i} is the realified l1 (|Re| + |Im|, at most
+# sqrt2 x the modulus); pricing then adds the dual-optimal phase per
+# coefficient.  At termination the LP is within COMPLEX_TOL x (off-diagonal
+# mass) of the cone optimum; it is always a valid upper bound.
+COMPLEX_N_PHASE = int(os.environ.get('RATE_COMPLEX_N_PHASE', '4'))  # initial phase polygon
+COMPLEX_MAX_ROUNDS = int(os.environ.get('RATE_COMPLEX_MAX_ROUNDS', '60'))
+COMPLEX_TOL = 1e-8          # pricing tolerance (relative to the block weight)
+# wall-clock cap (s) of one HiGHS solve; a capped solve counts as failed (+inf)
+COMPLEX_LP_TIME_LIMIT = float(os.environ.get('RATE_LP_TIME_LIMIT', '300'))
+
+
+# ---------------------------------------------------------------------------
+#  Complex frames: helpers
+# ---------------------------------------------------------------------------
+def is_complex_frame(X) -> bool:
+    """True iff X has a nonzero imaginary part (a complex dtype holding a real
+    frame counts as real, so it keeps the real LP and the real results)."""
+    X = np.asarray(X)
+    return bool(np.iscomplexobj(X) and np.any(X.imag != 0))
+
+
+def _as_frame_array(X):
+    """X as float if it is real (also a complex dtype with zero imaginary
+    part), as complex otherwise -- never drops an imaginary part."""
+    X = np.asarray(X)
+    if np.iscomplexobj(X):
+        return X.astype(complex) if np.any(X.imag != 0) else X.real.astype(float)
+    return X.astype(float)
+
+
+def column_opnorm(M):
+    """Operator norm (largest singular value) of every column
+    c = (c_I, c_X, c_Y, c_Z) of M read as the 2x2 matrix c_I I + c.sigma.
+
+    For complex c = a + i b:  F^dag F = alpha I + v.sigma with
+    alpha = |c_I|^2 + ||c||^2,  v = 2 Re(c_I^* c) - 2 a x b,  so
+    ||F|| = sqrt(alpha + |v|).  For real columns this is |c_I| + ||c||_2,
+    the Bloch rule of optimize_framability."""
+    M = np.asarray(M)
+    c0, c = M[0], M[1:4]
+    if not np.iscomplexobj(M):
+        return np.abs(c0) + np.linalg.norm(c, axis=0)
+    a, b = c.real, c.imag
+    alpha = np.abs(c0) ** 2 + np.sum(np.abs(c) ** 2, axis=0)
+    v = 2.0 * np.real(np.conj(c0)[None, :] * c) - 2.0 * np.cross(a, b, axis=0)
+    return np.sqrt(alpha + np.linalg.norm(v, axis=0))
+
+
+def project_frame_columns(M):
+    """Shrink every column of M (4 x k) onto the operator-norm ball
+    ||c_I I + c.sigma|| <= 1 (columns inside are untouched).  Real M:
+    identical to optimize_framability._project_columns_bloch."""
+    M = np.asarray(M)
+    if not is_complex_frame(M):
+        return _project_columns_bloch(np.real(M).astype(float))
+    return M / np.maximum(column_opnorm(M), 1.0)
 
 
 # ---------------------------------------------------------------------------
@@ -75,8 +160,13 @@ def framability_bound(mu: float, dt: float) -> float:
 # ---------------------------------------------------------------------------
 #  Generator log-norm LP (batched)
 # ---------------------------------------------------------------------------
-def generator_log_norm(D, A, *, return_cols=False, return_H=False):
+def generator_log_norm(D, A, *, return_cols=False, return_H=False,
+                       target=None):
     """mu*(D) = max_j min { h_j + sum_{k!=j} |h_k| : D h = A d_j }.
+
+    `target` (n x d_ext) replaces the right-hand sides A d_j column by column
+    (A is then ignored and may be None); the moving-frame certificate of
+    framability_rate_moving uses it with target = A D - (Sdot(x)S + S(x)Sdot)/z.
 
     One batched LP.  Variables per target column j: a free diagonal entry
     g_j (cost +1, signed) and h+_j, h-_j >= 0 (cost +1 each, the split
@@ -88,9 +178,15 @@ def generator_log_norm(D, A, *, return_cols=False, return_H=False):
     Returns mu (float); optionally the per-column values (d_ext,) and the
     certificate matrix H (d_ext x d_ext) with A D = D H.  A rank-deficient D
     gives +inf (vacuous certificate).
+
+    A complex D (non-Hermitian frame elements) goes to the complex-coefficient
+    LP (_complex_log_norm; H is then complex); a real D, or a complex dtype
+    with zero imaginary part, keeps this real LP.
     """
-    D = np.asarray(D, dtype=float)
-    A = np.asarray(A, dtype=float)
+    if is_complex_frame(D) or (target is not None and is_complex_frame(target)):
+        return _complex_log_norm(D, A, target=target, return_cols=return_cols,
+                                 return_H=return_H)
+    D = _as_frame_array(D)
     n, m = D.shape
     if not _has_full_support(D):
         out = [np.inf]
@@ -100,7 +196,12 @@ def generator_log_norm(D, A, *, return_cols=False, return_H=False):
             out.append(None)
         return out[0] if len(out) == 1 else tuple(out)
 
-    Y = A @ D                                   # targets, column j = A d_j
+    if target is None:
+        Y = np.asarray(A, dtype=float) @ D      # targets, column j = A d_j
+    else:
+        Y = _as_frame_array(target)
+        if Y.shape != D.shape:
+            raise ValueError(f'target shape {Y.shape} != D shape {D.shape}')
     K = sp_kron(sp_eye(m, format='csc'), csc_matrix(D), format='csc')  # (n m, m m)
     diag_idx = np.arange(m) * m + np.arange(m)  # column-major index of H_jj
     G = K[:, diag_idx]                          # (n m, m)
@@ -142,14 +243,36 @@ def generator_log_norm(D, A, *, return_cols=False, return_H=False):
     return tuple(out)
 
 
-def generator_log_norm_reference(D, A, *, return_cols=False):
-    """Independent per-column solve of the same LP (confirmation evaluator)."""
-    D = np.asarray(D, dtype=float)
-    A = np.asarray(A, dtype=float)
+def generator_log_norm_reference(D, A, *, return_cols=False, target=None):
+    """Independent per-column solve of the same LP (confirmation evaluator).
+    `target` as in generator_log_norm.  Complex D: one complex-coefficient
+    LP per column, each run to convergence (exact per-column minima)."""
+    if is_complex_frame(D) or (target is not None and is_complex_frame(target)):
+        D = np.asarray(D, dtype=complex)
+        if not _has_full_support(D):
+            return (np.inf, None) if return_cols else np.inf
+        Y = (np.asarray(A, dtype=float) @ D if target is None
+             else np.asarray(target, dtype=complex))
+        if Y.shape != D.shape:
+            raise ValueError(f'target shape {Y.shape} != D shape {D.shape}')
+        cols = np.empty(D.shape[1])
+        for j in range(D.shape[1]):
+            r = _complex_lp(D, Y, mode='sum', blocks=[j])
+            if r is None:
+                return (np.inf, None) if return_cols else np.inf
+            cols[j] = r['cols'][0]
+        val = float(np.max(cols))
+        return (val, cols) if return_cols else val
+    D = _as_frame_array(D)
     n, m = D.shape
     if not _has_full_support(D):
         return (np.inf, None) if return_cols else np.inf
-    Y = A @ D
+    if target is None:
+        Y = np.asarray(A, dtype=float) @ D
+    else:
+        Y = _as_frame_array(target)
+        if Y.shape != D.shape:
+            raise ValueError(f'target shape {Y.shape} != D shape {D.shape}')
     cols = np.empty(m)
     for j in range(m):
         # variables [g, h+ (m), h- (m)]; off-diagonal only in h+-:
@@ -169,6 +292,228 @@ def generator_log_norm_reference(D, A, *, return_cols=False):
 
 
 # ---------------------------------------------------------------------------
+#  Complex-coefficient LP (column generation over coefficient phases)
+# ---------------------------------------------------------------------------
+def _complex_lp(D, Y, *, mode='max', blocks=None, n_phase=None,
+                max_rounds=None, tol=None, time_limit=None):
+    """Complex column log-norm problem for the target columns `blocks`:
+
+        min  Re g_j + sum_{k != j} |h_kj|   s.t.  D (g_j e_j + h_j) = Y[:, j]
+
+    over complex g_j, h_j, either jointly as max_j (mode='max', epigraph
+    variable t: only the binding columns are minimised, as in
+    generator_log_norm) or as independent per-column minima (mode='sum').
+
+    Every off-diagonal coefficient is a nonnegative combination
+    h_kj = sum lambda e^{i theta} over a phase set, initially the n_phase-gon
+    for every k != j; the LP is real (rows: Re and Im of the equality).  After
+    each solve, block j's equality duals y (2n reals; w = y_re + i y_im) and
+    its weight u_j (1 for 'sum', the epigraph dual for 'max') price the phase
+    theta of coefficient k at  u_j - (alpha cos theta + beta sin theta),
+    alpha + i beta = conj(w)^T d_k ... in real form alpha = Dr2_k.y,
+    beta = Di2_k.y, minimised at theta = atan2(beta, alpha) with value
+    u_j - hypot(alpha, beta).  Columns with a negative reduced cost are added
+    until none is left (the LP optimum is then the cone optimum: w is dual
+    feasible, |w^H d_k| <= u_j) or max_rounds is reached.  Every intermediate
+    H is feasible, so the reported per-column costs (exact moduli of H) are
+    always valid upper bounds.
+
+    Returns None (LP failure / time limit) or dict(cols, H, W, rounds,
+    converged): cols = exact column costs of the blocks, H (M x len(blocks))
+    complex certificate columns, W (n x len(blocks)) complex witnesses
+    normalised to w^H d_j = 1 (NaN for a 'max' block of zero weight)."""
+    n_phase = COMPLEX_N_PHASE if n_phase is None else int(n_phase)
+    max_rounds = COMPLEX_MAX_ROUNDS if max_rounds is None else int(max_rounds)
+    tol = COMPLEX_TOL if tol is None else float(tol)
+    time_limit = COMPLEX_LP_TIME_LIMIT if time_limit is None else time_limit
+    D = np.asarray(D, dtype=complex)
+    Y = np.asarray(Y, dtype=complex)
+    n, M = D.shape
+    blocks = np.arange(M) if blocks is None else np.asarray(blocks, dtype=int)
+    nb = blocks.size
+    n2 = 2 * n
+    Dr2 = np.vstack([D.real, D.imag])           # coefficient 1   -> [Re d; Im d]
+    Di2 = np.vstack([-D.imag, D.real])          # coefficient i   -> [Re(i d); Im(i d)]
+    b_eq = np.vstack([Y.real, Y.imag])[:, blocks].ravel(order='F')
+    is_max = (mode == 'max')
+    off = 1 if is_max else 0                    # t first in 'max' mode
+    n_g = 2 * nb                                # (Re g, Im g) per block
+
+    # initial phase set: every k != j, the n_phase-gon
+    th0 = 2.0 * np.pi * np.arange(n_phase) / n_phase
+    lam_b, lam_k, lam_t = [], [], []
+    ks_all = np.arange(M)
+    for b, j in enumerate(blocks):
+        ks = ks_all[ks_all != j]
+        lam_b.append(np.full(ks.size * n_phase, b))
+        lam_k.append(np.repeat(ks, n_phase))
+        lam_t.append(np.tile(th0, ks.size))
+    lam_b = np.concatenate(lam_b)
+    lam_k = np.concatenate(lam_k)
+    lam_t = np.concatenate(lam_t)
+
+    g_rows = (n2 * np.arange(nb))[:, None] + np.arange(n2)[None, :]   # (nb, 2n)
+    # solver tolerances below the pricing tolerance, so that dual noise never
+    # prices out a column (HiGHS defaults are 1e-7)
+    opts = dict(time_limit=time_limit, dual_feasibility_tolerance=1e-9,
+                primal_feasibility_tolerance=1e-9)
+    res = None
+    converged = False
+    rounds = 0
+    obj_hist = []
+    for rounds in range(1, max_rounds + 1):
+        sol_b, sol_k, sol_t = lam_b, lam_k, lam_t     # phase set of this solve
+        n_lam = lam_b.size
+        n_var = off + n_g + n_lam
+        # ---- equality matrix (COO) --------------------------------------
+        V_g = np.concatenate([Dr2[:, blocks].T, Di2[:, blocks].T], axis=1)  # (nb, 2*2n)
+        r_g = np.concatenate([g_rows, g_rows], axis=1)
+        c_g = np.concatenate([np.repeat(off + 2 * np.arange(nb), n2).reshape(nb, n2),
+                              np.repeat(off + 2 * np.arange(nb) + 1, n2).reshape(nb, n2)],
+                             axis=1)
+        V_l = (Dr2[:, lam_k] * np.cos(lam_t) + Di2[:, lam_k] * np.sin(lam_t))  # (2n, n_lam)
+        r_l = (n2 * lam_b)[None, :] + np.arange(n2)[:, None]
+        c_l = np.broadcast_to(off + n_g + np.arange(n_lam), (n2, n_lam))
+        A_eq = coo_matrix((np.concatenate([V_g.ravel(), V_l.ravel()]),
+                           (np.concatenate([r_g.ravel(), r_l.ravel()]),
+                            np.concatenate([c_g.ravel(), c_l.ravel()]))),
+                          shape=(n2 * nb, n_var)).tocsc()
+        c = np.zeros(n_var)
+        if is_max:
+            c[0] = 1.0
+            ub_r = np.concatenate([np.arange(nb), np.arange(nb), lam_b])
+            ub_c = np.concatenate([np.zeros(nb, int), off + 2 * np.arange(nb),
+                                   off + n_g + np.arange(n_lam)])
+            ub_v = np.concatenate([-np.ones(nb), np.ones(nb), np.ones(n_lam)])
+            A_ub = coo_matrix((ub_v, (ub_r, ub_c)), shape=(nb, n_var)).tocsc()
+            b_ub = np.zeros(nb)
+        else:
+            c[off + 2 * np.arange(nb)] = 1.0
+            c[off + n_g:] = 1.0
+            A_ub = b_ub = None
+        bounds = np.zeros((n_var, 2))
+        bounds[:off + n_g, 0] = -np.inf
+        bounds[:, 1] = np.inf
+        res = linprog(c, A_ub=A_ub, b_ub=b_ub, A_eq=A_eq, b_eq=b_eq,
+                      bounds=bounds, method='highs', options=opts)
+        if res.status != 0:
+            return None
+        y = getattr(getattr(res, 'eqlin', None), 'marginals', None)
+        if y is None:                                   # no duals: stop here
+            break
+        Yb = np.asarray(y, float).reshape(nb, n2)
+        if is_max:
+            u = np.maximum(-np.asarray(res.ineqlin.marginals, float), 0.0)
+        else:
+            u = np.ones(nb)
+        alpha = Yb @ Dr2                                # (nb, M)
+        beta = Yb @ Di2
+        mag = np.hypot(alpha, beta)
+        # reduced cost u_j - mag; the threshold is absolute on the dual scale
+        # (sum u = 1 for 'max', u = 1 for 'sum'), so a non-binding 'max' block
+        # (u_j = 0, duals 0 up to noise) never prices
+        viol = mag - u[:, None] - tol * max(1.0, float(u.max()))
+        viol[np.arange(nb), blocks] = -np.inf           # diagonal lives in g
+        bb, kk = np.nonzero(viol > 0)
+        if bb.size == 0:
+            converged = True
+            break
+        # stall guard: the objective must keep dropping (else dual noise)
+        obj_hist.append(float(res.fun))
+        if len(obj_hist) >= 3 and \
+                obj_hist[-3] - obj_hist[-1] <= 1e-12 * max(1.0, abs(obj_hist[-1])):
+            break
+        lam_b = np.concatenate([lam_b, bb])
+        lam_k = np.concatenate([lam_k, kk])
+        lam_t = np.concatenate([lam_t, np.arctan2(beta[bb, kk], alpha[bb, kk])])
+
+    # ---- certificate and exact costs (phase set of the LAST solve) -----
+    x = res.x
+    H = np.zeros((M, nb), dtype=complex)
+    H[blocks, np.arange(nb)] = x[off + 2 * np.arange(nb)] + 1j * x[off + 2 * np.arange(nb) + 1]
+    lam = x[off + n_g:off + n_g + sol_b.size]
+    np.add.at(H, (sol_k, sol_b), lam * np.exp(1j * sol_t))
+    diag = H[blocks, np.arange(nb)]
+    absoff = np.abs(H).sum(axis=0) - np.abs(diag)
+    cols = diag.real + absoff
+    W = np.full((n, nb), np.nan, dtype=complex)
+    y = getattr(getattr(res, 'eqlin', None), 'marginals', None)
+    if y is not None:
+        Yb = np.asarray(y, float).reshape(nb, n2)
+        u = (np.maximum(-np.asarray(res.ineqlin.marginals, float), 0.0) if is_max
+             else np.ones(nb))
+        ok = u > 1e-12
+        W[:, ok] = ((Yb[ok, :n] + 1j * Yb[ok, n:]) / u[ok, None]).T
+    return dict(cols=cols, H=H, W=W, rounds=rounds, converged=converged)
+
+
+def _complex_log_norm(D, A, *, target=None, return_cols=False, return_H=False):
+    """generator_log_norm for a complex frame (one batched 'max' LP)."""
+    D = np.asarray(D, dtype=complex)
+    n, m = D.shape
+
+    def fail():
+        out = [np.inf]
+        if return_cols:
+            out.append(None)
+        if return_H:
+            out.append(None)
+        return out[0] if len(out) == 1 else tuple(out)
+
+    if not _has_full_support(D):
+        return fail()
+    Y = (np.asarray(A, dtype=float) @ D if target is None
+         else np.asarray(target, dtype=complex))
+    if Y.shape != D.shape:
+        raise ValueError(f'target shape {Y.shape} != D shape {D.shape}')
+    r = _complex_lp(D, Y, mode='max')
+    if r is None:
+        return fail()
+    val = float(np.max(r['cols']))
+    if not (return_cols or return_H):
+        return val
+    out = [val]
+    if return_cols:
+        out.append(r['cols'])
+    if return_H:
+        out.append(r['H'])
+    return tuple(out)
+
+
+def complex_column_values(D, Y, *, blocks=None):
+    """Exact per-column minima (sum objective: the columns decouple) of the
+    complex-coefficient problem, with H and the normalised witnesses W.
+    Returns (cols, H, W) or (None, None, None)."""
+    D = np.asarray(D, dtype=complex)
+    if not _has_full_support(D):
+        return None, None, None
+    r = _complex_lp(D, Y, mode='sum', blocks=blocks)
+    if r is None:
+        return None, None, None
+    return r['cols'], r['H'], r['W']
+
+
+def complex_column_witness(D, A, j):
+    """(value, h, w) of column j alone: exact minimum, its certificate column
+    and the dual witness w (w^H d_j = 1, |w^H d_k| <= 1).  None on failure."""
+    D = np.asarray(D, dtype=complex)
+    r = _complex_lp(D, np.asarray(A, float) @ D, mode='sum', blocks=[j])
+    if r is None or not np.all(np.isfinite(r['W'])):
+        return None
+    return float(r['cols'][0]), r['H'][:, 0], r['W'][:, 0]
+
+
+def complex_grad_from_D(S, G):
+    """Chain dmu/dD (complex G: dmu = Re sum conj(G) dD) through D = S (x) S.
+    Returns Gamma with dmu = Re sum conj(Gamma) dS, i.e. dmu/dRe S = Re Gamma,
+    dmu/dIm S = Im Gamma (real S, real G: the real chain rule)."""
+    n_s, m = S.shape
+    T = G.reshape(n_s, n_s, m, m)
+    Sc = np.conj(S)
+    return np.einsum('abij,bj->ai', T, Sc) + np.einsum('baji,bj->ai', T, Sc)
+
+
+# ---------------------------------------------------------------------------
 #  Certificate, subgradient, Polyak polish
 # ---------------------------------------------------------------------------
 def rate_certificate(D, A):
@@ -176,13 +521,22 @@ def rate_certificate(D, A):
 
     Dual of the binding column's LP:  max <w, A d_j*>  s.t.
     (D^T w)_j* = 1  and  |(D^T w)_k| <= 1 for k != j*.
+    Complex D: the witness (complex, w^H d_j* = 1) and the column j* of H
+    come from one exact per-column solve, so they belong together.
     """
-    D = np.asarray(D, dtype=float)
+    D = _as_frame_array(D)
     A = np.asarray(A, dtype=float)
     val, cols, H = generator_log_norm(D, A, return_cols=True, return_H=True)
     if not np.isfinite(val):
         return dict(value=np.inf, argmax=-1, witness=None, cols=None, H=None)
     j = int(np.argmax(cols))
+    if np.iscomplexobj(D):
+        r = complex_column_witness(D, A, j)
+        if r is None:
+            return dict(value=val, argmax=j, witness=None, cols=cols, H=H)
+        H = H.copy()
+        H[:, j] = r[1]
+        return dict(value=val, argmax=j, witness=r[2], cols=cols, H=H)
     y = A @ D[:, j]
     DT = D.T
     m = D.shape[1]
@@ -198,8 +552,13 @@ def rate_value_and_grad(S, A):
 
     d mu_j* / dD = (A^T w*) e_j*^T - w* h*^T, then chain-ruled through
     D = S (x) S exactly as in optimize_framability.framability_value_and_grad.
+    Complex S: G = (A^T w) e_j^T - w h^H and the returned dS is the complex
+    gradient Gamma (d mu = Re sum conj(Gamma) dS; complex_grad_from_D).  At a
+    REAL frame the imaginary part of the gradient vanishes (mu(S) =
+    mu(conj S) for a real generator), so gradient steps never leave the real
+    subspace by themselves -- complex searches need complex starts.
     """
-    S = np.asarray(S, dtype=float)
+    S = _as_frame_array(S)
     A = np.asarray(A, dtype=float)
     n_s, m = S.shape
     D = _kron_power(S, 2)
@@ -209,22 +568,22 @@ def rate_value_and_grad(S, A):
         return val, np.zeros_like(S)
     h = H[:, j]
     nrows, d_ext = D.shape
-    gD = np.zeros((nrows, d_ext))
+    gD = np.zeros((nrows, d_ext), dtype=np.result_type(w, h, float))
     gD[:, j] += A.T @ w
-    gD -= np.outer(w, h)
-    T = gD.reshape(n_s, n_s, m, m)
-    dS = np.einsum('abij,bj->ai', T, S) + np.einsum('baji,bj->ai', T, S)
-    return val, dS
+    gD -= np.outer(w, np.conj(h))
+    return val, complex_grad_from_D(S, gD)
 
 
 def polyak_rate_polish(S, A, *, target=None, n_iter=300, tol=1e-10,
                        stall_patience=20, verbose=False):
     """Projected Polyak subgradient descent on mu*(S) toward `target`
-    (default: spectral abscissa of A, i.e. 0 for a TP generator)."""
+    (default: spectral abscissa of A, i.e. 0 for a TP generator).  Works on
+    real and complex frames (complex: steps along the complex gradient,
+    projection onto the operator-norm ball)."""
     A = np.asarray(A, dtype=float)
     if target is None:
         target = spectral_abscissa(A)
-    S = np.asarray(S, dtype=float).copy()
+    S = _as_frame_array(S).copy()
     f_best, S_best = np.inf, S.copy()
     beta, stall = 1.0, 0
     for k in range(n_iter):
@@ -240,12 +599,12 @@ def polyak_rate_polish(S, A, *, target=None, n_iter=300, tol=1e-10,
         if val <= target + tol:
             break
         g = dS[:, N_FIXED_COLS:]
-        gnorm_sq = float(np.sum(g * g))
+        gnorm_sq = float(np.sum(np.abs(g) ** 2))
         if gnorm_sq < 1e-20:
             break
         alpha = beta * (val - target) / gnorm_sq
         free = S[:, N_FIXED_COLS:] - alpha * g
-        S = np.hstack([_FIXED_COLS, _project_columns_bloch(free)])
+        S = np.hstack([_FIXED_COLS.astype(free.dtype), project_frame_columns(free)])
         if verbose and (k + 1) % 25 == 0:
             print(f'    polish {k + 1}: mu={val:.3e} best={f_best:.3e} '
                   f'beta={beta:.3f}', flush=True)
@@ -623,6 +982,77 @@ def _check_limit(seed=0, dts=(1e-1, 1e-2, 1e-3, 1e-4)):
     print(f'subgradient vs FD relative error: {err:.3e}')
 
 
+def _check_complex(seed=0, d_exts=(6, 8, 12)):
+    """Complex frames: operator norm vs SVD, LP vs closed form on bases (H is
+    unique, so the LP must reach the exact moduli), batched vs reference,
+    continuity with the real LP, complex gradient vs finite differences, and
+    timings per d_ext (one LP evaluation)."""
+    import time
+    import warnings
+    try:
+        from numpy.exceptions import ComplexWarning
+    except ImportError:                                     # numpy < 1.25
+        ComplexWarning = np.ComplexWarning
+    warnings.simplefilter('error', ComplexWarning)
+    from trotter_lindbladian_scan import MODELS, build_bond_lindbladian
+    spec = MODELS['model4']
+    A = build_bond_lindbladian(*spec.build(3.0, 2.0), spec.dim).real.T
+    rng = np.random.default_rng(seed)
+
+    def rand_frame(m):
+        F = rng.standard_normal((4, m - 1)) + 1j * rng.standard_normal((4, m - 1))
+        return np.hstack([_FIXED_COLS.astype(complex), project_frame_columns(F)])
+
+    pa = [np.eye(2), np.array([[0, 1], [1, 0]]), np.array([[0, -1j], [1j, 0]]),
+          np.diag([1.0, -1.0])]
+    F = rng.standard_normal((4, 6)) + 1j * rng.standard_normal((4, 6))
+    on = [np.linalg.norm(sum(F[a, i] * pa[a] for a in range(4)), 2) for i in range(6)]
+    print(f'operator norm vs SVD: {np.max(np.abs(np.array(on) - column_opnorm(F))):.2e}')
+    worst = 0.0
+    for _ in range(4):
+        S = rand_frame(4)
+        D = _kron_power(S, 2)
+        H = np.linalg.solve(D, A @ D)
+        dg = np.diag(H)
+        cf = float((dg.real + np.abs(H).sum(0) - np.abs(dg)).max())
+        worst = max(worst, abs(generator_log_norm(D, A) - cf))
+    print(f'basis frames, LP vs closed form: max |diff| = {worst:.2e}')
+    S = np.hstack([_FIXED_COLS, _project_columns_bloch(rng.standard_normal((4, 5)))])
+    vr = generator_log_norm(_kron_power(S, 2), A)
+    Sc = S.astype(complex)
+    Sc[1:, 1:] += 1e-7j * rng.standard_normal((3, 5))
+    print(f'real LP {vr:.8f} vs complex LP at Im ~ 1e-7: '
+          f'{generator_log_norm(_kron_power(Sc, 2), A):.8f}')
+    for m in d_exts:
+        S = rand_frame(m)
+        D = _kron_power(S, 2)
+        t0 = time.perf_counter()
+        r = _complex_lp(D, A @ D, mode='max')
+        t1 = time.perf_counter()
+        v = float(np.max(r['cols']))
+        msg = (f'd_ext {m:2d}: batched {v:.8f}  ({t1 - t0:.2f} s, {r["rounds"]} '
+               f'rounds, converged {r["converged"]}, residual '
+               f'{np.abs(D @ r["H"] - A @ D).max():.1e})')
+        if m <= 8:
+            t0 = time.perf_counter()
+            vref = generator_log_norm_reference(D, A)
+            msg += f'  reference {vref:.8f} ({time.perf_counter() - t0:.2f} s)'
+        print(msg, flush=True)
+    S = rand_frame(4)
+    val, G = rate_value_and_grad(S, A)
+    eps, fd = 1e-6, np.zeros_like(S)
+    for a in range(4):
+        for i in range(1, S.shape[1]):
+            for unit in (1.0, 1j):
+                Sp = S.copy()
+                Sp[a, i] += eps * unit
+                dv = (generator_log_norm(_kron_power(Sp, 2), A) - val) / eps
+                fd[a, i] += dv * unit           # d/dRe + i d/dIm = Gamma
+    err = np.linalg.norm((G - fd)[:, 1:]) / max(np.linalg.norm(fd[:, 1:]), 1e-12)
+    print(f'complex gradient vs FD (basis frame): relative error {err:.3e}')
+
+
 if __name__ == '__main__':
     _check_projection()
     _check_limit()
+    _check_complex()

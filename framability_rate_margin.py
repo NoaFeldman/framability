@@ -51,8 +51,10 @@ from scipy.sparse import (csc_matrix, kron as sp_kron, eye as sp_eye,
 
 from optimize_framability import (_kron_power, _project_columns_bloch,
                                   _FIXED_COLS, N_FIXED_COLS, _has_full_support)
-from framability_rate import generator_log_norm_reference
-from framability_rate_global import column_witness, column_grad
+from framability_rate import (generator_log_norm_reference, _as_frame_array,
+                              is_complex_frame, complex_column_values)
+from framability_rate_global import (column_witness, column_grad, grad_vector,
+                                     step_frame)
 
 RATE_MARGIN_VERSION = '1.0-margin-bundle'
 IDENTITY_COL = 0          # column (I, I) of D = S (x) S when S[:, 0] = I
@@ -73,10 +75,13 @@ def column_values(S, A):
     and the dual witnesses W (column j = witness of column j).
 
     Returns (cols, H, W); (None, None, None) if D lacks full support or the
-    LP fails.  W is None when the solver exposes no equality marginals."""
-    S = np.asarray(S, float)
+    LP fails.  W is None when the solver exposes no equality marginals.
+    Complex S: framability_rate.complex_column_values (complex H, W)."""
+    S = _as_frame_array(S)
     A = np.asarray(A, float)
     D = _kron_power(S, 2)
+    if is_complex_frame(D):
+        return complex_column_values(D, A @ D)
     n, M = D.shape
     if not _has_full_support(D):
         return None, None, None
@@ -111,7 +116,7 @@ def excess(S, A) -> float:
 
 def excess_reference(S, A) -> float:
     """F(S) from the independent per-column LP (certification)."""
-    D = _kron_power(np.asarray(S, float), 2)
+    D = _kron_power(_as_frame_array(S), 2)
     v, cols = generator_log_norm_reference(D, np.asarray(A, float),
                                            return_cols=True)
     if cols is None or not np.isfinite(v):
@@ -122,14 +127,14 @@ def excess_reference(S, A) -> float:
 # ---------------------------------------------------------------------------
 #  Bundle descent on F
 # ---------------------------------------------------------------------------
-def _grads(S, A, D, cols, H, W, bundle):
+def _grads(S, A, D, cols, H, W, bundle, cplx=False):
     out = []
     for j in bundle:
         w = W[:, j] if W is not None else column_witness(D, A, j)
-        if w is None:
+        if w is None or not np.all(np.isfinite(w)):
             continue
-        g = column_grad(S, A, j, w, H[:, j])[:, N_FIXED_COLS:].ravel()
-        out.append((j, g))
+        g = column_grad(S, A, j, w, H[:, j])[:, N_FIXED_COLS:]
+        out.append((j, grad_vector(g, cplx)))
     return out
 
 
@@ -145,11 +150,14 @@ def margin_polish(S, A, *, n_iter: int = 40, radius: float = 0.05,
     solves  min tau  s.t.  mu_j + <g_j, dS> <= tau,  |dS|_inf <= radius,
     projects the free columns back onto the operator-norm ball and accepts
     the step only if the TRUE F decreases.  Returns (best_F, best_S, n_lp).
+    A complex frame is polished over real and imaginary parts; a real frame
+    stays real (its gradient has no imaginary part).
     """
     A = np.asarray(A, float)
-    S = np.asarray(S, float).copy()
+    S = _as_frame_array(S).copy()
+    cplx = is_complex_frame(S)
     n_s, m = S.shape
-    nvar = n_s * (m - N_FIXED_COLS)
+    nvar = (2 if cplx else 1) * n_s * (m - N_FIXED_COLS)
     cols, H, W = column_values(S, A)
     n_lp = 1
     if cols is None:
@@ -161,7 +169,7 @@ def margin_polish(S, A, *, n_iter: int = 40, radius: float = 0.05,
         order = [int(j) for j in np.argsort(-cols) if j != IDENTITY_COL]
         thresh = F - max(band_rel * abs(F), band_abs)
         bundle = [j for j in order[:max_cols] if cols[j] >= thresh]
-        grads = _grads(S, A, D, cols, H, W, bundle)
+        grads = _grads(S, A, D, cols, H, W, bundle, cplx)
         if not grads:
             break
         Gm = np.array([g for _, g in grads])
@@ -177,9 +185,7 @@ def margin_polish(S, A, *, n_iter: int = 40, radius: float = 0.05,
             if radius < radius_min:
                 break
             continue
-        delta = res.x[:nvar].reshape(n_s, m - N_FIXED_COLS)
-        S_new = np.hstack([_FIXED_COLS,
-                           _project_columns_bloch(S[:, N_FIXED_COLS:] + delta)])
+        S_new = step_frame(S, res.x[:nvar], cplx)
         cols_new, H_new, W_new = column_values(S_new, A)
         n_lp += 1
         pred = F - float(res.x[-1])
